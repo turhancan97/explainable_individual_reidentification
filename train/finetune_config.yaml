@@ -1,0 +1,54 @@
+dataset:
+  root: "/shared/sets/datasets/vision/czechlynx/CzechLynx_v2"
+  metadata_file: "CzechLynxDataset-Metadata-Real.csv"
+  label_col: "unique_name"
+  mask_col: "mask"
+  no_background: false
+  split_col: "split-time_closed"
+  train_split_value: "train"
+  val_split_value: "test"
+
+model:
+  type: "megadescriptor"
+
+train:
+  seed: 0
+  epochs: 30
+  batch_size: 16
+  num_workers: 8
+  accumulation_steps: 4
+  lr: 0.0001
+  weight_decay: 0.0
+  amp: "false"           # auto | true | false
+  deterministic: false
+  resume_checkpoint: null
+  log_every: 5
+
+loss:
+  margin: 0.25
+  scale: 16.0
+
+scheduler:
+  type: "cosine"
+  eta_min_scale: 1e-3
+
+output:
+  run_dir: "results"
+  save_every: 10
+  save_best: true
+  best_metric: "top_1"
+  csv_path: "results/train_metrics.csv"
+
+benchmark:
+  top_k: [1, 5, 10]
+  compute_map: true
+  val_batch_size: 32
+  val_num_workers: 8
+
+wandb:
+  enabled: false
+  project: "explainable-reid"
+  entity: null
+  group: null
+  tags: []
+  name: null

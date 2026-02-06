@@ -1,0 +1,61 @@
+dataset:
+  root: "/shared/sets/datasets/vision/czechlynx/CzechLynx_v2"
+  metadata_file: "CzechLynxDataset-Metadata-Real.csv"
+  label_col: "unique_name"
+  mask_col: "mask"
+  no_background: true
+  split_col: "split-time_closed"
+  database_split_value: "train"
+  query_split_value: "test"
+  calibration_size: 100
+
+model:
+  type: "megadescriptor"
+  mode: "pretrained"  # pretrained | finetuned
+  device: "auto"     # auto | cpu | cuda
+  batch_size: 32
+  num_workers: 8
+  checkpoint:
+    path: null
+    from_latest_results: true
+    results_dir: "results"
+    filename: "checkpoint-final.pth"
+
+benchmark:
+  method: "cosine"   # cosine | wildfusion | local_lightglue
+  top_k: [1, 5, 10]
+  compute_map: true
+  seed: 0
+  deterministic: false
+  cache:
+    enabled: true
+    dir: "/shared/results/common/kargin/lynx/results/CzechLynx/cache/features"
+    format: "pt"     # pt | npz
+  methods:
+    cosine: {}
+    wildfusion:
+      B: 10
+      deep_batch_size: 16
+      deep_num_workers: 4
+      local_batch_size: 16
+    local_lightglue:
+      B: 10
+      local_batch_size: 16
+
+visualization:
+  enabled: true
+  dir: "visualizations"
+  num_examples: 8
+  top_k: 3
+
+output:
+  run_dir: "benchmark_runs"
+  csv_path: "benchmark_runs/benchmark_results.csv"
+
+wandb:
+  enabled: false
+  project: "explainable-reid"
+  entity: null
+  group: null
+  tags: []
+  name: null

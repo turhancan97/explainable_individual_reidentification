@@ -1,0 +1,29 @@
+iopath
+omegaconf
+ipykernel
+pandas 
+scikit-learn
+scikit-learn-intelex
+submitit
+termcolor
+pycocotools
+matplotlib
+seaborn
+scipy
+protobuf
+einops
+timm
+wildlife-datasets
+wildlife-tools
+git+https://github.com/WildlifeDatasets/wildlife-tools
+git+https://github.com/WildlifeDatasets/wildlife-datasets@develop
+tqdm
+wandb
+opencv_python_headless==4.7.0.68
+geopandas == 0.14.4
+zennit==0.5.1
+pytorchwildlife==1.2.1
+Pillow==9.5.0
+torch == 2.8.0+cu126
+torchvision == 0.23.0+cu126
+torchmetrics == 1.8.2
