@@ -10,7 +10,7 @@ Modular deep learning codebase for wildlife individual re-identification (ReID),
 
 The repository supports two workflows:
 - `finetune`: train a backbone with ArcFace loss on a train split and evaluate retrieval on a validation split.
-- `probe`: benchmark retrieval methods (global cosine, WildFusion, local LightGlue) with pretrained or finetuned backbones.
+- `probe`: benchmark retrieval methods (`cosine`, `wildfusion`, `local_lightglue`, `linear_probe`) with pretrained or finetuned backbones.
 
 The code is organized into reusable modules under `reid/` and thin CLI entrypoints under `train/`.
 
@@ -96,6 +96,12 @@ With explicit config:
 python train/probe.py --config config/probe_config.yaml
 ```
 
+Run linear probe:
+
+```bash
+python train/probe.py --method linear_probe
+```
+
 ## Configuration Guide
 
 ### `config/finetune_config.yaml`
@@ -115,10 +121,47 @@ Key blocks:
 Key blocks:
 - `dataset`: root/splits + mask options
 - `model`: type/mode/checkpoint behavior
-- `benchmark`: method (`cosine`, `wildfusion`, `local_lightglue`), metrics, cache
+- `benchmark`: method (`cosine`, `wildfusion`, `local_lightglue`, `linear_probe`), metrics, cache
 - `visualization`: optional qualitative retrieval plots
 - `output`: run folder + aggregate CSV
 - `wandb`: optional experiment logging
+
+#### Linear Probe Settings
+
+`linear_probe` trains a softmax classifier on top of backbone embeddings and can optionally tune backbone weights.
+
+Config path:
+- `benchmark.methods.linear_probe`
+
+Core options:
+- `train_mode`: `all` | `partial` | `classifier`
+- `epochs`, `batch_size`, `num_workers`, `accumulation_steps`
+- `optimizer`: `sgd` | `adam` | `adamw`
+- `lr`, `momentum`, `weight_decay`, `eta_min_scale`
+- `eval_batch_size`, `eval_num_workers`
+- `resume_checkpoint`
+- `save_checkpoint` (default `false`), `save_every`, `final_checkpoint_name`
+- `partial_rules`: per-model parameter-name patterns for partial unfreezing
+
+Reported metrics for `linear_probe`:
+- Retrieval: `top_k`, `mAP` (same benchmark path as other methods)
+- Classification: `classification_top_1`, `classification_top_5`, `classification_top_10`
+
+Example snippet:
+
+```yaml
+benchmark:
+  method: "linear_probe"
+  methods:
+    linear_probe:
+      train_mode: "classifier"   # all | partial | classifier
+      epochs: 10
+      optimizer: "sgd"
+      lr: 0.001
+      save_checkpoint: false
+      partial_rules:
+        default: ["layers.3", "norm"]
+```
 
 ## Training and Evaluation Outputs
 
@@ -165,6 +208,7 @@ wandb:
 Logged data:
 - finetune: train loss, validation metrics, learning rate
 - probe: benchmark metrics/timings, metadata, optional visualization images
+- linear_probe (within probe): per-epoch train loss, learning rate, classification + retrieval metrics
 
 ## Reproducibility
 
@@ -189,4 +233,3 @@ python -m unittest discover -s tests -p 'test_*.py'
   - Verify metadata has valid `mask` field (JSON string or COCO-RLE dict).
 - CUDA mismatch or availability issues
   - Adjust device/AMP settings in config.
-
