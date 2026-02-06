@@ -1,9 +1,11 @@
 import hashlib
 import json
+import math
+import random
 import time
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Set, Tuple
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -24,10 +26,11 @@ from wildlife_tools.similarity.pairwise.lightglue import MatchLightGlue
 from wildlife_tools.similarity.wildfusion import SimilarityPipeline, WildFusion
 
 from models.model import get_model
-from models.objective import SoftmaxLoss
+from models.objective import SoftmaxLoss, SoftmaxLossEP
 from reid.data.dataset_view import BenchmarkDatasetView
 from reid.evaluation.metrics import compute_metrics
 from reid.features.containers import FeatureContainer, get_labels_string
+from reid.methods.rdd import run_rdd_benchmark
 from reid.utils.io import append_csv_row, ensure_dir, ensure_file
 from reid.utils.repro import set_reproducible
 
@@ -53,7 +56,9 @@ def find_latest_checkpoint(results_dir: Path, filename: str) -> Path:
     return checkpoint_path
 
 
-def load_backbone(cfg: DictConfig) -> Tuple[Any, int, Tuple[float, ...], Tuple[float, ...], int, Optional[Path]]:
+def load_backbone(
+    cfg: DictConfig,
+) -> Tuple[Any, int, Tuple[float, ...], Tuple[float, ...], int, str, Optional[int], Optional[Path]]:
     model, embedding_size, mean, std, img_size, arch, patch_size, number_of_patches = get_model(cfg.model.type)
     checkpoint_path: Optional[Path] = None
 
@@ -69,7 +74,7 @@ def load_backbone(cfg: DictConfig) -> Tuple[Any, int, Tuple[float, ...], Tuple[f
         checkpoint = torch.load(checkpoint_path, map_location="cpu")
         model.load_state_dict(checkpoint)
 
-    return model, embedding_size, mean, std, img_size, checkpoint_path
+    return model, embedding_size, mean, std, img_size, arch, number_of_patches, checkpoint_path
 
 
 def build_transforms(mean: Tuple[float, ...], std: Tuple[float, ...], img_size: int) -> Tuple[T.Compose, T.Compose, T.Compose]:
@@ -286,8 +291,9 @@ def _build_label_mapping(dataset_database: Any, label_col: str) -> Dict[str, int
     return {label: idx for idx, label in enumerate(unique_labels)}
 
 
-def _set_trainable_params(model: Any, cfg: DictConfig) -> None:
-    mode = str(cfg.benchmark.methods.linear_probe.train_mode)
+def _set_trainable_params(model: Any, cfg: DictConfig, method_key: str) -> None:
+    method_cfg = cfg.benchmark.methods[method_key]
+    mode = str(method_cfg.train_mode)
     if mode == "all":
         for p in model.parameters():
             p.requires_grad = True
@@ -297,7 +303,7 @@ def _set_trainable_params(model: Any, cfg: DictConfig) -> None:
             p.requires_grad = False
         return
     if mode == "partial":
-        rules = cfg.benchmark.methods.linear_probe.partial_rules
+        rules = method_cfg.partial_rules
         patterns = rules.get(cfg.model.type, rules.get("default", []))
         if not patterns:
             raise ValueError(
@@ -306,21 +312,20 @@ def _set_trainable_params(model: Any, cfg: DictConfig) -> None:
         for name, p in model.named_parameters():
             p.requires_grad = any(pattern in name for pattern in patterns)
         return
-    raise ValueError("linear_probe.train_mode must be one of: all, partial, classifier")
+    raise ValueError(f"{method_key}.train_mode must be one of: all, partial, classifier")
 
 
-def _build_optimizer(params, cfg: DictConfig):
-    lp_cfg = cfg.benchmark.methods.linear_probe
-    opt_name = str(lp_cfg.optimizer).lower()
-    lr = float(lp_cfg.lr)
-    weight_decay = float(lp_cfg.weight_decay)
+def _build_optimizer(params, method_cfg: DictConfig, method_key: str):
+    opt_name = str(method_cfg.optimizer).lower()
+    lr = float(method_cfg.lr)
+    weight_decay = float(method_cfg.weight_decay)
     if opt_name == "sgd":
-        return SGD(params=params, lr=lr, momentum=float(lp_cfg.momentum), weight_decay=weight_decay)
+        return SGD(params=params, lr=lr, momentum=float(method_cfg.momentum), weight_decay=weight_decay)
     if opt_name == "adam":
         return Adam(params=params, lr=lr, weight_decay=weight_decay)
     if opt_name == "adamw":
         return AdamW(params=params, lr=lr, weight_decay=weight_decay)
-    raise ValueError("linear_probe.optimizer must be one of: sgd, adam, adamw")
+    raise ValueError(f"{method_key}.optimizer must be one of: sgd, adam, adamw")
 
 
 def _classification_topk_accuracy(probs: np.ndarray, query_labels_idx: np.ndarray, topk_values: List[int]) -> Dict[str, float]:
@@ -347,6 +352,122 @@ def _predict_class_probabilities(objective: Any, embeddings: torch.Tensor) -> to
         logits = objective.linear(embeddings)
         return torch.softmax(logits, dim=1)
     raise AttributeError("Softmax objective must provide either predict_probabilities() or linear layer")
+
+
+def _extract_hidden_state(outputs: Any) -> torch.Tensor:
+    if hasattr(outputs, "last_hidden_state"):
+        return outputs.last_hidden_state
+    if isinstance(outputs, dict) and "last_hidden_state" in outputs:
+        return outputs["last_hidden_state"]
+    if torch.is_tensor(outputs):
+        return outputs
+    raise ValueError(
+        f"Unsupported ViT output type: {type(outputs)}. "
+        "Expected tensor or object/dict with `last_hidden_state`."
+    )
+
+
+def _forward_patch_tokens(model: Any, x: torch.Tensor, number_of_patches: int) -> torch.Tensor:
+    if number_of_patches <= 0:
+        raise ValueError(f"number_of_patches must be > 0, got {number_of_patches}")
+
+    raw_model = model.backbone if hasattr(model, "backbone") else model
+    outputs = raw_model(x)
+    hidden = _extract_hidden_state(outputs)
+    if hidden.ndim != 3:
+        raise ValueError(f"Expected hidden state shape (B, N, D). Got shape {tuple(hidden.shape)}")
+    if hidden.shape[1] < number_of_patches:
+        raise ValueError(
+            f"number_of_patches ({number_of_patches}) exceeds token count ({hidden.shape[1]})"
+        )
+    return hidden[:, -number_of_patches:, :]
+
+
+def _sample_query_indices(total: int, num_examples: int, seed: int) -> Set[int]:
+    if total <= 0 or num_examples <= 0:
+        return set()
+    count = min(total, num_examples)
+    rng = random.Random(seed)
+    return set(rng.sample(range(total), count))
+
+
+def _save_attention_overlay_grid(
+    out_path: Path,
+    images: List[torch.Tensor],
+    attention_maps: List[torch.Tensor],
+    gt_indices: List[int],
+    pred_indices: List[int],
+    index_to_label: Dict[int, str],
+    mean: Tuple[float, ...],
+    std: Tuple[float, ...],
+    average_queries: bool = True,
+    alpha: float = 0.25,
+) -> Optional[str]:
+    if not images:
+        return None
+
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    mean_np = np.asarray(mean, dtype=np.float32).reshape(1, 1, 3)
+    std_np = np.asarray(std, dtype=np.float32).reshape(1, 1, 3)
+
+    grid_size = int(math.ceil(math.sqrt(len(images))))
+    fig, axes = plt.subplots(grid_size, grid_size, figsize=(grid_size * 3.0, grid_size * 3.5))
+    axes = np.array(axes).reshape(-1)
+
+    for i, (img_t, attn_t, gt_idx, pred_idx) in enumerate(zip(images, attention_maps, gt_indices, pred_indices)):
+        if i >= len(axes):
+            break
+        ax = axes[i]
+        img_np = img_t.permute(1, 2, 0).numpy()
+        img_np = np.clip(img_np * std_np + mean_np, 0.0, 1.0)
+        img_h, img_w = img_np.shape[:2]
+
+        if attn_t.ndim != 2:
+            ax.imshow(img_np)
+            ax.axis("off")
+            continue
+        if average_queries:
+            attn_1d = attn_t.mean(dim=0)
+        else:
+            attn_1d = attn_t[0]
+        num_patches = int(attn_1d.numel())
+        side = int(math.sqrt(num_patches))
+        if side * side != num_patches:
+            ax.imshow(img_np)
+            ax.axis("off")
+            continue
+
+        attn_2d = attn_1d.reshape(side, side).unsqueeze(0).unsqueeze(0)
+        attn_up = torch.nn.functional.interpolate(
+            attn_2d,
+            size=(img_h, img_w),
+            mode="bilinear",
+            align_corners=False,
+        )[0, 0].numpy()
+        attn_min = float(attn_up.min())
+        attn_max = float(attn_up.max())
+        if attn_max > attn_min:
+            attn_up = (attn_up - attn_min) / (attn_max - attn_min)
+        else:
+            attn_up = np.zeros_like(attn_up)
+
+        heatmap_rgb = plt.get_cmap("jet")(attn_up)[..., :3]
+        blended = (1.0 - alpha) * img_np + alpha * heatmap_rgb
+        ax.imshow(blended)
+        ax.axis("off")
+
+        gt_label = index_to_label.get(int(gt_idx), str(gt_idx))
+        pred_label = index_to_label.get(int(pred_idx), str(pred_idx))
+        title_color = "green" if int(gt_idx) == int(pred_idx) else "red"
+        ax.set_title(f"GT: {gt_label}\nPred: {pred_label}", fontsize=9, color=title_color, pad=5)
+
+    for j in range(len(images), len(axes)):
+        axes[j].axis("off")
+
+    plt.tight_layout()
+    plt.savefig(out_path, dpi=150, bbox_inches="tight")
+    plt.close()
+    return str(out_path)
 
 
 def make_cache_key(cfg: DictConfig, method: str, split_name: str, dataset_sig: str, checkpoint_path: Optional[Path]) -> str:
@@ -453,14 +574,14 @@ def run_linear_probe(
     train_ds = EncodedLabelDataset(dataset_database, label_to_index)
     query_ds = EncodedLabelDataset(dataset_query, label_to_index)
 
-    _set_trainable_params(model, cfg)
+    _set_trainable_params(model, cfg, method_key="linear_probe")
     objective = SoftmaxLoss(num_classes=len(label_to_index), embedding_size=embedding_size)
     objective.to(device)
+    lp_cfg = cfg.benchmark.methods.linear_probe
 
     trainable_backbone = [p for p in model.parameters() if p.requires_grad]
     params = list(trainable_backbone) + list(objective.parameters())
-    optimizer = _build_optimizer(params, cfg)
-    lp_cfg = cfg.benchmark.methods.linear_probe
+    optimizer = _build_optimizer(params, lp_cfg, method_key="linear_probe")
     scheduler = CosineAnnealingLR(
         optimizer,
         T_max=int(lp_cfg.epochs),
@@ -642,11 +763,277 @@ def run_linear_probe(
     return similarity, timings, method_metrics
 
 
+def run_efficient_probe(
+    cfg: DictConfig,
+    model: Any,
+    embedding_size: int,
+    number_of_patches: int,
+    mean: Tuple[float, ...],
+    std: Tuple[float, ...],
+    device: torch.device,
+    dataset_query: Any,
+    dataset_database: Any,
+    run_dir: Path,
+    wandb_run: Any = None,
+    method_artifacts: Optional[Dict[str, Any]] = None,
+) -> Tuple[np.ndarray, Dict[str, float], Dict[str, float]]:
+    timings: Dict[str, float] = {}
+    method_metrics: Dict[str, float] = {}
+    t0 = time.perf_counter()
+
+    label_to_index = _build_label_mapping(dataset_database, cfg.dataset.label_col)
+    db_labels_idx = dataset_database.df[cfg.dataset.label_col].astype(str).map(label_to_index).to_numpy(dtype=np.int64)
+    query_labels_idx = dataset_query.df[cfg.dataset.label_col].astype(str).map(label_to_index).to_numpy(dtype=np.int64)
+
+    train_ds = EncodedLabelDataset(dataset_database, label_to_index)
+    query_ds = EncodedLabelDataset(dataset_query, label_to_index)
+
+    ep_cfg = cfg.benchmark.methods.efficient_probe
+    _set_trainable_params(model, cfg, method_key="efficient_probe")
+    objective = SoftmaxLossEP(
+        num_classes=len(label_to_index),
+        embedding_size=embedding_size,
+        dropout_rate=float(ep_cfg.dropout_rate),
+        num_queries=int(ep_cfg.num_queries),
+        d_out=int(ep_cfg.d_out),
+    )
+    objective.to(device)
+
+    trainable_backbone = [p for p in model.parameters() if p.requires_grad]
+    params = list(trainable_backbone) + list(objective.parameters())
+    optimizer = _build_optimizer(params, ep_cfg, method_key="efficient_probe")
+    scheduler = CosineAnnealingLR(
+        optimizer,
+        T_max=int(ep_cfg.epochs),
+        eta_min=float(ep_cfg.lr) * float(ep_cfg.eta_min_scale),
+    )
+
+    train_loader = DataLoader(
+        train_ds,
+        batch_size=int(ep_cfg.batch_size),
+        num_workers=int(ep_cfg.num_workers),
+        shuffle=True,
+    )
+    query_loader = DataLoader(
+        query_ds,
+        batch_size=int(ep_cfg.eval_batch_size),
+        num_workers=int(ep_cfg.eval_num_workers),
+        shuffle=False,
+    )
+
+    start_epoch = 0
+    if ep_cfg.resume_checkpoint:
+        resume_file = Path(str(ep_cfg.resume_checkpoint))
+        ensure_file(resume_file, "Efficient probe resume checkpoint")
+        ckpt = torch.load(resume_file, map_location="cpu")
+        model.load_state_dict(ckpt["model"])
+        objective.load_state_dict(ckpt["objective"])
+        optimizer.load_state_dict(ckpt["optimizer"])
+        scheduler.load_state_dict(ckpt["scheduler"])
+        start_epoch = int(ckpt.get("epoch", 0))
+
+    t_train = time.perf_counter()
+    log_every = int(ep_cfg.log_every) if "log_every" in ep_cfg else 1
+    for epoch in range(start_epoch, int(ep_cfg.epochs)):
+        model.train()
+        objective.train()
+        losses: List[float] = []
+        train_probs_list: List[np.ndarray] = []
+        train_targets_list: List[np.ndarray] = []
+        optimizer.zero_grad(set_to_none=True)
+        train_iter = tqdm(
+            train_loader,
+            desc=f"[efficient_probe][train] epoch {epoch+1}/{int(ep_cfg.epochs)}",
+            mininterval=1,
+            ncols=120,
+        )
+        for i, batch in enumerate(train_iter):
+            x, y = batch
+            x = x.to(device)
+            y = y.to(device)
+            patch_tokens = _forward_patch_tokens(model, x, number_of_patches=number_of_patches)
+            loss = objective(patch_tokens, y)
+            train_probs = _predict_class_probabilities(objective, patch_tokens).detach().cpu().numpy()
+            train_probs_list.append(train_probs)
+            train_targets_list.append(y.detach().cpu().numpy())
+            loss.backward()
+            if (i + 1) % int(ep_cfg.accumulation_steps) == 0:
+                optimizer.step()
+                optimizer.zero_grad(set_to_none=True)
+            losses.append(float(loss.detach().cpu()))
+            train_iter.set_postfix(loss=f"{losses[-1]:.4f}")
+
+        scheduler.step()
+
+        model.eval()
+        objective.eval()
+        probs_list: List[np.ndarray] = []
+        val_losses: List[float] = []
+        with torch.no_grad():
+            val_iter = tqdm(
+                query_loader,
+                desc=f"[efficient_probe][val] epoch {epoch+1}/{int(ep_cfg.epochs)}",
+                mininterval=1,
+                ncols=120,
+            )
+            for xq, yq in val_iter:
+                xq = xq.to(device)
+                yq = yq.to(device)
+                patch_tokens = _forward_patch_tokens(model, xq, number_of_patches=number_of_patches)
+                probs = _predict_class_probabilities(objective, patch_tokens)
+                val_loss = objective(patch_tokens, yq)
+                val_losses.append(float(val_loss.detach().cpu()))
+                probs_list.append(probs.detach().cpu().numpy())
+                val_iter.set_postfix(loss=f"{val_losses[-1]:.4f}")
+        probs_query = np.concatenate(probs_list, axis=0)
+        probs_train = np.concatenate(train_probs_list, axis=0)
+        train_targets = np.concatenate(train_targets_list, axis=0)
+
+        train_cls_metrics = _classification_topk_accuracy(probs_train, train_targets, [1, 5, 10])
+        cls_metrics = _classification_topk_accuracy(probs_query, query_labels_idx, [1, 5, 10])
+        similarity_epoch = _similarity_from_class_probs(probs_query, db_labels_idx)
+        retrieval_metrics = compute_metrics(
+            dataset_query=dataset_query,
+            dataset_database=dataset_database,
+            similarity=similarity_epoch,
+            top_k_values=[int(k) for k in cfg.benchmark.top_k],
+            compute_map=bool(cfg.benchmark.compute_map),
+        )
+
+        if wandb_run is not None:
+            lr = float(optimizer.param_groups[0].get("lr", 0.0))
+            wandb_run.log(
+                {
+                    "efficient_probe/epoch": epoch + 1,
+                    "efficient_probe/train_loss": float(np.mean(losses)) if losses else float("nan"),
+                    "efficient_probe/val_loss": float(np.mean(val_losses)) if val_losses else float("nan"),
+                    "efficient_probe/lr": lr,
+                    **{f"efficient_probe/train_{k}": v for k, v in train_cls_metrics.items()},
+                    **{f"efficient_probe/{k}": v for k, v in cls_metrics.items()},
+                    **{f"efficient_probe/{k}": v for k, v in retrieval_metrics.items()},
+                },
+                step=epoch + 1,
+            )
+
+        if (epoch + 1) % log_every == 0:
+            print(
+                f"[efficient_probe] epoch {epoch+1}/{int(ep_cfg.epochs)} "
+                f"train_loss={float(np.mean(losses)) if losses else float('nan'):.6f} "
+                f"train_top1={train_cls_metrics.get('classification_top_1', float('nan')):.4f} "
+                f"train_top5={train_cls_metrics.get('classification_top_5', float('nan')):.4f} "
+                f"train_top10={train_cls_metrics.get('classification_top_10', float('nan')):.4f} "
+                f"val_loss={float(np.mean(val_losses)) if val_losses else float('nan'):.6f} "
+                f"val_top1={cls_metrics.get('classification_top_1', float('nan')):.4f} "
+                f"val_top5={cls_metrics.get('classification_top_5', float('nan')):.4f} "
+                f"val_top10={cls_metrics.get('classification_top_10', float('nan')):.4f}"
+            )
+
+        if bool(ep_cfg.save_checkpoint) and ((epoch + 1) % int(ep_cfg.save_every) == 0):
+            run_dir.mkdir(parents=True, exist_ok=True)
+            ckpt_path = run_dir / f"efficient_probe_epoch_{epoch+1}.pth"
+            torch.save(
+                {
+                    "model": model.state_dict(),
+                    "objective": objective.state_dict(),
+                    "optimizer": optimizer.state_dict(),
+                    "scheduler": scheduler.state_dict(),
+                    "epoch": epoch + 1,
+                    "label_to_index": label_to_index,
+                },
+                ckpt_path,
+            )
+
+    timings["efficient_probe_train_sec"] = time.perf_counter() - t_train
+
+    model.eval()
+    objective.eval()
+    t_eval = time.perf_counter()
+    probs_list = []
+    collect_attention = bool(cfg.visualization.enabled)
+    attention_indices = _sample_query_indices(
+        total=len(query_ds),
+        num_examples=int(getattr(cfg.visualization, "attention_num_examples", cfg.visualization.num_examples)),
+        seed=int(cfg.benchmark.seed),
+    )
+    sampled_images: List[torch.Tensor] = []
+    sampled_attention_maps: List[torch.Tensor] = []
+    sampled_gt: List[int] = []
+    sampled_pred: List[int] = []
+    seen = 0
+    with torch.no_grad():
+        eval_iter = tqdm(
+            query_loader,
+            desc="[efficient_probe][final_eval]",
+            mininterval=1,
+            ncols=120,
+        )
+        for xq, yq in eval_iter:
+            xq_cpu = xq.detach().cpu()
+            xq = xq.to(device)
+            patch_tokens = _forward_patch_tokens(model, xq, number_of_patches=number_of_patches)
+            probs = _predict_class_probabilities(objective, patch_tokens)
+            probs_list.append(probs.detach().cpu().numpy())
+            if collect_attention and attention_indices and hasattr(objective, "attention_map"):
+                attn = objective.attention_map.detach().cpu()
+                pred = torch.argmax(probs.detach().cpu(), dim=1)
+                yq_cpu = yq.detach().cpu()
+                batch_size = xq_cpu.shape[0]
+                for local_idx in range(batch_size):
+                    global_idx = seen + local_idx
+                    if global_idx not in attention_indices:
+                        continue
+                    sampled_images.append(xq_cpu[local_idx])
+                    sampled_attention_maps.append(attn[local_idx])
+                    sampled_gt.append(int(yq_cpu[local_idx].item()))
+                    sampled_pred.append(int(pred[local_idx].item()))
+            seen += xq_cpu.shape[0]
+    probs_query = np.concatenate(probs_list, axis=0)
+    timings["efficient_probe_eval_sec"] = time.perf_counter() - t_eval
+
+    similarity = _similarity_from_class_probs(probs_query, db_labels_idx)
+    method_metrics.update(_classification_topk_accuracy(probs_query, query_labels_idx, [1, 5, 10]))
+
+    if bool(ep_cfg.save_checkpoint):
+        run_dir.mkdir(parents=True, exist_ok=True)
+        final_path = run_dir / str(ep_cfg.final_checkpoint_name)
+        torch.save(
+            {
+                "model": model.state_dict(),
+                "objective": objective.state_dict(),
+                "label_to_index": label_to_index,
+            },
+            final_path,
+        )
+
+    if collect_attention and sampled_images:
+        vis_dir = Path(cfg.visualization.dir) / run_dir.name
+        attention_path = _save_attention_overlay_grid(
+            out_path=vis_dir / "efficient_probe_attention_map.png",
+            images=sampled_images,
+            attention_maps=sampled_attention_maps,
+            gt_indices=sampled_gt,
+            pred_indices=sampled_pred,
+            index_to_label={v: k for k, v in label_to_index.items()},
+            mean=mean,
+            std=std,
+            average_queries=bool(getattr(cfg.visualization, "attention_average_queries", True)),
+        )
+        if method_artifacts is not None and attention_path is not None:
+            method_artifacts["attention_map_path"] = attention_path
+
+    timings["total_method_sec"] = time.perf_counter() - t0
+    return similarity, timings, method_metrics
+
+
 def run_method(
     cfg: DictConfig,
     method: str,
     model: Any,
     embedding_size: int,
+    arch: str,
+    number_of_patches: Optional[int],
+    mean: Tuple[float, ...],
+    std: Tuple[float, ...],
     device: torch.device,
     dataset_query: WildlifeDataset,
     dataset_database: WildlifeDataset,
@@ -657,6 +1044,7 @@ def run_method(
     cache: FeatureCache,
     run_dir: Path,
     wandb_run: Any = None,
+    method_artifacts: Optional[Dict[str, Any]] = None,
 ) -> Tuple[np.ndarray, Dict[str, float], Dict[str, float]]:
     timings: Dict[str, float] = {}
     method_metrics: Dict[str, float] = {}
@@ -762,9 +1150,40 @@ def run_method(
             wandb_run=wandb_run,
         )
         timings.update(lp_timings)
+    elif method == "efficient_probe":
+        if arch != "vit":
+            raise ValueError("efficient_probe is supported only for ViT backbones")
+        if number_of_patches is None or int(number_of_patches) <= 0:
+            raise ValueError(f"Invalid number_of_patches for efficient_probe: {number_of_patches}")
+        similarity, ep_timings, method_metrics = run_efficient_probe(
+            cfg=cfg,
+            model=model,
+            embedding_size=embedding_size,
+            number_of_patches=int(number_of_patches),
+            mean=mean,
+            std=std,
+            device=device,
+            dataset_query=dataset_query,
+            dataset_database=dataset_database,
+            run_dir=run_dir,
+            wandb_run=wandb_run,
+            method_artifacts=method_artifacts,
+        )
+        timings.update(ep_timings)
+    elif method == "rdd":
+        similarity, rdd_timings, method_metrics = run_rdd_benchmark(
+            cfg=cfg,
+            dataset_query=dataset_query,
+            dataset_database=dataset_database,
+            run_dir=run_dir,
+            method_artifacts=method_artifacts,
+        )
+        timings.update(rdd_timings)
 
     else:
-        raise ValueError(f"Unsupported method '{method}'. Supported: cosine, wildfusion, local_lightglue, linear_probe")
+        raise ValueError(
+            f"Unsupported method '{method}'. Supported: cosine, wildfusion, local_lightglue, linear_probe, efficient_probe, rdd"
+        )
 
     timings["total_method_sec"] = time.perf_counter() - t0
     return np.asarray(similarity), timings, method_metrics
@@ -815,10 +1234,23 @@ def visualize_predictions(
 
 def run_probe(cfg: DictConfig) -> None:
     set_reproducible(int(cfg.benchmark.seed), bool(cfg.benchmark.deterministic))
-    device = choose_device(cfg.model.device)
-    model, embedding_size, mean, std, img_size, checkpoint_path = load_backbone(cfg)
-    model.to(device)
-    model.eval()
+    method = str(cfg.benchmark.method)
+    use_backbone = method != "rdd"
+    if use_backbone:
+        device = choose_device(cfg.model.device)
+        model, embedding_size, mean, std, img_size, arch, number_of_patches, checkpoint_path = load_backbone(cfg)
+        model.to(device)
+        model.eval()
+    else:
+        device = choose_device(str(cfg.benchmark.methods.rdd.device))
+        model = None
+        embedding_size = 0
+        mean = (0.485, 0.456, 0.406)
+        std = (0.229, 0.224, 0.225)
+        img_size = 224
+        arch = "rdd"
+        number_of_patches = None
+        checkpoint_path = None
 
     transform_display, transform_model, transform_aliked = build_transforms(mean, std, img_size)
     _, dataset_database_raw, dataset_query_raw = load_dataset_splits(cfg)
@@ -829,11 +1261,14 @@ def run_probe(cfg: DictConfig) -> None:
         label_col=cfg.dataset.label_col,
     )
 
-    method = str(cfg.benchmark.method)
-    if method in {"cosine", "linear_probe"}:
+    if method in {"cosine", "linear_probe", "efficient_probe"}:
         dataset_database = make_dataset_view(cfg, dataset_database_raw, transform=transform_model)
         dataset_query = make_dataset_view(cfg, dataset_query_raw, transform=transform_model)
         dataset_calibration = make_dataset_view(cfg, dataset_calibration_raw, transform=transform_model)
+    elif method == "rdd":
+        dataset_database = make_dataset_view(cfg, dataset_database_raw, transform=None)
+        dataset_query = make_dataset_view(cfg, dataset_query_raw, transform=None)
+        dataset_calibration = make_dataset_view(cfg, dataset_calibration_raw, transform=None)
     else:
         dataset_database = make_dataset_view(cfg, dataset_database_raw, transform=None)
         dataset_query = make_dataset_view(cfg, dataset_query_raw, transform=None)
@@ -866,11 +1301,16 @@ def run_probe(cfg: DictConfig) -> None:
             config=OmegaConf.to_container(cfg, resolve=True),
         )
 
+    method_artifacts: Dict[str, Any] = {}
     similarity, timings, method_metrics = run_method(
         cfg=cfg,
         method=method,
         model=model,
         embedding_size=embedding_size,
+        arch=arch,
+        number_of_patches=number_of_patches,
+        mean=mean,
+        std=std,
         device=device,
         dataset_query=dataset_query,
         dataset_database=dataset_database,
@@ -881,6 +1321,7 @@ def run_probe(cfg: DictConfig) -> None:
         cache=cache,
         run_dir=run_dir,
         wandb_run=wandb_run,
+        method_artifacts=method_artifacts,
     )
 
     top_k_values = [int(k) for k in cfg.benchmark.top_k]
@@ -904,6 +1345,11 @@ def run_probe(cfg: DictConfig) -> None:
             dataset_database_display=dataset_database_display,
             run_id=run_id,
         )
+        if method == "rdd":
+            visuals.extend([str(p) for p in method_artifacts.get("rdd_match_paths", [])])
+        attention_map_path = method_artifacts.get("attention_map_path")
+        if attention_map_path:
+            visuals.append(str(attention_map_path))
         if wandb_run is not None:
             try:
                 import wandb  # type: ignore

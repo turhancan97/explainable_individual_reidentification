@@ -10,7 +10,7 @@ dataset:
   calibration_size: 100
 
 model:
-  type: "dinov2" # megadescriptor | dinov2 | dinov3
+  type: "megadescriptor" # megadescriptor | dinov2 | dinov3
   mode: "pretrained"  # pretrained | finetuned
   device: "auto"     # auto | cpu | cuda
   batch_size: 32
@@ -22,7 +22,7 @@ model:
     filename: "checkpoint-final.pth"
 
 benchmark:
-  method: "linear_probe"   # cosine | wildfusion | local_lightglue | linear_probe
+  method: "cosine"   # cosine | wildfusion | local_lightglue | linear_probe | efficient_probe | rdd
   top_k: [1, 5, 10]
   compute_map: true
   seed: 0
@@ -64,11 +64,48 @@ benchmark:
         megadescriptor: ["layers.3", "norm"]
         lynx_megadescriptorV3: ["layers.3", "norm"]
         lynx_megadescriptorV4: ["layers.3", "norm"]
+    efficient_probe:
+      train_mode: "classifier"  # all | partial | classifier (frozen backbone)
+      epochs: 10
+      log_every: 1
+      batch_size: 64
+      num_workers: 8
+      accumulation_steps: 1
+      optimizer: "sgd"          # sgd | adam | adamw
+      lr: 0.001
+      momentum: 0.9
+      weight_decay: 0.0001
+      eta_min_scale: 1e-3
+      dropout_rate: 0.0
+      num_queries: 4
+      d_out: 2
+      eval_batch_size: 128
+      eval_num_workers: 8
+      resume_checkpoint: null
+      save_checkpoint: false
+      save_every: 1
+      final_checkpoint_name: "efficient_probe_final.pth"
+      partial_rules:
+        default: ["layers.3", "norm"]
+        dinov2: ["encoder.layer.11", "layernorm"]
+        dinov3: ["encoder.layer.11", "layernorm"]
+    rdd:
+      repo_dir: "/home/kargin/Projects/repositories/rdd"
+      config_path: "/home/kargin/Projects/repositories/rdd/configs/default.yaml"
+      weights: "/home/kargin/Projects/repositories/rdd/weights/RDD-v2.pth"
+      cache_dir: "cache/rdd_features"
+      device: "auto"        # auto | cpu | cuda
+      path_col: "path"
+      resize_max: 448
+      top_k: 2048
 
 visualization:
   enabled: false
   dir: "visualizations"
-  num_examples: 8
+  num_examples: 16
+  rdd_max_matches: 20
+  attention_num_examples: 16
+  attention_average_queries: true
   top_k: 3
 
 output:
