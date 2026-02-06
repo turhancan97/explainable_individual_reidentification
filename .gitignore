@@ -228,3 +228,6 @@ wandb/
 # shell scripts
 finetune.sh
 probe.sh
+
+# cache 
+cache/
