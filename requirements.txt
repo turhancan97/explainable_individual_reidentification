@@ -20,6 +20,7 @@ git+https://github.com/WildlifeDatasets/wildlife-datasets@develop
 tqdm
 wandb
 accelerate
+poselib
 opencv_python_headless==4.7.0.68
 geopandas == 0.14.4
 zennit==0.5.1
