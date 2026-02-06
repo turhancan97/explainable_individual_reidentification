@@ -11,6 +11,10 @@ import pandas as pd
 import torch
 import torchvision.transforms as T
 from omegaconf import DictConfig, OmegaConf
+from torch.optim import Adam, AdamW, SGD
+from torch.optim.lr_scheduler import CosineAnnealingLR
+from torch.utils.data import DataLoader, Dataset
+from tqdm import tqdm
 from wildlife_datasets.datasets import WildlifeDataset
 from wildlife_tools.features import DeepFeatures
 from wildlife_tools.features.local import AlikedExtractor
@@ -20,6 +24,7 @@ from wildlife_tools.similarity.pairwise.lightglue import MatchLightGlue
 from wildlife_tools.similarity.wildfusion import SimilarityPipeline, WildFusion
 
 from models.model import get_model
+from models.objective import SoftmaxLoss
 from reid.data.dataset_view import BenchmarkDatasetView
 from reid.evaluation.metrics import compute_metrics
 from reid.features.containers import FeatureContainer, get_labels_string
@@ -49,7 +54,7 @@ def find_latest_checkpoint(results_dir: Path, filename: str) -> Path:
 
 
 def load_backbone(cfg: DictConfig) -> Tuple[Any, int, Tuple[float, ...], Tuple[float, ...], int, Optional[Path]]:
-    model, embedding_size, mean, std, img_size = get_model(cfg.model.type)
+    model, embedding_size, mean, std, img_size, arch, patch_size, number_of_patches = get_model(cfg.model.type)
     checkpoint_path: Optional[Path] = None
 
     if cfg.model.mode == "finetuned":
@@ -252,6 +257,98 @@ class FeatureCache:
         return arr.astype(np.float32, copy=False)
 
 
+class EncodedLabelDataset(Dataset):
+    def __init__(self, dataset: Any, label_to_index: Dict[str, int]):
+        self.dataset = dataset
+        self.label_to_index = label_to_index
+        self.df = dataset.df
+        self.metadata = dataset.metadata
+        self.col_label = dataset.col_label
+
+    def __len__(self) -> int:
+        return len(self.dataset)
+
+    def __getitem__(self, idx: int):
+        item = self.dataset[idx]
+        if not isinstance(item, (tuple, list)) or len(item) < 2:
+            raise ValueError("EncodedLabelDataset expects dataset items as (image, label)")
+        image = item[0]
+        raw_label = item[1]
+        label_str = str(raw_label)
+        if label_str not in self.label_to_index:
+            raise ValueError(f"Label '{label_str}' not found in label mapping")
+        return image, self.label_to_index[label_str]
+
+
+def _build_label_mapping(dataset_database: Any, label_col: str) -> Dict[str, int]:
+    labels = dataset_database.df[label_col].astype(str).tolist()
+    unique_labels = sorted(set(labels))
+    return {label: idx for idx, label in enumerate(unique_labels)}
+
+
+def _set_trainable_params(model: Any, cfg: DictConfig) -> None:
+    mode = str(cfg.benchmark.methods.linear_probe.train_mode)
+    if mode == "all":
+        for p in model.parameters():
+            p.requires_grad = True
+        return
+    if mode == "classifier":
+        for p in model.parameters():
+            p.requires_grad = False
+        return
+    if mode == "partial":
+        rules = cfg.benchmark.methods.linear_probe.partial_rules
+        patterns = rules.get(cfg.model.type, rules.get("default", []))
+        if not patterns:
+            raise ValueError(
+                f"No partial unfreeze patterns configured for model.type={cfg.model.type} and no default fallback"
+            )
+        for name, p in model.named_parameters():
+            p.requires_grad = any(pattern in name for pattern in patterns)
+        return
+    raise ValueError("linear_probe.train_mode must be one of: all, partial, classifier")
+
+
+def _build_optimizer(params, cfg: DictConfig):
+    lp_cfg = cfg.benchmark.methods.linear_probe
+    opt_name = str(lp_cfg.optimizer).lower()
+    lr = float(lp_cfg.lr)
+    weight_decay = float(lp_cfg.weight_decay)
+    if opt_name == "sgd":
+        return SGD(params=params, lr=lr, momentum=float(lp_cfg.momentum), weight_decay=weight_decay)
+    if opt_name == "adam":
+        return Adam(params=params, lr=lr, weight_decay=weight_decay)
+    if opt_name == "adamw":
+        return AdamW(params=params, lr=lr, weight_decay=weight_decay)
+    raise ValueError("linear_probe.optimizer must be one of: sgd, adam, adamw")
+
+
+def _classification_topk_accuracy(probs: np.ndarray, query_labels_idx: np.ndarray, topk_values: List[int]) -> Dict[str, float]:
+    metrics: Dict[str, float] = {}
+    ranked = np.argsort(probs, axis=1)[:, ::-1]
+    num_classes = probs.shape[1]
+    for k in topk_values:
+        kk = min(int(k), num_classes)
+        hits = []
+        for i in range(len(query_labels_idx)):
+            hits.append(int(query_labels_idx[i]) in ranked[i, :kk])
+        metrics[f"classification_top_{k}"] = float(np.mean(hits))
+    return metrics
+
+
+def _similarity_from_class_probs(probs_query: np.ndarray, db_labels_idx: np.ndarray) -> np.ndarray:
+    return probs_query[:, db_labels_idx]
+
+
+def _predict_class_probabilities(objective: Any, embeddings: torch.Tensor) -> torch.Tensor:
+    if hasattr(objective, "predict_probabilities"):
+        return objective.predict_probabilities(embeddings)
+    if hasattr(objective, "linear"):
+        logits = objective.linear(embeddings)
+        return torch.softmax(logits, dim=1)
+    raise AttributeError("Softmax objective must provide either predict_probabilities() or linear layer")
+
+
 def make_cache_key(cfg: DictConfig, method: str, split_name: str, dataset_sig: str, checkpoint_path: Optional[Path]) -> str:
     checkpoint_tag = "pretrained"
     if checkpoint_path is not None:
@@ -335,10 +432,221 @@ class CachedDeepExtractor:
         return FeatureContainer(features=features, labels_string=labels_string)
 
 
+def run_linear_probe(
+    cfg: DictConfig,
+    model: Any,
+    embedding_size: int,
+    device: torch.device,
+    dataset_query: Any,
+    dataset_database: Any,
+    run_dir: Path,
+    wandb_run: Any = None,
+) -> Tuple[np.ndarray, Dict[str, float], Dict[str, float]]:
+    timings: Dict[str, float] = {}
+    method_metrics: Dict[str, float] = {}
+    t0 = time.perf_counter()
+
+    label_to_index = _build_label_mapping(dataset_database, cfg.dataset.label_col)
+    db_labels_idx = dataset_database.df[cfg.dataset.label_col].astype(str).map(label_to_index).to_numpy(dtype=np.int64)
+    query_labels_idx = dataset_query.df[cfg.dataset.label_col].astype(str).map(label_to_index).to_numpy(dtype=np.int64)
+
+    train_ds = EncodedLabelDataset(dataset_database, label_to_index)
+    query_ds = EncodedLabelDataset(dataset_query, label_to_index)
+
+    _set_trainable_params(model, cfg)
+    objective = SoftmaxLoss(num_classes=len(label_to_index), embedding_size=embedding_size)
+    objective.to(device)
+
+    trainable_backbone = [p for p in model.parameters() if p.requires_grad]
+    params = list(trainable_backbone) + list(objective.parameters())
+    optimizer = _build_optimizer(params, cfg)
+    lp_cfg = cfg.benchmark.methods.linear_probe
+    scheduler = CosineAnnealingLR(
+        optimizer,
+        T_max=int(lp_cfg.epochs),
+        eta_min=float(lp_cfg.lr) * float(lp_cfg.eta_min_scale),
+    )
+
+    train_loader = DataLoader(
+        train_ds,
+        batch_size=int(lp_cfg.batch_size),
+        num_workers=int(lp_cfg.num_workers),
+        shuffle=True,
+    )
+    query_loader = DataLoader(
+        query_ds,
+        batch_size=int(lp_cfg.eval_batch_size),
+        num_workers=int(lp_cfg.eval_num_workers),
+        shuffle=False,
+    )
+
+    start_epoch = 0
+    if lp_cfg.resume_checkpoint:
+        resume_file = Path(str(lp_cfg.resume_checkpoint))
+        ensure_file(resume_file, "Linear probe resume checkpoint")
+        ckpt = torch.load(resume_file, map_location="cpu")
+        model.load_state_dict(ckpt["model"])
+        objective.load_state_dict(ckpt["objective"])
+        optimizer.load_state_dict(ckpt["optimizer"])
+        scheduler.load_state_dict(ckpt["scheduler"])
+        start_epoch = int(ckpt.get("epoch", 0))
+
+    t_train = time.perf_counter()
+    log_every = int(lp_cfg.log_every) if "log_every" in lp_cfg else 1
+    for epoch in range(start_epoch, int(lp_cfg.epochs)):
+        model.train()
+        objective.train()
+        losses: List[float] = []
+        train_probs_list: List[np.ndarray] = []
+        train_targets_list: List[np.ndarray] = []
+        optimizer.zero_grad(set_to_none=True)
+        train_iter = tqdm(
+            train_loader,
+            desc=f"[linear_probe][train] epoch {epoch+1}/{int(lp_cfg.epochs)}",
+            mininterval=1,
+            ncols=120,
+        )
+        for i, batch in enumerate(train_iter):
+            x, y = batch
+            x = x.to(device)
+            y = y.to(device)
+            embeddings = model(x)
+            loss = objective(embeddings, y)
+            train_probs = _predict_class_probabilities(objective, embeddings).detach().cpu().numpy()
+            train_probs_list.append(train_probs)
+            train_targets_list.append(y.detach().cpu().numpy())
+            loss.backward()
+            if (i + 1) % int(lp_cfg.accumulation_steps) == 0:
+                optimizer.step()
+                optimizer.zero_grad(set_to_none=True)
+            losses.append(float(loss.detach().cpu()))
+            train_iter.set_postfix(loss=f"{losses[-1]:.4f}")
+
+        scheduler.step()
+
+        model.eval()
+        objective.eval()
+        probs_list: List[np.ndarray] = []
+        val_losses: List[float] = []
+        with torch.no_grad():
+            val_iter = tqdm(
+                query_loader,
+                desc=f"[linear_probe][val] epoch {epoch+1}/{int(lp_cfg.epochs)}",
+                mininterval=1,
+                ncols=120,
+            )
+            for xq, yq in val_iter:
+                xq = xq.to(device)
+                yq = yq.to(device)
+                emb = model(xq)
+                probs = _predict_class_probabilities(objective, emb)
+                val_loss = objective(emb, yq)
+                val_losses.append(float(val_loss.detach().cpu()))
+                probs_list.append(probs.detach().cpu().numpy())
+                val_iter.set_postfix(loss=f"{val_losses[-1]:.4f}")
+        probs_query = np.concatenate(probs_list, axis=0)
+        probs_train = np.concatenate(train_probs_list, axis=0)
+        train_targets = np.concatenate(train_targets_list, axis=0)
+
+        train_cls_metrics = _classification_topk_accuracy(probs_train, train_targets, [1, 5, 10])
+        cls_metrics = _classification_topk_accuracy(probs_query, query_labels_idx, [1, 5, 10])
+        similarity_epoch = _similarity_from_class_probs(probs_query, db_labels_idx)
+        retrieval_metrics = compute_metrics(
+            dataset_query=dataset_query,
+            dataset_database=dataset_database,
+            similarity=similarity_epoch,
+            top_k_values=[int(k) for k in cfg.benchmark.top_k],
+            compute_map=bool(cfg.benchmark.compute_map),
+        )
+
+        if wandb_run is not None:
+            lr = float(optimizer.param_groups[0].get("lr", 0.0))
+            wandb_run.log(
+                {
+                    "linear_probe/epoch": epoch + 1,
+                    "linear_probe/train_loss": float(np.mean(losses)) if losses else float("nan"),
+                    "linear_probe/val_loss": float(np.mean(val_losses)) if val_losses else float("nan"),
+                    "linear_probe/lr": lr,
+                    **{f"linear_probe/train_{k}": v for k, v in train_cls_metrics.items()},
+                    **{f"linear_probe/{k}": v for k, v in cls_metrics.items()},
+                    **{f"linear_probe/{k}": v for k, v in retrieval_metrics.items()},
+                },
+                step=epoch + 1,
+            )
+
+        if (epoch + 1) % log_every == 0:
+            print(
+                f"[linear_probe] epoch {epoch+1}/{int(lp_cfg.epochs)} "
+                f"train_loss={float(np.mean(losses)) if losses else float('nan'):.6f} "
+                f"train_top1={train_cls_metrics.get('classification_top_1', float('nan')):.4f} "
+                f"train_top5={train_cls_metrics.get('classification_top_5', float('nan')):.4f} "
+                f"train_top10={train_cls_metrics.get('classification_top_10', float('nan')):.4f} "
+                f"val_loss={float(np.mean(val_losses)) if val_losses else float('nan'):.6f} "
+                f"val_top1={cls_metrics.get('classification_top_1', float('nan')):.4f} "
+                f"val_top5={cls_metrics.get('classification_top_5', float('nan')):.4f} "
+                f"val_top10={cls_metrics.get('classification_top_10', float('nan')):.4f}"
+            )
+
+        if bool(lp_cfg.save_checkpoint) and ((epoch + 1) % int(lp_cfg.save_every) == 0):
+            run_dir.mkdir(parents=True, exist_ok=True)
+            ckpt_path = run_dir / f"linear_probe_epoch_{epoch+1}.pth"
+            torch.save(
+                {
+                    "model": model.state_dict(),
+                    "objective": objective.state_dict(),
+                    "optimizer": optimizer.state_dict(),
+                    "scheduler": scheduler.state_dict(),
+                    "epoch": epoch + 1,
+                    "label_to_index": label_to_index,
+                },
+                ckpt_path,
+            )
+
+    timings["linear_probe_train_sec"] = time.perf_counter() - t_train
+
+    model.eval()
+    objective.eval()
+    t_eval = time.perf_counter()
+    probs_list = []
+    with torch.no_grad():
+        eval_iter = tqdm(
+            query_loader,
+            desc="[linear_probe][final_eval]",
+            mininterval=1,
+            ncols=120,
+        )
+        for xq, _ in eval_iter:
+            xq = xq.to(device)
+            emb = model(xq)
+            probs = _predict_class_probabilities(objective, emb)
+            probs_list.append(probs.detach().cpu().numpy())
+    probs_query = np.concatenate(probs_list, axis=0)
+    timings["linear_probe_eval_sec"] = time.perf_counter() - t_eval
+
+    similarity = _similarity_from_class_probs(probs_query, db_labels_idx)
+    method_metrics.update(_classification_topk_accuracy(probs_query, query_labels_idx, [1, 5, 10]))
+
+    if bool(lp_cfg.save_checkpoint):
+        run_dir.mkdir(parents=True, exist_ok=True)
+        final_path = run_dir / str(lp_cfg.final_checkpoint_name)
+        torch.save(
+            {
+                "model": model.state_dict(),
+                "objective": objective.state_dict(),
+                "label_to_index": label_to_index,
+            },
+            final_path,
+        )
+
+    timings["total_method_sec"] = time.perf_counter() - t0
+    return similarity, timings, method_metrics
+
+
 def run_method(
     cfg: DictConfig,
     method: str,
     model: Any,
+    embedding_size: int,
     device: torch.device,
     dataset_query: WildlifeDataset,
     dataset_database: WildlifeDataset,
@@ -347,8 +655,11 @@ def run_method(
     transform_aliked: T.Compose,
     checkpoint_path: Optional[Path],
     cache: FeatureCache,
-) -> Tuple[np.ndarray, Dict[str, float]]:
+    run_dir: Path,
+    wandb_run: Any = None,
+) -> Tuple[np.ndarray, Dict[str, float], Dict[str, float]]:
     timings: Dict[str, float] = {}
+    method_metrics: Dict[str, float] = {}
     t0 = time.perf_counter()
 
     def _call_similarity(matcher_obj, query_ds, database_ds, b_value):
@@ -439,11 +750,24 @@ def run_method(
         similarity = _call_similarity(matcher_local, dataset_query, dataset_database, settings.B)
         timings["similarity_sec"] = time.perf_counter() - t_sim
 
+    elif method == "linear_probe":
+        similarity, lp_timings, method_metrics = run_linear_probe(
+            cfg=cfg,
+            model=model,
+            embedding_size=embedding_size,
+            device=device,
+            dataset_query=dataset_query,
+            dataset_database=dataset_database,
+            run_dir=run_dir,
+            wandb_run=wandb_run,
+        )
+        timings.update(lp_timings)
+
     else:
-        raise ValueError(f"Unsupported method '{method}'. Supported: cosine, wildfusion, local_lightglue")
+        raise ValueError(f"Unsupported method '{method}'. Supported: cosine, wildfusion, local_lightglue, linear_probe")
 
     timings["total_method_sec"] = time.perf_counter() - t0
-    return np.asarray(similarity), timings
+    return np.asarray(similarity), timings, method_metrics
 
 
 def visualize_predictions(
@@ -492,7 +816,8 @@ def visualize_predictions(
 def run_probe(cfg: DictConfig) -> None:
     set_reproducible(int(cfg.benchmark.seed), bool(cfg.benchmark.deterministic))
     device = choose_device(cfg.model.device)
-    model, _, mean, std, img_size, checkpoint_path = load_backbone(cfg)
+    model, embedding_size, mean, std, img_size, checkpoint_path = load_backbone(cfg)
+    model.to(device)
     model.eval()
 
     transform_display, transform_model, transform_aliked = build_transforms(mean, std, img_size)
@@ -505,7 +830,7 @@ def run_probe(cfg: DictConfig) -> None:
     )
 
     method = str(cfg.benchmark.method)
-    if method == "cosine":
+    if method in {"cosine", "linear_probe"}:
         dataset_database = make_dataset_view(cfg, dataset_database_raw, transform=transform_model)
         dataset_query = make_dataset_view(cfg, dataset_query_raw, transform=transform_model)
         dataset_calibration = make_dataset_view(cfg, dataset_calibration_raw, transform=transform_model)
@@ -522,6 +847,7 @@ def run_probe(cfg: DictConfig) -> None:
 
     run_started = datetime.utcnow()
     run_id = run_started.strftime("run_%Y%m%d_%H%M%S")
+    run_dir = Path(cfg.output.run_dir) / run_id
     print(f"Running method={method} on device={device.type}")
     print(f"Query images: {len(dataset_query)} | Database images: {len(dataset_database)}")
 
@@ -540,10 +866,11 @@ def run_probe(cfg: DictConfig) -> None:
             config=OmegaConf.to_container(cfg, resolve=True),
         )
 
-    similarity, timings = run_method(
+    similarity, timings, method_metrics = run_method(
         cfg=cfg,
         method=method,
         model=model,
+        embedding_size=embedding_size,
         device=device,
         dataset_query=dataset_query,
         dataset_database=dataset_database,
@@ -552,6 +879,8 @@ def run_probe(cfg: DictConfig) -> None:
         transform_aliked=transform_aliked,
         checkpoint_path=checkpoint_path,
         cache=cache,
+        run_dir=run_dir,
+        wandb_run=wandb_run,
     )
 
     top_k_values = [int(k) for k in cfg.benchmark.top_k]
@@ -562,6 +891,7 @@ def run_probe(cfg: DictConfig) -> None:
         top_k_values=top_k_values,
         compute_map=bool(cfg.benchmark.compute_map),
     )
+    metrics.update(method_metrics)
 
     visuals: List[str] = []
     if bool(cfg.visualization.enabled):
@@ -587,7 +917,6 @@ def run_probe(cfg: DictConfig) -> None:
             except Exception:
                 pass
 
-    run_dir = Path(cfg.output.run_dir) / run_id
     run_dir.mkdir(parents=True, exist_ok=True)
     output_json = run_dir / "result.json"
     config_snapshot = run_dir / "config.snapshot.yaml"

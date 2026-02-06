@@ -14,10 +14,10 @@ from torch.utils.data import DataLoader
 from wildlife_tools.data import WildlifeDataset as WildlifeDatasetWildlifeTools
 from wildlife_tools.features import DeepFeatures
 from wildlife_tools.similarity import CosineSimilarity
-from wildlife_tools.train import ArcFaceLoss
 from wildlife_tools.train.trainer import set_seed
 
 from models.model import get_model
+from models.objective import ArcFaceLoss
 from reid.data.dataset_view import BenchmarkDatasetView
 from reid.evaluation.metrics import compute_metrics
 from reid.features.containers import FeatureContainer, get_labels_string, normalize_features
@@ -118,7 +118,7 @@ def run_finetune(cfg: DictConfig) -> None:
             f"mask_col '{cfg.dataset.mask_col}' not found in metadata while dataset.no_background=true"
         )
 
-    model, embedding_size, mean, std, img_size = get_model(cfg.model.type)
+    model, embedding_size, mean, std, img_size, arch, patch_size, number_of_patches = get_model(cfg.model.type)
     model.to(device)
 
     transform_display = T.Compose([T.Resize([img_size, img_size])])
