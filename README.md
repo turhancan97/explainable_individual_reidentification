@@ -10,7 +10,7 @@ Modular deep learning codebase for wildlife individual re-identification (ReID),
 
 The repository supports two workflows:
 - `finetune`: train a backbone with ArcFace loss on a train split and evaluate retrieval on a validation split.
-- `probe`: benchmark retrieval methods (`cosine`, `wildfusion`, `local_lightglue`, `linear_probe`) with pretrained or finetuned backbones.
+- `probe`: benchmark retrieval methods (`cosine`, `wildfusion`, `local_lightglue`, `linear_probe`, `efficient_probe`, `rdd`) with pretrained or finetuned backbones.
 
 The code is organized into reusable modules under `reid/` and thin CLI entrypoints under `train/`.
 
@@ -102,6 +102,18 @@ Run linear probe:
 python train/probe.py --method linear_probe
 ```
 
+Run efficient probe:
+
+```bash
+python train/probe.py --method efficient_probe
+```
+
+Run RDD benchmark:
+
+```bash
+python train/probe.py --method rdd
+```
+
 ## Configuration Guide
 
 ### `config/finetune_config.yaml`
@@ -121,7 +133,7 @@ Key blocks:
 Key blocks:
 - `dataset`: root/splits + mask options
 - `model`: type/mode/checkpoint behavior
-- `benchmark`: method (`cosine`, `wildfusion`, `local_lightglue`, `linear_probe`), metrics, cache
+- `benchmark`: method (`cosine`, `wildfusion`, `local_lightglue`, `linear_probe`, `efficient_probe`, `rdd`), metrics, cache
 - `visualization`: optional qualitative retrieval plots
 - `output`: run folder + aggregate CSV
 - `wandb`: optional experiment logging
@@ -162,6 +174,49 @@ benchmark:
       partial_rules:
         default: ["layers.3", "norm"]
 ```
+
+#### Efficient Probe Settings
+
+`efficient_probe` applies a softmax head on top of ViT patch-token outputs:
+- token source: `outputs.last_hidden_state[:, -number_of_patches:, :]`
+- supports train modes: `all` | `partial` | `classifier`
+- logs train/val loss and top-k metrics with tqdm progress bars
+- when `visualization.enabled: true`, also saves a single attention-overlay grid from query images
+
+Config path:
+- `benchmark.methods.efficient_probe`
+
+Core options:
+- `train_mode`, `epochs`, `log_every`
+- `batch_size`, `num_workers`, `accumulation_steps`
+- `optimizer`, `lr`, `momentum`, `weight_decay`, `eta_min_scale`
+- `dropout_rate`, `num_queries`, `d_out`
+- `eval_batch_size`, `eval_num_workers`
+- `resume_checkpoint`, `save_checkpoint`, `save_every`, `final_checkpoint_name`
+- `partial_rules`
+
+Visualization options used by efficient probe overlays:
+- `visualization.attention_num_examples`
+- `visualization.attention_average_queries`
+
+Visualization option used by RDD keypoint match images:
+- `visualization.rdd_max_matches`
+
+#### RDD Settings
+
+`rdd` runs a separate local RDD+LightGlue pipeline and does not use the project backbone.
+
+Config path:
+- `benchmark.methods.rdd`
+
+Core options:
+- `repo_dir`: local path to your `rdd` repository
+- `config_path`: RDD config file path
+- `weights`: RDD model weights path
+- `cache_dir`: per-image feature cache directory (`.npz`)
+- `device`: `auto` | `cpu` | `cuda`
+- `path_col`: metadata image path column
+- `resize_max`, `top_k`
 
 ## Training and Evaluation Outputs
 
@@ -209,6 +264,7 @@ Logged data:
 - finetune: train loss, validation metrics, learning rate
 - probe: benchmark metrics/timings, metadata, optional visualization images
 - linear_probe (within probe): per-epoch train loss, learning rate, classification + retrieval metrics
+- efficient_probe (within probe): per-epoch train loss, learning rate, classification + retrieval metrics
 
 ## Reproducibility
 
