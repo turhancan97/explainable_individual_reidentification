@@ -38,6 +38,10 @@ def append_csv_row(csv_path: Path, row: Dict[str, Any]) -> None:
 
     new_keys = [k for k in row.keys() if k not in existing_header]
     if new_keys:
+        print(
+            f"CSV schema normalized: {csv_path} "
+            f"(added {len(new_keys)} column{'s' if len(new_keys) != 1 else ''})"
+        )
         _rewrite_csv_with_header(
             csv_path=csv_path,
             rows=existing_rows,

@@ -34,6 +34,81 @@ from reid.methods.rdd import run_rdd_benchmark
 from reid.utils.io import append_csv_row, ensure_dir, ensure_file
 from reid.utils.repro import set_reproducible
 
+PROBE_CSV_METADATA_COLUMNS = [
+    "run_id",
+    "run_utc",
+    "method",
+    "device",
+    "model_type",
+    "model_mode",
+    "no_background",
+    "checkpoint_path",
+    "dataset_root",
+    "metadata_file",
+    "num_query",
+    "num_database",
+]
+
+PROBE_CSV_METRIC_COLUMNS = [
+    "top_1",
+    "top_5",
+    "top_10",
+    "mAP",
+    "classification_top_1",
+    "classification_top_5",
+    "classification_top_10",
+    "rdd_avg_matches",
+]
+
+PROBE_CSV_TIMING_COLUMNS = [
+    "feature_extraction_sec",
+    "similarity_sec",
+    "rdd_stage_a_sec",
+    "rdd_candidate_k",
+    "rdd_model_build_sec",
+    "rdd_feature_extraction_sec",
+    "rdd_rerank_sec",
+    "linear_probe_train_sec",
+    "linear_probe_eval_sec",
+    "efficient_probe_train_sec",
+    "efficient_probe_eval_sec",
+    "total_method_sec",
+]
+
+
+def _as_csv_scalar(value: Any) -> Any:
+    if value is None:
+        return ""
+    if isinstance(value, (float, int, np.floating, np.integer, bool, np.bool_)):
+        return value
+    return str(value)
+
+
+def _build_probe_csv_row(
+    base: Dict[str, Any],
+    metrics: Dict[str, Any],
+    timings: Dict[str, Any],
+) -> Dict[str, Any]:
+    known = set(PROBE_CSV_METADATA_COLUMNS + PROBE_CSV_METRIC_COLUMNS + PROBE_CSV_TIMING_COLUMNS)
+    extra_metric_columns = sorted([k for k in metrics.keys() if k not in known])
+    extra_timing_columns = sorted([k for k in timings.keys() if k not in known])
+    columns = (
+        PROBE_CSV_METADATA_COLUMNS
+        + PROBE_CSV_METRIC_COLUMNS
+        + extra_metric_columns
+        + PROBE_CSV_TIMING_COLUMNS
+        + extra_timing_columns
+    )
+
+    row: Dict[str, Any] = {col: "" for col in columns}
+    for k, v in base.items():
+        row[k] = _as_csv_scalar(v)
+    for k, v in metrics.items():
+        row[k] = _as_csv_scalar(v)
+    for k, v in timings.items():
+        row[k] = _as_csv_scalar(v)
+    return row
+
 
 def choose_device(device_cfg: str) -> torch.device:
     if device_cfg == "cpu":
@@ -1171,11 +1246,56 @@ def run_method(
         )
         timings.update(ep_timings)
     elif method == "rdd":
+        rdd_cfg = cfg.benchmark.methods.rdd
+        stage_a_method = str(rdd_cfg.stage_a_method)
+        if stage_a_method == "rdd":
+            raise ValueError("benchmark.methods.rdd.stage_a_method cannot be 'rdd'")
+
+        candidate_k = int(rdd_cfg.candidate_k)
+        if candidate_k <= 0:
+            raise ValueError("benchmark.methods.rdd.candidate_k must be > 0")
+        candidate_k = min(candidate_k, len(dataset_database))
+
+        t_stage_a = time.perf_counter()
+        stage_similarity, stage_timings, _ = run_method(
+            cfg=cfg,
+            method=stage_a_method,
+            model=model,
+            embedding_size=embedding_size,
+            arch=arch,
+            number_of_patches=number_of_patches,
+            mean=mean,
+            std=std,
+            device=device,
+            dataset_query=dataset_query,
+            dataset_database=dataset_database,
+            dataset_calibration=dataset_calibration,
+            transform_model=transform_model,
+            transform_aliked=transform_aliked,
+            checkpoint_path=checkpoint_path,
+            cache=cache,
+            run_dir=run_dir,
+            wandb_run=wandb_run,
+            method_artifacts=None,
+        )
+        stage_a_sec = time.perf_counter() - t_stage_a
+        candidate_indices = np.argsort(stage_similarity, axis=1)[:, ::-1][:, :candidate_k]
+        timings["rdd_stage_a_sec"] = float(stage_a_sec)
+        timings["rdd_candidate_k"] = float(candidate_k)
+        for k, v in stage_timings.items():
+            if k == "total_method_sec":
+                continue
+            timings[f"stage_a_{stage_a_method}_{k}"] = float(v)
+
         similarity, rdd_timings, method_metrics = run_rdd_benchmark(
             cfg=cfg,
             dataset_query=dataset_query,
             dataset_database=dataset_database,
             run_dir=run_dir,
+            checkpoint_path=checkpoint_path,
+            mean=mean,
+            std=std,
+            candidate_indices=candidate_indices,
             method_artifacts=method_artifacts,
         )
         timings.update(rdd_timings)
@@ -1236,6 +1356,10 @@ def run_probe(cfg: DictConfig) -> None:
     set_reproducible(int(cfg.benchmark.seed), bool(cfg.benchmark.deterministic))
     method = str(cfg.benchmark.method)
     use_backbone = method != "rdd"
+    if method == "rdd":
+        stage_a_method = str(cfg.benchmark.methods.rdd.stage_a_method)
+        stage_a_needs_backbone = stage_a_method in {"cosine", "wildfusion", "linear_probe", "efficient_probe"}
+        use_backbone = stage_a_needs_backbone
     if use_backbone:
         device = choose_device(cfg.model.device)
         model, embedding_size, mean, std, img_size, arch, number_of_patches, checkpoint_path = load_backbone(cfg)
@@ -1266,9 +1390,15 @@ def run_probe(cfg: DictConfig) -> None:
         dataset_query = make_dataset_view(cfg, dataset_query_raw, transform=transform_model)
         dataset_calibration = make_dataset_view(cfg, dataset_calibration_raw, transform=transform_model)
     elif method == "rdd":
-        dataset_database = make_dataset_view(cfg, dataset_database_raw, transform=None)
-        dataset_query = make_dataset_view(cfg, dataset_query_raw, transform=None)
-        dataset_calibration = make_dataset_view(cfg, dataset_calibration_raw, transform=None)
+        stage_a_method = str(cfg.benchmark.methods.rdd.stage_a_method)
+        if stage_a_method in {"cosine", "wildfusion", "linear_probe", "efficient_probe"}:
+            dataset_database = make_dataset_view(cfg, dataset_database_raw, transform=transform_model)
+            dataset_query = make_dataset_view(cfg, dataset_query_raw, transform=transform_model)
+            dataset_calibration = make_dataset_view(cfg, dataset_calibration_raw, transform=transform_model)
+        else:
+            dataset_database = make_dataset_view(cfg, dataset_database_raw, transform=None)
+            dataset_query = make_dataset_view(cfg, dataset_query_raw, transform=None)
+            dataset_calibration = make_dataset_view(cfg, dataset_calibration_raw, transform=None)
     else:
         dataset_database = make_dataset_view(cfg, dataset_database_raw, transform=None)
         dataset_query = make_dataset_view(cfg, dataset_query_raw, transform=None)
@@ -1391,7 +1521,7 @@ def run_probe(cfg: DictConfig) -> None:
     with output_json.open("w", encoding="utf-8") as f:
         json.dump(result, f, indent=2)
 
-    csv_row: Dict[str, Any] = {
+    csv_base: Dict[str, Any] = {
         "run_id": run_id,
         "run_utc": result["run_utc"],
         "method": method,
@@ -1405,8 +1535,7 @@ def run_probe(cfg: DictConfig) -> None:
         "num_query": len(dataset_query),
         "num_database": len(dataset_database),
     }
-    csv_row.update({k: float(v) for k, v in metrics.items()})
-    csv_row.update({k: float(v) for k, v in timings.items()})
+    csv_row = _build_probe_csv_row(csv_base, metrics, timings)
     append_csv_row(Path(cfg.output.csv_path), csv_row)
 
     print("Metrics:")

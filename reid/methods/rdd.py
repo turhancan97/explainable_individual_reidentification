@@ -1,4 +1,5 @@
 import hashlib
+import json
 import sys
 import time
 from dataclasses import dataclass
@@ -10,6 +11,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 import torch
 from PIL import Image
+from pycocotools import mask as mask_utils
 from tqdm import tqdm
 
 from reid.utils.io import ensure_dir, ensure_file
@@ -105,17 +107,40 @@ def _to_image_tensor(image: Any, resize_max: int) -> torch.Tensor:
     return torch.from_numpy(arr).permute(2, 0, 1).unsqueeze(0)
 
 
-def _to_uint8_rgb(image: Any, resize_max: int) -> np.ndarray:
+def _to_uint8_rgb(
+    image: Any,
+    resize_max: int,
+    mean: Optional[Tuple[float, ...]] = None,
+    std: Optional[Tuple[float, ...]] = None,
+) -> np.ndarray:
     if isinstance(image, Image.Image):
         img = image.convert("RGB")
     elif torch.is_tensor(image):
         arr = image.detach().cpu().numpy()
         if arr.ndim == 3 and arr.shape[0] in (1, 3, 4):
             arr = np.transpose(arr, (1, 2, 0))
+        if np.issubdtype(arr.dtype, np.floating):
+            if arr.min() >= 0.0 and arr.max() <= 1.0:
+                arr = arr * 255.0
+            elif mean is not None and std is not None and arr.ndim == 3 and arr.shape[2] >= 3:
+                mean_np = np.asarray(mean, dtype=np.float32).reshape(1, 1, -1)
+                std_np = np.asarray(std, dtype=np.float32).reshape(1, 1, -1)
+                arr = arr[..., :3] * std_np + mean_np
+                arr = np.clip(arr, 0.0, 1.0) * 255.0
+            elif arr.max() <= 5.0 and arr.min() >= -5.0:
+                # Fallback for normalized tensors when explicit stats are unavailable.
+                arr_min = float(arr.min())
+                arr_max = float(arr.max())
+                if arr_max > arr_min:
+                    arr = (arr - arr_min) / (arr_max - arr_min) * 255.0
+                else:
+                    arr = np.zeros_like(arr)
         arr = np.clip(arr, 0, 255).astype(np.uint8)
         img = Image.fromarray(arr).convert("RGB")
     else:
         arr = np.asarray(image)
+        if np.issubdtype(arr.dtype, np.floating) and arr.min() >= 0.0 and arr.max() <= 1.0:
+            arr = arr * 255.0
         arr = np.clip(arr, 0, 255).astype(np.uint8)
         img = Image.fromarray(arr).convert("RGB")
 
@@ -161,6 +186,74 @@ def _load_cached_feat(path: Path) -> FrameFeat:
         scores=data["scores"],
         image_size=data["image_size"],
     )
+
+
+def _resolve_image_path(image_path: str, dataset_root: Path) -> Path:
+    path = Path(image_path)
+    if path.is_absolute():
+        return path
+    return dataset_root / path
+
+
+def _decode_mask_from_row(row: Any, mask_col: str, idx: int) -> np.ndarray:
+    raw_mask = row.get(mask_col)
+    if raw_mask is None:
+        raise ValueError(f"Missing mask at row index {idx}")
+    if isinstance(raw_mask, float) and np.isnan(raw_mask):
+        raise ValueError(f"Missing mask at row index {idx}")
+
+    if isinstance(raw_mask, str):
+        try:
+            mask_data = json.loads(raw_mask)
+        except json.JSONDecodeError as exc:
+            raise ValueError(f"Invalid JSON mask at row index {idx}") from exc
+    elif isinstance(raw_mask, dict):
+        mask_data = raw_mask
+    else:
+        raise ValueError(
+            f"Unsupported mask type at row index {idx}: {type(raw_mask)}. "
+            "Expected JSON string or COCO-RLE dict."
+        )
+
+    try:
+        mask = mask_utils.decode(mask_data).astype(np.uint8)
+    except Exception as exc:
+        raise ValueError(f"Failed to decode mask at row index {idx}") from exc
+
+    if mask.ndim == 3:
+        if mask.shape[-1] == 1:
+            mask = mask[..., 0]
+        else:
+            mask = mask.max(axis=-1)
+    if mask.ndim != 2:
+        raise ValueError(f"Decoded mask must be 2D at row index {idx}, got shape={mask.shape}")
+    return mask
+
+
+def _load_raw_rgb_image(
+    row: Any,
+    idx: int,
+    dataset_root: Path,
+    path_col: str,
+    no_background: bool,
+    mask_col: str,
+) -> Image.Image:
+    if path_col not in row.index:
+        raise KeyError(f"RDD method requires path_col='{path_col}' in dataset dataframe")
+    image_path = _resolve_image_path(str(row[path_col]), dataset_root=dataset_root)
+    ensure_file(image_path, "RDD image file")
+    image = Image.open(image_path).convert("RGB")
+    if not no_background:
+        return image
+
+    image_np = np.asarray(image, dtype=np.uint8)
+    mask = _decode_mask_from_row(row=row, mask_col=mask_col, idx=idx)
+    if image_np.shape[0] != mask.shape[0] or image_np.shape[1] != mask.shape[1]:
+        raise ValueError(
+            f"Mask/Image size mismatch at row index {idx}: mask={mask.shape}, image={image_np.shape[:2]}"
+        )
+    image_np = image_np * np.expand_dims(np.asfortranarray(mask), axis=-1)
+    return Image.fromarray(image_np)
 
 
 @torch.no_grad()
@@ -278,6 +371,9 @@ def _extract_split_features(
     top_k: int,
     resize_max: int,
     cache_dir: Path,
+    dataset_root: Path,
+    no_background: bool,
+    mask_col: str,
     path_col: str,
     cfg_tag: str,
 ) -> List[FrameFeat]:
@@ -293,9 +389,16 @@ def _extract_split_features(
         if cp.is_file():
             feats.append(_load_cached_feat(cp))
             continue
-        sample = dataset[idx]
-        image = sample[0] if isinstance(sample, (tuple, list)) else sample
-        image_tensor = _to_image_tensor(image, resize_max=resize_max)
+        row = dataset.df.iloc[idx]
+        image = _load_raw_rgb_image(
+            row=row,
+            idx=idx,
+            dataset_root=dataset_root,
+            path_col=path_col,
+            no_background=no_background,
+            mask_col=mask_col,
+        )
+        image_tensor = _to_image_tensor(image=image, resize_max=resize_max)
         feat = _extract_frame(model=model, image_tensor=image_tensor, device=device, top_k=top_k)
         _save_cached_feat(cp, feat)
         feats.append(feat)
@@ -307,6 +410,10 @@ def run_rdd_benchmark(
     dataset_query: Any,
     dataset_database: Any,
     run_dir: Path,
+    checkpoint_path: Optional[Path] = None,
+    mean: Optional[Tuple[float, ...]] = None,
+    std: Optional[Tuple[float, ...]] = None,
+    candidate_indices: Optional[np.ndarray] = None,
     method_artifacts: Optional[Dict[str, Any]] = None,
 ) -> Tuple[np.ndarray, Dict[str, float], Dict[str, float]]:
     settings = cfg.benchmark.methods.rdd
@@ -319,12 +426,33 @@ def run_rdd_benchmark(
     top_k = int(settings.top_k)
     resize_max = int(settings.resize_max)
     path_col = str(settings.path_col)
+    mask_col = str(cfg.dataset.mask_col)
+    dataset_root = Path(str(cfg.dataset.root))
+    no_background = bool(cfg.dataset.no_background)
     cache_dir = Path(str(settings.cache_dir))
     cache_dir.mkdir(parents=True, exist_ok=True)
 
+    checkpoint_tag = "none"
+    if checkpoint_path is not None:
+        if checkpoint_path.is_file():
+            stat = checkpoint_path.stat()
+            checkpoint_tag = f"{checkpoint_path}|{stat.st_size}|{int(stat.st_mtime)}"
+        else:
+            checkpoint_tag = str(checkpoint_path)
+    stage_a_method = str(settings.stage_a_method) if "stage_a_method" in settings else "none"
     cfg_tag = hashlib.sha256(
-        f"{repo_dir}|{config_path}|{weights_path}|{top_k}|{resize_max}|no_bg={bool(cfg.dataset.no_background)}".encode("utf-8")
+        (
+            f"repo={repo_dir}|cfg={config_path}|weights={weights_path}|"
+            f"stage_a={stage_a_method}|model_type={cfg.model.type}|model_mode={cfg.model.mode}|"
+            f"checkpoint={checkpoint_tag}|top_k={top_k}|resize_max={resize_max}|"
+            f"no_bg={no_background}|path_col={path_col}|mask_col={mask_col}"
+        ).encode("utf-8")
     ).hexdigest()
+    print(
+        "[rdd] cache tag components: "
+        f"stage_a={stage_a_method} model_type={cfg.model.type} model_mode={cfg.model.mode} "
+        f"checkpoint={checkpoint_tag} no_background={no_background} top_k={top_k} resize_max={resize_max}"
+    )
 
     t_build = time.perf_counter()
     rdd_model, matcher = _build_rdd_models(
@@ -345,6 +473,9 @@ def run_rdd_benchmark(
         top_k=top_k,
         resize_max=resize_max,
         cache_dir=cache_dir,
+        dataset_root=dataset_root,
+        no_background=no_background,
+        mask_col=mask_col,
         path_col=path_col,
         cfg_tag=cfg_tag,
     )
@@ -356,21 +487,28 @@ def run_rdd_benchmark(
         top_k=top_k,
         resize_max=resize_max,
         cache_dir=cache_dir,
+        dataset_root=dataset_root,
+        no_background=no_background,
+        mask_col=mask_col,
         path_col=path_col,
         cfg_tag=cfg_tag,
     )
     extract_sec = time.perf_counter() - t_extract
 
     t_sim = time.perf_counter()
-    similarity = np.zeros((len(query_feats), len(db_feats)), dtype=np.float32)
+    similarity = np.full((len(query_feats), len(db_feats)), fill_value=-1e9, dtype=np.float32)
     match_counts: List[int] = []
     for qi in tqdm(range(len(query_feats)), desc="[rdd][match]", mininterval=1, ncols=120):
         qf = query_feats[qi]
-        for di in range(len(db_feats)):
+        if candidate_indices is None:
+            db_candidates = range(len(db_feats))
+        else:
+            db_candidates = candidate_indices[qi].tolist()
+        for di in db_candidates:
             score, nm = _score_pair(matcher, qf, db_feats[di], device=device)
             similarity[qi, di] = float(score)
             match_counts.append(int(nm))
-    similarity_sec = time.perf_counter() - t_sim
+    rerank_sec = time.perf_counter() - t_sim
 
     if bool(cfg.visualization.enabled):
         rng = np.random.default_rng(int(cfg.benchmark.seed))
@@ -382,12 +520,26 @@ def run_rdd_benchmark(
         for q_idx in sampled_indices:
             q_idx_int = int(q_idx)
             db_idx = int(np.argmax(similarity[q_idx_int]))
-            q_sample = dataset_query[q_idx_int]
-            db_sample = dataset_database[db_idx]
-            q_img = q_sample[0] if isinstance(q_sample, (tuple, list)) else q_sample
-            db_img = db_sample[0] if isinstance(db_sample, (tuple, list)) else db_sample
-            q_vis = _to_uint8_rgb(q_img, resize_max=resize_max)
-            db_vis = _to_uint8_rgb(db_img, resize_max=resize_max)
+            q_row = dataset_query.df.iloc[q_idx_int]
+            db_row = dataset_database.df.iloc[db_idx]
+            q_img = _load_raw_rgb_image(
+                row=q_row,
+                idx=q_idx_int,
+                dataset_root=dataset_root,
+                path_col=path_col,
+                no_background=no_background,
+                mask_col=mask_col,
+            )
+            db_img = _load_raw_rgb_image(
+                row=db_row,
+                idx=db_idx,
+                dataset_root=dataset_root,
+                path_col=path_col,
+                no_background=no_background,
+                mask_col=mask_col,
+            )
+            q_vis = _to_uint8_rgb(q_img, resize_max=resize_max, mean=mean, std=std)
+            db_vis = _to_uint8_rgb(db_img, resize_max=resize_max, mean=mean, std=std)
             mkpts0, mkpts1, conf = _match_frames(matcher, query_feats[q_idx_int], db_feats[db_idx], device=device)
             q_label = str(dataset_query.df.iloc[q_idx_int][cfg.dataset.label_col])
             db_label = str(dataset_database.df.iloc[db_idx][cfg.dataset.label_col])
@@ -410,9 +562,9 @@ def run_rdd_benchmark(
 
     timings = {
         "rdd_model_build_sec": float(model_build_sec),
-        "feature_extraction_sec": float(extract_sec),
-        "similarity_sec": float(similarity_sec),
-        "total_method_sec": float(model_build_sec + extract_sec + similarity_sec),
+        "rdd_feature_extraction_sec": float(extract_sec),
+        "rdd_rerank_sec": float(rerank_sec),
+        "total_method_sec": float(model_build_sec + extract_sec + rerank_sec),
     }
     method_metrics = {
         "rdd_avg_matches": float(np.mean(match_counts)) if match_counts else 0.0,

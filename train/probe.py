@@ -115,6 +115,8 @@ DEFAULT_CONFIG = {
                 "path_col": "path",
                 "resize_max": 448,
                 "top_k": 2048,
+                "stage_a_method": "cosine",
+                "candidate_k": 200,
             },
         },
     },
