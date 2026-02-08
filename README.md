@@ -204,7 +204,9 @@ Visualization option used by RDD keypoint match images:
 
 #### RDD Settings
 
-`rdd` runs a separate local RDD+LightGlue pipeline and does not use the project backbone.
+`rdd` runs a two-stage pipeline:
+- Stage A (fast global retrieval) builds top-K candidates per query.
+- Stage B reranks only those candidates with local RDD+LightGlue.
 
 Config path:
 - `benchmark.methods.rdd`
@@ -217,6 +219,8 @@ Core options:
 - `device`: `auto` | `cpu` | `cuda`
 - `path_col`: metadata image path column
 - `resize_max`, `top_k`
+- `stage_a_method`: `cosine` | `wildfusion` | `local_lightglue` | `linear_probe` | `efficient_probe`
+- `candidate_k`: shortlist size from Stage A reranked by RDD
 
 ## Training and Evaluation Outputs
 
