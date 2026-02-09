@@ -93,11 +93,13 @@ benchmark:
       repo_dir: "/home/kargin/Projects/repositories/rdd"
       config_path: "/home/kargin/Projects/repositories/rdd/configs/default.yaml"
       weights: "/home/kargin/Projects/repositories/rdd/weights/RDD-v2.pth"
-      cache_dir: "cache/rdd_features"
+      cache_dir: "/shared/results/common/kargin/lynx/results/CzechLynx/cache/rdd"
       device: "auto"        # auto | cpu | cuda
       path_col: "path"
       resize_max: 448
-      top_k: 2048
+      top_k: 512
+      stage_a_method: "cosine"   # cosine | wildfusion | local_lightglue | linear_probe | efficient_probe
+      candidate_k: 100
 
 visualization:
   enabled: false
