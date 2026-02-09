@@ -18,7 +18,7 @@ def append_csv_row(csv_path: Path, row: Dict[str, Any]) -> None:
     if not csv_path.is_file():
         fieldnames = list(row.keys())
         with csv_path.open("w", newline="", encoding="utf-8") as f:
-            writer = csv.DictWriter(f, fieldnames=fieldnames)
+            writer = csv.DictWriter(f, fieldnames=fieldnames, extrasaction="ignore")
             writer.writeheader()
             writer.writerow(row)
         return
@@ -31,7 +31,7 @@ def append_csv_row(csv_path: Path, row: Dict[str, Any]) -> None:
     if not existing_header:
         fieldnames = list(row.keys())
         with csv_path.open("w", newline="", encoding="utf-8") as f:
-            writer = csv.DictWriter(f, fieldnames=fieldnames)
+            writer = csv.DictWriter(f, fieldnames=fieldnames, extrasaction="ignore")
             writer.writeheader()
             writer.writerow(row)
         return
@@ -50,15 +50,21 @@ def append_csv_row(csv_path: Path, row: Dict[str, Any]) -> None:
         existing_header = existing_header + new_keys
 
     with csv_path.open("a", newline="", encoding="utf-8") as f:
-        writer = csv.DictWriter(f, fieldnames=existing_header)
+        writer = csv.DictWriter(f, fieldnames=existing_header, extrasaction="ignore")
         writer.writerow(row)
 
 
 def _rewrite_csv_with_header(csv_path: Path, rows: List[Dict[str, Any]], header: List[str]) -> None:
     tmp_path = csv_path.with_suffix(csv_path.suffix + ".tmp")
     with tmp_path.open("w", newline="", encoding="utf-8") as f:
-        writer = csv.DictWriter(f, fieldnames=header)
+        writer = csv.DictWriter(f, fieldnames=header, extrasaction="ignore")
         writer.writeheader()
         for row in rows:
-            writer.writerow(row)
+            writer.writerow(_sanitize_row(row))
     tmp_path.replace(csv_path)
+
+
+def _sanitize_row(row: Dict[str, Any]) -> Dict[str, Any]:
+    # csv.DictReader uses None as a key when a row has more values than the header.
+    # We drop these orphan values so schema rewrites stay robust.
+    return {k: v for k, v in row.items() if k is not None}

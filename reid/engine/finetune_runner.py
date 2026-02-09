@@ -26,6 +26,15 @@ from reid.utils.io import append_csv_row, ensure_dir, ensure_file
 from reid.utils.repro import set_reproducible
 
 
+def _dataset_tag_from_metadata_file(metadata_file: str) -> str:
+    stem = Path(metadata_file).stem.strip()
+    if not stem:
+        return "dataset"
+    sanitized = "".join(ch if (ch.isalnum() or ch in "-_") else "_" for ch in stem)
+    sanitized = sanitized.strip("_")
+    return sanitized or "dataset"
+
+
 def choose_device() -> torch.device:
     return torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
@@ -52,7 +61,7 @@ def train_one_epoch(
         y = y.to(device)
 
         if amp_enabled:
-            with torch.amp.autocast():
+            with torch.amp.autocast(device_type=device.type):
                 out = model(x)
                 loss = objective(out, y)
             scaler.scale(loss).backward()
@@ -171,7 +180,8 @@ def run_finetune(cfg: DictConfig) -> None:
     scheduler = CosineAnnealingLR(optimizer, T_max=int(cfg.train.epochs), eta_min=float(cfg.train.lr) * float(cfg.scheduler.eta_min_scale))
 
     run_started = datetime.utcnow()
-    run_id = run_started.strftime("run_%Y%m%d_%H%M%S")
+    dataset_tag = _dataset_tag_from_metadata_file(str(cfg.dataset.metadata_file))
+    run_id = f"{run_started.strftime('run_%Y%m%d_%H%M%S')}_{dataset_tag}"
     output_folder = Path(cfg.output.run_dir) / run_id
     output_folder.mkdir(parents=True, exist_ok=True)
 
@@ -191,7 +201,7 @@ def run_finetune(cfg: DictConfig) -> None:
         )
 
     amp_enabled = bool(cfg.train.amp == "auto" and device.type == "cuda") or bool(cfg.train.amp is True)
-    scaler = torch.amp.GradScaler(enabled=amp_enabled)
+    scaler = torch.amp.GradScaler(enabled=amp_enabled, device=device.type)
 
     start_epoch = 0
     if cfg.train.resume_checkpoint:
@@ -239,9 +249,9 @@ def run_finetune(cfg: DictConfig) -> None:
         metric_value = float(metrics.get(best_metric_name, -float("inf")))
         if metric_value > best_metric_value and bool(cfg.output.save_best):
             best_metric_value = metric_value
-            torch.save(model.state_dict(), output_folder / "checkpoint-best.pth")
+            torch.save(model.state_dict(), output_folder / f"checkpoint-best_{dataset_tag}.pth")
             save_full_checkpoint(
-                output_folder / "checkpoint-best-full.pth",
+                output_folder / f"checkpoint-best-full_{dataset_tag}.pth",
                 model,
                 objective,
                 optimizer,
@@ -251,9 +261,9 @@ def run_finetune(cfg: DictConfig) -> None:
             )
 
         if (epoch + 1) % int(cfg.output.save_every) == 0:
-            torch.save(model.state_dict(), output_folder / f"checkpoint-epoch-{epoch+1}.pth")
+            torch.save(model.state_dict(), output_folder / f"checkpoint-epoch-{epoch+1}_{dataset_tag}.pth")
         save_full_checkpoint(
-            output_folder / "checkpoint-latest-full.pth",
+            output_folder / f"checkpoint-latest-full_{dataset_tag}.pth",
             model,
             objective,
             optimizer,
@@ -268,6 +278,7 @@ def run_finetune(cfg: DictConfig) -> None:
             "best_metric": best_metric_name,
             "best_metric_value": best_metric_value,
             "no_background": bool(cfg.dataset.no_background),
+            "dataset_tag": dataset_tag,
         }
         row.update(train_metrics)
         row.update(metrics)
@@ -293,9 +304,9 @@ def run_finetune(cfg: DictConfig) -> None:
                 f"{metrics_str}"
             )
 
-    torch.save(model.state_dict(), output_folder / "checkpoint-final.pth")
+    torch.save(model.state_dict(), output_folder / f"checkpoint-final_{dataset_tag}.pth")
     save_full_checkpoint(
-        output_folder / "checkpoint-final-full.pth",
+        output_folder / f"checkpoint-final-full_{dataset_tag}.pth",
         model,
         objective,
         optimizer,

@@ -334,9 +334,15 @@ def _draw_matches_save(
 
     h0, w0 = img0.shape[:2]
     h1, w1 = img1.shape[:2]
-    out = np.zeros((max(h0, h1), w0 + w1, 3), dtype=np.uint8)
-    out[:h0, :w0] = img0
-    out[:h1, w0:] = img1
+    target_h = max(h0, h1)
+    target_w = max(w0, w1)
+
+    img0, mkpts0 = _letterbox_image_and_keypoints(img0, mkpts0, target_h=target_h, target_w=target_w)
+    img1, mkpts1 = _letterbox_image_and_keypoints(img1, mkpts1, target_h=target_h, target_w=target_w)
+
+    out = np.zeros((target_h, target_w * 2, 3), dtype=np.uint8)
+    out[:, :target_w] = img0
+    out[:, target_w:] = img1
 
     out_path.parent.mkdir(parents=True, exist_ok=True)
     fig, ax = plt.subplots(figsize=(12, 6))
@@ -349,9 +355,9 @@ def _draw_matches_save(
         conf_norm = (conf - conf.min()) / (conf.max() - conf.min() + 1e-8)
         colors = cm.viridis(conf_norm)
         for (x0, y0), (x1, y1), c in zip(mkpts0, mkpts1, colors):
-            ax.plot([x0, x1 + w0], [y0, y1], color=c, linewidth=1)
+            ax.plot([x0, x1 + target_w], [y0, y1], color=c, linewidth=1)
         ax.scatter(mkpts0[:, 0], mkpts0[:, 1], s=6, c=colors, marker="o")
-        ax.scatter(mkpts1[:, 0] + w0, mkpts1[:, 1], s=6, c=colors, marker="o")
+        ax.scatter(mkpts1[:, 0] + target_w, mkpts1[:, 1], s=6, c=colors, marker="o")
         sm = plt.cm.ScalarMappable(cmap="viridis", norm=plt.Normalize(vmin=float(conf.min()), vmax=float(conf.max())))
         sm.set_array([])
         cbar = fig.colorbar(sm, ax=ax, fraction=0.046, pad=0.02)
@@ -361,6 +367,35 @@ def _draw_matches_save(
     fig.savefig(out_path, dpi=150, bbox_inches="tight")
     plt.close(fig)
     return str(out_path)
+
+
+def _letterbox_image_and_keypoints(
+    image: np.ndarray,
+    keypoints: np.ndarray,
+    target_h: int,
+    target_w: int,
+    pad_value: int = 114,
+) -> Tuple[np.ndarray, np.ndarray]:
+    h, w = image.shape[:2]
+    if h <= 0 or w <= 0:
+        return image, keypoints
+
+    scale = min(float(target_w) / float(w), float(target_h) / float(h))
+    new_w = max(1, int(round(w * scale)))
+    new_h = max(1, int(round(h * scale)))
+    resized = np.asarray(Image.fromarray(image).resize((new_w, new_h), Image.BILINEAR))
+
+    canvas = np.full((target_h, target_w, 3), fill_value=pad_value, dtype=np.uint8)
+    pad_x = (target_w - new_w) // 2
+    pad_y = (target_h - new_h) // 2
+    canvas[pad_y : pad_y + new_h, pad_x : pad_x + new_w] = resized
+
+    if keypoints.size == 0:
+        return canvas, keypoints
+    remapped = keypoints.astype(np.float32, copy=True)
+    remapped[:, 0] = remapped[:, 0] * scale + float(pad_x)
+    remapped[:, 1] = remapped[:, 1] * scale + float(pad_y)
+    return canvas, remapped
 
 
 def _extract_split_features(

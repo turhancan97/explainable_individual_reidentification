@@ -3,6 +3,22 @@ from typing import Any, Dict, List
 import numpy as np
 
 
+def _balanced_accuracy_top1(query_labels: np.ndarray, predicted_top1_labels: np.ndarray) -> float:
+    classes = np.unique(query_labels)
+    if classes.size == 0:
+        return float("nan")
+
+    recalls: List[float] = []
+    for cls in classes:
+        mask = query_labels == cls
+        denom = int(mask.sum())
+        if denom == 0:
+            continue
+        tp = int((predicted_top1_labels[mask] == cls).sum())
+        recalls.append(tp / denom)
+    return float(np.mean(recalls)) if recalls else float("nan")
+
+
 def compute_metrics(
     dataset_query: Any,
     dataset_database: Any,
@@ -31,6 +47,9 @@ def compute_metrics(
             top_labels = db_labels[top_db_idx]
             hits.append(query_labels[q_idx] in top_labels)
         metrics[f"top_{k}"] = float(np.mean(hits))
+
+    top1_pred_labels = db_labels[ranked_idx[:, 0]]
+    metrics["balanced_top_1"] = _balanced_accuracy_top1(query_labels, top1_pred_labels)
 
     if compute_map:
         aps: List[float] = []
