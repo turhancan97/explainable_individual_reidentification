@@ -231,3 +231,6 @@ probe.sh
 
 # cache 
 cache/
+
+# pdfs
+*.pdf
