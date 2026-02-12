@@ -1,6 +1,7 @@
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List
+import time
 
 import numpy as np
 import pandas as pd
@@ -110,6 +111,7 @@ def evaluate(
 
 
 def run_finetune(cfg: DictConfig) -> None:
+    run_t0 = time.perf_counter()
     set_reproducible(int(cfg.train.seed), bool(cfg.train.deterministic))
     device = choose_device()
 
@@ -316,4 +318,10 @@ def run_finetune(cfg: DictConfig) -> None:
     )
 
     if wandb_run is not None:
+        elapsed_sec = time.perf_counter() - run_t0
+        wandb_run.summary["elapsed_sec"] = float(elapsed_sec)
+        wandb_run.summary["elapsed_min"] = float(elapsed_sec / 60.0)
         wandb_run.finish()
+
+    elapsed_sec = time.perf_counter() - run_t0
+    print(f"Elapsed time: {elapsed_sec / 60.0:.2f} min ({elapsed_sec:.1f} sec)")
