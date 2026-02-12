@@ -1,10 +1,12 @@
 dataset:
-  root: "/shared/sets/datasets/vision/czechlynx/CzechLynx_v2"
-  metadata_file: "CzechLynxDataset-Metadata-Real.csv"
-  label_col: "unique_name"
+  name: "CzechLynx_v2" # WildlifeReID-10k | CzechLynx_v2
+  animal: "CzechLynx" # LeopardID2022 | ReunionTurtles| CzechLynx
+  root: "/shared/sets/datasets/vision/czechlynx/${dataset.name}"
+  metadata_file: "CzechLynxDataset-Metadata-Real.csv" # metadata/metadata_${dataset.animal}.csv | CzechLynxDataset-Metadata-Real.csv
+  label_col: "unique_name" # identity | unique_name
   mask_col: "mask"
-  no_background: false
-  split_col: "split-time_closed"
+  no_background: false # false | true
+  split_col: "split-time_closed" # split | split-time_closed
   train_split_value: "train"
   val_split_value: "test"
 
@@ -33,11 +35,11 @@ scheduler:
   eta_min_scale: 1e-3
 
 output:
-  run_dir: "results"
+  run_dir: "results/${dataset.name}/${dataset.animal}/mask_${dataset.no_background}"
   save_every: 10
   save_best: true
   best_metric: "top_1"
-  csv_path: "results/train_metrics.csv"
+  csv_path: "results/${dataset.name}/${dataset.animal}/mask_${dataset.no_background}/train_metrics.csv"
 
 benchmark:
   top_k: [1, 5, 10]

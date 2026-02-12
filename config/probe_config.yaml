@@ -1,10 +1,12 @@
 dataset:
-  root: "/shared/sets/datasets/vision/czechlynx/CzechLynx_v2"
-  metadata_file: "CzechLynxDataset-Metadata-Real.csv"
-  label_col: "unique_name"
+  name: "CzechLynx_v2" # WildlifeReID-10k | CzechLynx_v2
+  animal: "CzechLynx" # LeopardID2022 | ReunionTurtles| CzechLynx
+  root: "/shared/sets/datasets/vision/czechlynx/${dataset.name}"
+  metadata_file: "CzechLynxDataset-Metadata-Real.csv" # metadata/metadata_${dataset.animal}.csv | CzechLynxDataset-Metadata-Real.csv
+  label_col: "unique_name" # identity | unique_name
   mask_col: "mask"
-  no_background: false
-  split_col: "split-time_closed"
+  no_background: false # false | true
+  split_col: "split-time_closed" # split | split-time_closed
   database_split_value: "train"
   query_split_value: "test"
   calibration_size: 100
@@ -29,7 +31,7 @@ benchmark:
   deterministic: false
   cache:
     enabled: true
-    dir: "/shared/results/common/kargin/lynx/results/CzechLynx/cache/features"
+    dir: "/shared/results/common/kargin/lynx/results/${dataset.name}/${dataset.animal}/cache/features"
     format: "pt"     # pt | npz
   methods:
     cosine: {}
@@ -43,7 +45,7 @@ benchmark:
       local_batch_size: 16
     linear_probe:
       train_mode: "classifier"  # all | partial | classifier (frozen backbone)
-      epochs: 10
+      epochs: 50
       log_every: 1
       batch_size: 64
       num_workers: 8
@@ -66,7 +68,7 @@ benchmark:
         lynx_megadescriptorV4: ["layers.3", "norm"]
     efficient_probe:
       train_mode: "classifier"  # all | partial | classifier (frozen backbone)
-      epochs: 10
+      epochs: 50
       log_every: 1
       batch_size: 64
       num_workers: 8
@@ -93,7 +95,7 @@ benchmark:
       repo_dir: "/home/kargin/Projects/repositories/rdd"
       config_path: "/home/kargin/Projects/repositories/rdd/configs/default.yaml"
       weights: "/home/kargin/Projects/repositories/rdd/weights/RDD-v2.pth"
-      cache_dir: "/shared/results/common/kargin/lynx/results/CzechLynx/cache/rdd"
+      cache_dir: "/shared/results/common/kargin/lynx/results/${dataset.name}/${dataset.animal}/cache/rdd"
       device: "auto"        # auto | cpu | cuda
       path_col: "path"
       resize_max: 448
