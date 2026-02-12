@@ -2,6 +2,7 @@ import hashlib
 import json
 import math
 import random
+import textwrap
 import time
 from datetime import datetime
 from pathlib import Path
@@ -58,6 +59,7 @@ PROBE_CSV_METRIC_COLUMNS = [
     "classification_top_1",
     "classification_top_5",
     "classification_top_10",
+    "classification_balanced_top_1",
     "rdd_avg_matches",
 ]
 
@@ -414,11 +416,31 @@ def _classification_topk_accuracy(probs: np.ndarray, query_labels_idx: np.ndarra
         for i in range(len(query_labels_idx)):
             hits.append(int(query_labels_idx[i]) in ranked[i, :kk])
         metrics[f"classification_top_{k}"] = float(np.mean(hits))
+    metrics["classification_balanced_top_1"] = _balanced_accuracy_top1_idx(
+        query_labels_idx=query_labels_idx,
+        predicted_top1_labels=ranked[:, 0],
+    )
     return metrics
 
 
 def _similarity_from_class_probs(probs_query: np.ndarray, db_labels_idx: np.ndarray) -> np.ndarray:
     return probs_query[:, db_labels_idx]
+
+
+def _balanced_accuracy_top1_idx(query_labels_idx: np.ndarray, predicted_top1_labels: np.ndarray) -> float:
+    classes = np.unique(query_labels_idx)
+    if classes.size == 0:
+        return float("nan")
+
+    recalls: List[float] = []
+    for cls in classes:
+        mask = query_labels_idx == cls
+        denom = int(mask.sum())
+        if denom == 0:
+            continue
+        tp = int((predicted_top1_labels[mask] == cls).sum())
+        recalls.append(tp / denom)
+    return float(np.mean(recalls)) if recalls else float("nan")
 
 
 def _predict_class_probabilities(objective: Any, embeddings: torch.Tensor) -> torch.Tensor:
@@ -1328,6 +1350,11 @@ def visualize_predictions(
     query_indices = rng.choice(np.arange(num_queries), num_examples, replace=False)
 
     saved_files: List[str] = []
+    title_wrap = int(getattr(vis_cfg, "title_wrap_chars", 28))
+
+    def _wrap_title(text: Any) -> str:
+        return textwrap.fill(str(text), width=max(8, title_wrap), break_long_words=True, break_on_hyphens=True)
+
     for query_idx in query_indices:
         database_idx = ranked_idx[query_idx, : vis_cfg.top_k]
         scores = similarity[query_idx, database_idx]
@@ -1335,13 +1362,13 @@ def visualize_predictions(
 
         query_data = dataset_query_display[query_idx]
         ax[0].imshow(query_data[0])
-        ax[0].set_title(str(query_data[1]))
+        ax[0].set_title(_wrap_title(query_data[1]), fontsize=9)
         ax[0].axis("off")
 
         for i, db_idx in enumerate(database_idx):
             database_data = dataset_database_display[db_idx]
             ax[i + 1].imshow(database_data[0])
-            ax[i + 1].set_title(f"{database_data[1]}: {scores[i]:.3f}")
+            ax[i + 1].set_title(f"{_wrap_title(database_data[1])}\nscore: {scores[i]:.3f}", fontsize=9)
             ax[i + 1].axis("off")
 
         out_path = out_dir / f"predictions_{query_idx}.png"
@@ -1354,6 +1381,7 @@ def visualize_predictions(
 
 
 def run_probe(cfg: DictConfig) -> None:
+    run_t0 = time.perf_counter()
     set_reproducible(int(cfg.benchmark.seed), bool(cfg.benchmark.deterministic))
     method = str(cfg.benchmark.method)
     use_backbone = method != "rdd"
@@ -1416,6 +1444,9 @@ def run_probe(cfg: DictConfig) -> None:
     run_dir = Path(cfg.output.run_dir) / run_id
     print(f"Running method={method} on device={device.type}")
     print(f"Query images: {len(dataset_query)} | Database images: {len(dataset_database)}")
+    # Print the number of unique identities in the query and database
+    print(f"Length of unique identities in query: {len(dataset_query.df[cfg.dataset.label_col].unique().tolist())}")
+    print(f"Length of unique identities in database: {len(dataset_database.df[cfg.dataset.label_col].unique().tolist())}")
 
     wandb_run = None
     if bool(cfg.wandb.enabled):
@@ -1567,4 +1598,10 @@ def run_probe(cfg: DictConfig) -> None:
         wandb_run.summary["split_col"] = cfg.dataset.split_col
         wandb_run.summary["database_split_value"] = cfg.dataset.database_split_value
         wandb_run.summary["query_split_value"] = cfg.dataset.query_split_value
+        elapsed_sec = time.perf_counter() - run_t0
+        wandb_run.summary["elapsed_sec"] = float(elapsed_sec)
+        wandb_run.summary["elapsed_min"] = float(elapsed_sec / 60.0)
         wandb_run.finish()
+
+    elapsed_sec = time.perf_counter() - run_t0
+    print(f"Elapsed time: {elapsed_sec / 60.0:.2f} min ({elapsed_sec:.1f} sec)")
