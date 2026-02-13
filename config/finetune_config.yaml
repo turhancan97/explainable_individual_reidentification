@@ -47,6 +47,9 @@ benchmark:
   val_batch_size: 32
   val_num_workers: 8
 
+safety_checks:
+  enabled: true
+
 wandb:
   enabled: false
   project: "explainable-reid"

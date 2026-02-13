@@ -19,6 +19,7 @@ from wildlife_tools.train.trainer import set_seed
 
 from models.model import get_model
 from models.objective import ArcFaceLoss
+from reid.data.safety_checks import run_split_safety_checks
 from reid.data.dataset_view import BenchmarkDatasetView
 from reid.evaluation.metrics import compute_metrics
 from reid.features.containers import FeatureContainer, get_labels_string, normalize_features
@@ -129,15 +130,35 @@ def run_finetune(cfg: DictConfig) -> None:
             f"mask_col '{cfg.dataset.mask_col}' not found in metadata while dataset.no_background=true"
         )
 
+    train_metadata = metadata[metadata[cfg.dataset.split_col] == cfg.dataset.train_split_value]
+    val_metadata = metadata[metadata[cfg.dataset.split_col] == cfg.dataset.val_split_value]
+
+    run_started = datetime.utcnow()
+    dataset_tag = _dataset_tag_from_metadata_file(str(cfg.dataset.metadata_file))
+    run_id = f"{run_started.strftime('run_%Y%m%d_%H%M%S')}_{dataset_tag}"
+    output_folder = Path(cfg.output.run_dir) / run_id
+    output_folder.mkdir(parents=True, exist_ok=True)
+
+    if bool(getattr(cfg, "safety_checks", {}).get("enabled", True)):
+        run_split_safety_checks(
+            df_a=train_metadata,
+            df_b=val_metadata,
+            split_a_name="train",
+            split_b_name="val",
+            root=Path(cfg.dataset.root),
+            label_col=str(cfg.dataset.label_col),
+            run_dir=output_folder,
+            fail_on_overlap=True,
+            require_b_labels_in_a=False,
+            warn_only_unseen=True,
+        )
+
     model, embedding_size, mean, std, img_size, arch, patch_size, number_of_patches = get_model(cfg.model.type)
     model.to(device)
 
     transform_display = T.Compose([T.Resize([img_size, img_size])])
     transform_train = create_transform(input_size=img_size, is_training=True, auto_augment="rand-m10-n2-mstd1")
     transform_val = T.Compose([*transform_display.transforms, T.ToTensor(), T.Normalize(mean=mean, std=std)])
-
-    train_metadata = metadata[metadata[cfg.dataset.split_col] == cfg.dataset.train_split_value]
-    val_metadata = metadata[metadata[cfg.dataset.split_col] == cfg.dataset.val_split_value]
 
     dataset_train_raw = WildlifeDatasetWildlifeTools(
         root=str(root),
@@ -180,12 +201,6 @@ def run_finetune(cfg: DictConfig) -> None:
         weight_decay=float(cfg.train.weight_decay),
     )
     scheduler = CosineAnnealingLR(optimizer, T_max=int(cfg.train.epochs), eta_min=float(cfg.train.lr) * float(cfg.scheduler.eta_min_scale))
-
-    run_started = datetime.utcnow()
-    dataset_tag = _dataset_tag_from_metadata_file(str(cfg.dataset.metadata_file))
-    run_id = f"{run_started.strftime('run_%Y%m%d_%H%M%S')}_{dataset_tag}"
-    output_folder = Path(cfg.output.run_dir) / run_id
-    output_folder.mkdir(parents=True, exist_ok=True)
 
     wandb_run = None
     if bool(cfg.wandb.enabled):

@@ -59,6 +59,9 @@ DEFAULT_CONFIG = {
         "val_batch_size": 32,
         "val_num_workers": 4,
     },
+    "safety_checks": {
+        "enabled": True,
+    },
     "wandb": {
         "enabled": False,
         "project": "explainable-reid",

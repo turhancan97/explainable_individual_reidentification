@@ -133,6 +133,9 @@ DEFAULT_CONFIG = {
         "run_dir": "benchmark_runs",
         "csv_path": "benchmark_runs/benchmark_results.csv",
     },
+    "safety_checks": {
+        "enabled": True,
+    },
     "wandb": {
         "enabled": False,
         "project": "explainable-reid",

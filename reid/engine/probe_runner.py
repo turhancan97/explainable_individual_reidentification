@@ -28,6 +28,7 @@ from wildlife_tools.similarity.wildfusion import SimilarityPipeline, WildFusion
 
 from models.model import get_model
 from models.objective import SoftmaxLoss, SoftmaxLossEP
+from reid.data.safety_checks import run_split_safety_checks
 from reid.data.dataset_view import BenchmarkDatasetView
 from reid.evaluation.metrics import compute_metrics
 from reid.features.containers import FeatureContainer, get_labels_string
@@ -1384,6 +1385,31 @@ def run_probe(cfg: DictConfig) -> None:
     run_t0 = time.perf_counter()
     set_reproducible(int(cfg.benchmark.seed), bool(cfg.benchmark.deterministic))
     method = str(cfg.benchmark.method)
+    run_started = datetime.utcnow()
+    run_id = run_started.strftime("run_%Y%m%d_%H%M%S")
+    run_dir = Path(cfg.output.run_dir) / run_id
+    run_dir.mkdir(parents=True, exist_ok=True)
+
+    _, dataset_database_raw, dataset_query_raw = load_dataset_splits(cfg)
+    if bool(getattr(cfg, "safety_checks", {}).get("enabled", True)):
+        classifier_methods = {"linear_probe", "efficient_probe"}
+        require_closed_set = method in classifier_methods
+        if method == "rdd":
+            stage_a_method = str(cfg.benchmark.methods.rdd.stage_a_method)
+            require_closed_set = stage_a_method in classifier_methods
+        run_split_safety_checks(
+            df_a=dataset_database_raw.df,
+            df_b=dataset_query_raw.df,
+            split_a_name="database",
+            split_b_name="query",
+            root=Path(cfg.dataset.root),
+            label_col=str(cfg.dataset.label_col),
+            run_dir=run_dir,
+            fail_on_overlap=True,
+            require_b_labels_in_a=require_closed_set,
+            warn_only_unseen=not require_closed_set,
+        )
+
     use_backbone = method != "rdd"
     if method == "rdd":
         stage_a_method = str(cfg.benchmark.methods.rdd.stage_a_method)
@@ -1406,7 +1432,6 @@ def run_probe(cfg: DictConfig) -> None:
         checkpoint_path = None
 
     transform_display, transform_model, transform_aliked = build_transforms(mean, std, img_size)
-    _, dataset_database_raw, dataset_query_raw = load_dataset_splits(cfg)
     dataset_calibration_raw = get_calibration_dataset(
         dataset_database=dataset_database_raw,
         size=int(cfg.dataset.calibration_size),
@@ -1439,9 +1464,6 @@ def run_probe(cfg: DictConfig) -> None:
         fmt=str(cfg.benchmark.cache.format),
     )
 
-    run_started = datetime.utcnow()
-    run_id = run_started.strftime("run_%Y%m%d_%H%M%S")
-    run_dir = Path(cfg.output.run_dir) / run_id
     print(f"Running method={method} on device={device.type}")
     print(f"Query images: {len(dataset_query)} | Database images: {len(dataset_database)}")
     # Print the number of unique identities in the query and database

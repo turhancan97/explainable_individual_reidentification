@@ -126,6 +126,7 @@ Key blocks:
 - `scheduler`: cosine settings
 - `output`: save frequency, best metric, CSV path
 - `benchmark`: validation retrieval metrics (`top_k`, `mAP`)
+- `safety_checks`: pre-run split validation (`enabled`)
 - `wandb`: optional experiment logging
 
 ### `config/probe_config.yaml`
@@ -136,7 +137,22 @@ Key blocks:
 - `benchmark`: method (`cosine`, `wildfusion`, `local_lightglue`, `linear_probe`, `efficient_probe`, `rdd`), metrics, cache
 - `visualization`: optional qualitative retrieval plots
 - `output`: run folder + aggregate CSV
+- `safety_checks`: pre-run split validation (`enabled`)
 - `wandb`: optional experiment logging
+
+### Safety Checks
+
+When `safety_checks.enabled: true`, both `finetune` and `probe` run pre-run validators before model loading:
+- overlap check between split files (hard error)
+- identity coverage report (seen/unseen identities)
+- per-split class count histogram
+
+Artifacts are saved under each run folder:
+- `safety_checks/summary.json`
+- `safety_checks/class_counts.csv`
+- `safety_checks/class_count_histogram.png`
+
+Classifier-based probe methods (`linear_probe`, `efficient_probe`) enforce closed-set identity coverage (query identities must exist in database identities).
 
 #### Linear Probe Settings
 
@@ -232,6 +248,7 @@ Under `results/<run_id>/`:
 - `checkpoint-latest-full.pth`
 - optional `checkpoint-best.pth` and `checkpoint-best-full.pth`
 - periodic `checkpoint-epoch-<n>.pth` (controlled by `output.save_every`)
+- `safety_checks/` artifacts when enabled
 
 Aggregate metrics CSV:
 - `results/train_metrics.csv`
@@ -241,6 +258,7 @@ Aggregate metrics CSV:
 Under `benchmark_runs/<run_id>/`:
 - `result.json`
 - `config.snapshot.yaml`
+- `safety_checks/` artifacts when enabled
 
 Aggregate benchmark CSV:
 - `benchmark_runs/benchmark_results.csv`
