@@ -10,6 +10,7 @@ import matplotlib.cm as cm
 import matplotlib.pyplot as plt
 import numpy as np
 import torch
+import yaml
 from PIL import Image
 from pycocotools import mask as mask_utils
 from tqdm import tqdm
@@ -73,7 +74,15 @@ def _build_rdd_models(repo_dir: Path, config_path: Path, weights_path: Path, dev
     }
     ensure_file(Path(lg_conf["weights"]), "RDD LightGlue weights file")
 
-    rdd_conf = None
+    with config_path.open("r", encoding="utf-8") as f:
+        rdd_conf = yaml.safe_load(f) or {}
+    if not isinstance(rdd_conf, dict):
+        raise ValueError(f"RDD config must be a mapping/dict, got: {type(rdd_conf)}")
+    # Ensure runtime settings from this benchmark are honored.
+    rdd_conf["device"] = "cuda" if device.type == "cuda" else "cpu"
+    rdd_conf["top_k"] = int(top_k)
+    rdd_conf["weights"] = str(weights_path)
+
     model = build_rdd(rdd_conf, weights=str(weights_path))
     model.to(device).eval()
     model.top_k = int(top_k)

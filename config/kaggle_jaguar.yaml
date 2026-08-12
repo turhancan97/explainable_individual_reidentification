@@ -1,0 +1,105 @@
+kaggle:
+  data_dir: "/shared/sets/datasets/vision/czechlynx/jaguar"
+  train_csv: "train.csv"
+  test_csv: "test.csv"
+  train_dir: "train"
+  test_dir: "test"
+  output_dir: "kaggle_runs/jaguar_reid"
+  seed: 0
+  device: "auto"            # auto | cpu | cuda
+  fast_mode: false
+  dry_run:
+    enabled: false
+    pair_limit: 2000
+
+alpha_mask:
+  enabled: true
+  cache_dir: "/shared/sets/datasets/vision/czechlynx/jaguar/cache/kaggle_jaguar/alpha_masked"
+  debug_samples: 8
+
+model:
+  type: "megadescriptor-l"    # megadescriptor-t | megadescriptor-l | dinov2 | dinov3
+
+finetune:
+  run_finetune: true
+  base_config: "config/finetune_config.yaml"
+  output_run_dir: "results/kaggle_jaguar"
+  checkpoint_path: null
+  epochs: 30
+  batch_size: 16
+  num_workers: 8
+  accumulation_steps: 4
+  lr: 1e-4
+  weight_decay: 0.0
+  amp: "auto"               # auto | true | false
+  deterministic: false
+  resume_checkpoint: null
+  log_every: 5
+  arcface_margin: 0.25
+  arcface_scale: 16.0
+  eta_min_scale: 1e-3
+  val_batch_size: 64
+  val_num_workers: 8
+  save_every: 10
+  save_best: true
+  best_metric: "top_1"
+
+validation:
+  enabled: true
+  val_ratio: 0.25
+  min_val_per_identity: 2
+
+stage_a:
+  method: "cosine"           # cosine | wildfusion
+  batch_size: 64
+  num_workers: 8
+  tta_hflip: false
+  cache_dir: "cache/kaggle_jaguar/features"
+  candidate_k: 20
+  fast_candidate_k: 40
+  wildfusion:
+    B: 20
+    deep_batch_size: 32
+    deep_num_workers: 8
+    local_batch_size: 16
+    calibration_size: 800
+
+rdd:
+  repo_dir: "/home/kargin/Projects/repositories/rdd"
+  config_path: "/home/kargin/Projects/repositories/rdd/configs/default.yaml"
+  weights: "/home/kargin/Projects/repositories/rdd/weights/RDD-v2.pth"
+  cache_dir: "/shared/results/common/kargin/lynx/results/kaggle_jaguar/rdd"
+  device: "auto"
+  resize_max: 672
+  top_k: 2048
+  fast_top_k: 256
+
+submission:
+  mode: "stage_a_plus_rdd"   # stage_a_only | stage_a_plus_rdd
+  output_csv: "kaggle_runs/jaguar_reid/latest_submission.csv"
+  strict_row_count: true
+  rdd_fusion_mode: "delta"       # delta | blend | replace
+  rdd_fusion_alpha: 0.10         # ablation-backed default for jaguar pipeline
+  rdd_min_stage_score: 0.0       # apply RDD only if stage_a score >= threshold
+  rdd_fusion_symmetrize: true    # average S(i,j) and S(j,i) for all-vs-all matrices
+
+ensemble:
+  enabled: false
+  additional_submissions: []
+
+visualization:
+  enabled: true
+  num_examples: 8
+  rdd_max_matches: 50
+
+safety_checks:
+  enabled: true
+
+wandb:
+  enabled: false
+  finetune_enabled: false
+  project: "explainable-reid"
+  entity: null
+  group: null
+  tags: []
+  finetune_name: null

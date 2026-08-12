@@ -49,7 +49,7 @@ class ViTCLSAdapter(nn.Module):
 
 def get_model(MODEL_TYPE):
     # Download MegaDescriptor-T backbone from HuggingFace Hub
-    if MODEL_TYPE == 'megadescriptor':
+    if MODEL_TYPE == 'megadescriptor-t':
         backbone = timm.create_model('hf-hub:BVRA/MegaDescriptor-T-224', num_classes=0, pretrained=True)
         arch = 'swin'
         patch_size = None
@@ -58,6 +58,15 @@ def get_model(MODEL_TYPE):
         mean = (0.485, 0.456, 0.406)
         std = (0.229, 0.224, 0.225)
         img_size = 224
+    elif MODEL_TYPE == 'megadescriptor-l':
+        backbone = timm.create_model('hf-hub:BVRA/MegaDescriptor-L-384', num_classes=0, pretrained=True)
+        arch = 'swin'
+        patch_size = None
+        number_of_patches = None
+        embedding_size = 1536
+        mean = (0.485, 0.456, 0.406)
+        std = (0.229, 0.224, 0.225)
+        img_size = 384
     elif MODEL_TYPE == 'lynx_megadescriptorV3':
         backbone = timm.create_model('hf-hub:strakajk/LynxV3-MegaDescriptor-T-224', num_classes=0, pretrained=True)
         arch = 'swin'

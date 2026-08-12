@@ -5,14 +5,14 @@ dataset:
   metadata_file: "CzechLynxDataset-Metadata-Real.csv" # metadata/metadata_${dataset.animal}.csv | CzechLynxDataset-Metadata-Real.csv
   label_col: "unique_name" # identity | unique_name
   mask_col: "mask"
-  no_background: false # false | true
+  no_background: true # false | true
   split_col: "split-time_closed" # split | split-time_closed
   database_split_value: "train"
   query_split_value: "test"
   calibration_size: 100
 
 model:
-  type: "megadescriptor" # megadescriptor | dinov2 | dinov3
+  type: "megadescriptor-l" # megadescriptor-t | megadescriptor-l | dinov2 | dinov3
   mode: "pretrained"  # pretrained | finetuned
   device: "auto"     # auto | cpu | cuda
   batch_size: 32
@@ -101,10 +101,10 @@ benchmark:
       resize_max: 448
       top_k: 512
       stage_a_method: "cosine"   # cosine | wildfusion | local_lightglue | linear_probe | efficient_probe
-      candidate_k: 100
+      candidate_k: 10
 
 visualization:
-  enabled: false
+  enabled: true
   dir: "visualizations"
   num_examples: 16
   rdd_max_matches: 20

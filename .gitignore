@@ -234,3 +234,7 @@ cache/
 
 # pdfs
 *.pdf
+
+# kaggle runs
+kaggle_runs/
+cache/

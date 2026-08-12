@@ -114,6 +114,58 @@ Run RDD benchmark:
 python train/probe.py --method rdd
 ```
 
+### Kaggle Jaguar Re-ID (new standalone pipeline)
+
+This repository now includes a dedicated competition pipeline that keeps existing `train/probe` behavior unchanged:
+- finetune backbone with ArcFace
+- local validation (identity-balanced mAP on stratified train/val split)
+- Stage A retrieval (`cosine` or `wildfusion`)
+- optional Stage B RDD reranking
+- strict Kaggle submission validation and CSV export
+- optional PNG alpha-mask application (`alpha_mask.enabled`, default `true`)
+
+Config:
+- `config/kaggle_jaguar.yaml`
+
+Alpha-mask mode (Kaggle-only):
+- `alpha_mask.enabled: true` multiplies RGB with PNG alpha channel and caches masked RGB files.
+- Applies to both finetuning and inference stages.
+- Debug samples are saved under `<run_dir>/alpha_mask_debug/`.
+
+Submission mode:
+- `submission.mode: stage_a_plus_rdd`: Stage A (`cosine` or `wildfusion`) + Stage B RDD reranking.
+- `submission.mode: stage_a_only`: skip RDD entirely and submit only Stage A scores.
+- Output files are mode-tagged, e.g. `submission_stage_a_only.csv` or `submission_stage_a_plus_rdd.csv`.
+
+RDD fusion controls (Kaggle pipeline):
+- `submission.rdd_fusion_mode`: `delta` (recommended), `blend`, or `replace`.
+- `submission.rdd_fusion_alpha`: fusion strength used by `delta`/`blend` (for Jaguar, start around `0.08-0.10` and validate).
+- `submission.rdd_min_stage_score`: only apply RDD fusion where Stage-A score is above threshold.
+- `submission.rdd_fusion_symmetrize`: enforce symmetric all-vs-all similarity matrix before submission.
+
+Stage-A method:
+- `stage_a.method: cosine` uses finetuned backbone embeddings + cosine matrix.
+- `stage_a.method: wildfusion` runs calibrated WildFusion as Stage-A (`stage_a.wildfusion.*` settings).
+
+Run:
+
+```bash
+python scripts/kaggle_jaguar_submit.py --config config/kaggle_jaguar.yaml --data-dir /path/to/jaguar-re-id
+```
+
+Useful flags:
+
+```bash
+# quick debug
+python scripts/kaggle_jaguar_submit.py --config config/kaggle_jaguar.yaml --data-dir /path/to/jaguar-re-id --dry-run --pair-limit 2000
+
+# faster full-ish iteration
+python scripts/kaggle_jaguar_submit.py --config config/kaggle_jaguar.yaml --data-dir /path/to/jaguar-re-id --fast
+
+# skip finetune and use existing checkpoint
+python scripts/kaggle_jaguar_submit.py --config config/kaggle_jaguar.yaml --data-dir /path/to/jaguar-re-id --checkpoint /path/to/checkpoint.pth
+```
+
 ## Configuration Guide
 
 ### `config/finetune_config.yaml`
