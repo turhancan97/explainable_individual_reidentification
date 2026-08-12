@@ -11,7 +11,7 @@ dataset:
   val_split_value: "test"
 
 model:
-  type: "megadescriptor"
+  type: "megadescriptor-l"
 
 train:
   seed: 0

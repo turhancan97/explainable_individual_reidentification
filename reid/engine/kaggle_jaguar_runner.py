@@ -31,6 +31,7 @@ from models.model import get_model
 from reid.engine.finetune_runner import run_finetune
 from reid.features.containers import FeatureContainer, get_labels_string
 from reid.methods.rdd import run_rdd_benchmark
+from reid.training.checkpointing import resolve_model_checkpoint
 
 
 @dataclass
@@ -265,22 +266,7 @@ def _prepare_split_metadata(cfg: DictConfig, run_dir: Path) -> SplitMetadata:
 
 
 def _find_latest_checkpoint(results_dir: Path) -> Path:
-    _ensure_exists(results_dir, "finetune results directory")
-    run_dirs = [p for p in results_dir.iterdir() if p.is_dir()]
-    if not run_dirs:
-        raise FileNotFoundError(f"No run directories found in {results_dir}")
-    run_dirs.sort(key=lambda p: p.stat().st_mtime)
-    latest = run_dirs[-1]
-
-    candidates = sorted(latest.glob("checkpoint-final_*.pth"))
-    if candidates:
-        return candidates[-1]
-
-    fallback = latest / "checkpoint-final.pth"
-    if fallback.exists():
-        return fallback
-
-    raise FileNotFoundError(f"No final checkpoint found under {latest}")
+    return resolve_model_checkpoint(results_dir=results_dir, filename="checkpoint-final.pth")
 
 
 def _build_finetune_cfg(cfg: DictConfig, metadata_path: Path) -> DictConfig:

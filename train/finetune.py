@@ -8,6 +8,7 @@ ROOT_DIR = Path(__file__).resolve().parents[1]
 if str(ROOT_DIR) not in sys.path:
     sys.path.insert(0, str(ROOT_DIR))
 
+from reid.config_defaults import DEFAULT_MODEL_TYPE
 from reid.engine.finetune_runner import run_finetune
 
 
@@ -23,7 +24,7 @@ DEFAULT_CONFIG = {
         "val_split_value": "test",
     },
     "model": {
-        "type": "megadescriptor",
+        "type": DEFAULT_MODEL_TYPE,
     },
     "train": {
         "seed": 0,

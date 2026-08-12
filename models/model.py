@@ -3,6 +3,8 @@ from transformers import AutoModel
 import torch
 import torch.nn as nn
 
+from reid.config_defaults import validate_model_type
+
 
 class ViTCLSAdapter(nn.Module):
     """Adapt token-output ViT backbones to a plain embedding tensor (B, D) using CLS token."""
@@ -48,6 +50,7 @@ class ViTCLSAdapter(nn.Module):
 
 
 def get_model(MODEL_TYPE):
+    MODEL_TYPE = validate_model_type(MODEL_TYPE)
     # Download MegaDescriptor-T backbone from HuggingFace Hub
     if MODEL_TYPE == 'megadescriptor-t':
         backbone = timm.create_model('hf-hub:BVRA/MegaDescriptor-T-224', num_classes=0, pretrained=True)

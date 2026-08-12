@@ -34,7 +34,9 @@ The code is organized into reusable modules under `reid/` and thin CLI entrypoin
 │   ├── features/
 │   │   └── containers.py
 │   ├── training/
+│   │   ├── accumulation.py
 │   │   └── checkpointing.py
+│   ├── config_defaults.py
 │   └── utils/
 │       ├── io.py
 │       └── repro.py
@@ -55,6 +57,21 @@ The code is organized into reusable modules under `reid/` and thin CLI entrypoin
 conda env create -f environment.yml
 conda activate ex-reid
 ```
+
+## Supported Models
+
+Supported model identifiers:
+
+- megadescriptor-t
+- megadescriptor-l (the default)
+- lynx_megadescriptorV3
+- lynx_megadescriptorV4
+- miewid
+- dinov2
+- dinov3
+
+The legacy name megadescriptor is not accepted. Use an explicit supported
+identifier in custom configurations.
 
 ## Dataset Requirements
 
@@ -294,16 +311,23 @@ Core options:
 
 ### Finetune outputs
 
-Under `results/<run_id>/`:
-- `checkpoint-final.pth`
-- `checkpoint-final-full.pth`
-- `checkpoint-latest-full.pth`
-- optional `checkpoint-best.pth` and `checkpoint-best-full.pth`
-- periodic `checkpoint-epoch-<n>.pth` (controlled by `output.save_every`)
-- `safety_checks/` artifacts when enabled
+Under results/<run_id>/:
+
+Canonical files:
+- checkpoint-final.pth — model-only inference checkpoint
+- checkpoint-final-full.pth — full resume checkpoint
+- checkpoint-latest-full.pth — latest full resume checkpoint
+- optional checkpoint-best.pth and checkpoint-best-full.pth
+- periodic checkpoint-epoch-<n>.pth (controlled by output.save_every)
+- safety_checks/ artifacts when enabled
 
 Aggregate metrics CSV:
-- `results/train_metrics.csv`
+- results/train_metrics.csv
+
+For compatibility, finetuning also writes historical tagged forms such as
+checkpoint-final_<dataset_tag>.pth. Probe and Jaguar checkpoint discovery
+recognize both canonical and tagged model-only final checkpoints, while explicit
+checkpoint paths always take precedence.
 
 ### Probe outputs
 
@@ -317,6 +341,17 @@ Aggregate benchmark CSV:
 
 Optional visualizations:
 - `visualizations/<run_id>/predictions_*.png`
+
+## Checkpoints and Gradient Accumulation
+
+The standard finetune-to-probe workflow uses checkpoint-final.pth. If automatic
+discovery is enabled, the newest run is searched for the configured canonical
+filename first and then for compatible tagged model-only checkpoints. Full
+checkpoints are never selected for inference.
+
+accumulation_steps controls optimizer updates in all three training loops:
+finetune, linear_probe, and efficient_probe. The final partial group at the end
+of an epoch is flushed so its gradients are not discarded.
 
 ## Weights & Biases (W&B)
 
@@ -339,6 +374,18 @@ Logged data:
 - probe: benchmark metrics/timings, metadata, optional visualization images
 - linear_probe (within probe): per-epoch train loss, learning rate, classification + retrieval metrics
 - efficient_probe (within probe): per-epoch train loss, learning rate, classification + retrieval metrics
+
+## Known Constraints and Future Work
+
+- Model weights are downloaded from Hugging Face on first use.
+- The RDD benchmark requires a separate local RDD repository and its model weights.
+- Default configs contain environment-specific shared filesystem paths; update them
+  for another machine.
+- Masking and RDD settings are dataset-dependent and should be validated rather than
+  assumed to improve every dataset.
+- The test suite intentionally avoids CUDA, downloaded models, and external RDD
+  integration; future work should add optional integration coverage and CI.
+- Future experiment priorities are tracked in AGENTS.md.
 
 ## Reproducibility
 

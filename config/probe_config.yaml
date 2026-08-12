@@ -63,7 +63,7 @@ benchmark:
       final_checkpoint_name: "linear_probe_final.pth"
       partial_rules:
         default: ["layers.3", "norm"]
-        megadescriptor: ["layers.3", "norm"]
+        megadescriptor-l: ["layers.3", "norm"]
         lynx_megadescriptorV3: ["layers.3", "norm"]
         lynx_megadescriptorV4: ["layers.3", "norm"]
     efficient_probe:

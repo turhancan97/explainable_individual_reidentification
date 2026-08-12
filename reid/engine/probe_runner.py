@@ -33,6 +33,8 @@ from reid.data.dataset_view import BenchmarkDatasetView
 from reid.evaluation.metrics import compute_metrics
 from reid.features.containers import FeatureContainer, get_labels_string
 from reid.methods.rdd import run_rdd_benchmark
+from reid.training.accumulation import should_step_accumulated_gradients
+from reid.training.checkpointing import resolve_configured_model_checkpoint, resolve_model_checkpoint
 from reid.utils.io import append_csv_row, ensure_dir, ensure_file
 from reid.utils.repro import set_reproducible
 
@@ -125,14 +127,7 @@ def choose_device(device_cfg: str) -> torch.device:
 
 
 def find_latest_checkpoint(results_dir: Path, filename: str) -> Path:
-    ensure_dir(results_dir, "Results directory")
-    run_dirs = [p for p in results_dir.iterdir() if p.is_dir()]
-    if not run_dirs:
-        raise FileNotFoundError(f"No run directories found in {results_dir}")
-    run_dirs.sort(key=lambda p: p.stat().st_mtime)
-    checkpoint_path = run_dirs[-1] / filename
-    ensure_file(checkpoint_path, "Checkpoint")
-    return checkpoint_path
+    return resolve_model_checkpoint(results_dir=results_dir, filename=filename)
 
 
 def load_backbone(
@@ -143,7 +138,11 @@ def load_backbone(
 
     if cfg.model.mode == "finetuned":
         if cfg.model.checkpoint.path:
-            checkpoint_path = Path(cfg.model.checkpoint.path)
+            checkpoint_path = resolve_configured_model_checkpoint(
+                explicit_path=Path(cfg.model.checkpoint.path),
+                results_dir=Path(cfg.model.checkpoint.results_dir),
+                filename=cfg.model.checkpoint.filename,
+            )
         elif cfg.model.checkpoint.from_latest_results:
             checkpoint_path = find_latest_checkpoint(Path(cfg.model.checkpoint.results_dir), cfg.model.checkpoint.filename)
         else:
@@ -720,6 +719,7 @@ def run_linear_probe(
         train_probs_list: List[np.ndarray] = []
         train_targets_list: List[np.ndarray] = []
         optimizer.zero_grad(set_to_none=True)
+        total_batches = len(train_loader)
         train_iter = tqdm(
             train_loader,
             desc=f"[linear_probe][train] epoch {epoch+1}/{int(lp_cfg.epochs)}",
@@ -736,7 +736,7 @@ def run_linear_probe(
             train_probs_list.append(train_probs)
             train_targets_list.append(y.detach().cpu().numpy())
             loss.backward()
-            if (i + 1) % int(lp_cfg.accumulation_steps) == 0:
+            if should_step_accumulated_gradients(i, total_batches, int(lp_cfg.accumulation_steps)):
                 optimizer.step()
                 optimizer.zero_grad(set_to_none=True)
             losses.append(float(loss.detach().cpu()))
@@ -940,6 +940,7 @@ def run_efficient_probe(
         train_probs_list: List[np.ndarray] = []
         train_targets_list: List[np.ndarray] = []
         optimizer.zero_grad(set_to_none=True)
+        total_batches = len(train_loader)
         train_iter = tqdm(
             train_loader,
             desc=f"[efficient_probe][train] epoch {epoch+1}/{int(ep_cfg.epochs)}",
@@ -956,7 +957,7 @@ def run_efficient_probe(
             train_probs_list.append(train_probs)
             train_targets_list.append(y.detach().cpu().numpy())
             loss.backward()
-            if (i + 1) % int(ep_cfg.accumulation_steps) == 0:
+            if should_step_accumulated_gradients(i, total_batches, int(ep_cfg.accumulation_steps)):
                 optimizer.step()
                 optimizer.zero_grad(set_to_none=True)
             losses.append(float(loss.detach().cpu()))

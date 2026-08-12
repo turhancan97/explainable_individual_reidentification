@@ -24,6 +24,7 @@ from reid.data.dataset_view import BenchmarkDatasetView
 from reid.evaluation.metrics import compute_metrics
 from reid.features.containers import FeatureContainer, get_labels_string, normalize_features
 from reid.training.checkpointing import load_full_checkpoint, save_full_checkpoint
+from reid.training.accumulation import should_step_accumulated_gradients
 from reid.utils.io import append_csv_row, ensure_dir, ensure_file
 from reid.utils.repro import set_reproducible
 
@@ -57,6 +58,7 @@ def train_one_epoch(
     losses: List[float] = []
 
     optimizer.zero_grad(set_to_none=True)
+    total_batches = len(loader)
     for i, batch in enumerate(loader):
         x, y = batch
         x = x.to(device)
@@ -72,7 +74,7 @@ def train_one_epoch(
             loss = objective(out, y)
             loss.backward()
 
-        if (i + 1) % accumulation_steps == 0:
+        if should_step_accumulated_gradients(i, total_batches, accumulation_steps):
             if amp_enabled:
                 scaler.step(optimizer)
                 scaler.update()
@@ -266,7 +268,17 @@ def run_finetune(cfg: DictConfig) -> None:
         metric_value = float(metrics.get(best_metric_name, -float("inf")))
         if metric_value > best_metric_value and bool(cfg.output.save_best):
             best_metric_value = metric_value
+            torch.save(model.state_dict(), output_folder / "checkpoint-best.pth")
             torch.save(model.state_dict(), output_folder / f"checkpoint-best_{dataset_tag}.pth")
+            save_full_checkpoint(
+                output_folder / "checkpoint-best-full.pth",
+                model,
+                objective,
+                optimizer,
+                scheduler,
+                scaler,
+                epoch + 1,
+            )
             save_full_checkpoint(
                 output_folder / f"checkpoint-best-full_{dataset_tag}.pth",
                 model,
@@ -278,7 +290,17 @@ def run_finetune(cfg: DictConfig) -> None:
             )
 
         if (epoch + 1) % int(cfg.output.save_every) == 0:
+            torch.save(model.state_dict(), output_folder / f"checkpoint-epoch-{epoch+1}.pth")
             torch.save(model.state_dict(), output_folder / f"checkpoint-epoch-{epoch+1}_{dataset_tag}.pth")
+        save_full_checkpoint(
+            output_folder / "checkpoint-latest-full.pth",
+            model,
+            objective,
+            optimizer,
+            scheduler,
+            scaler,
+            epoch + 1,
+        )
         save_full_checkpoint(
             output_folder / f"checkpoint-latest-full_{dataset_tag}.pth",
             model,
@@ -321,7 +343,17 @@ def run_finetune(cfg: DictConfig) -> None:
                 f"{metrics_str}"
             )
 
+    torch.save(model.state_dict(), output_folder / "checkpoint-final.pth")
     torch.save(model.state_dict(), output_folder / f"checkpoint-final_{dataset_tag}.pth")
+    save_full_checkpoint(
+        output_folder / "checkpoint-final-full.pth",
+        model,
+        objective,
+        optimizer,
+        scheduler,
+        scaler,
+        int(cfg.train.epochs),
+    )
     save_full_checkpoint(
         output_folder / f"checkpoint-final-full_{dataset_tag}.pth",
         model,
