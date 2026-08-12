@@ -225,9 +225,9 @@ logs/
 visualizations/
 wandb/
 
-# shell scripts
-finetune.sh
-probe.sh
+# # shell scripts
+# finetune.sh
+# probe.sh
 
 # cache 
 cache/
@@ -238,3 +238,6 @@ cache/
 # kaggle runs
 kaggle_runs/
 cache/
+
+# dataset
+dataset/
