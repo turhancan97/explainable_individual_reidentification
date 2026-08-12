@@ -24,7 +24,7 @@ model:
     filename: "checkpoint-final.pth"
 
 benchmark:
-  method: "cosine"   # cosine | wildfusion | local_lightglue | linear_probe | efficient_probe | rdd
+  method: "vismatch"  # cosine | wildfusion | local_lightglue | linear_probe | efficient_probe | vismatch
   top_k: [1, 5, 10]
   compute_map: true
   seed: 0
@@ -91,15 +91,15 @@ benchmark:
         default: ["layers.3", "norm"]
         dinov2: ["encoder.layer.11", "layernorm"]
         dinov3: ["encoder.layer.11", "layernorm"]
-    rdd:
-      repo_dir: "/home/kargin/Projects/repositories/rdd"
-      config_path: "/home/kargin/Projects/repositories/rdd/configs/default.yaml"
-      weights: "/home/kargin/Projects/repositories/rdd/weights/RDD-v2.pth"
-      cache_dir: "/shared/results/common/kargin/lynx/results/${dataset.name}/${dataset.animal}/cache/rdd"
-      device: "auto"        # auto | cpu | cuda
+    vismatch:
+      matcher: "rdd-lightglue"  # rdd-lightglue | aliked-lightglue | superpoint-lightglue | loma
+      device: "auto"            # auto | cpu | cuda
       path_col: "path"
       resize_max: 448
-      top_k: 512
+      top_k: 2048
+      matcher_threshold: null  # profile default: 0.01 for RDD/LightGlue, 0.10 for LoMa
+      feature_matching_mode: "feature_level"  # feature_level | pairwise (diagnostics only)
+      cache_dir: "/shared/results/common/kargin/lynx/results/${dataset.name}/${dataset.animal}/cache/vismatch"
       stage_a_method: "cosine"   # cosine | wildfusion | local_lightglue | linear_probe | efficient_probe
       candidate_k: 10
 
@@ -107,7 +107,7 @@ visualization:
   enabled: true
   dir: "visualizations"
   num_examples: 16
-  rdd_max_matches: 20
+  vismatch_max_matches: 20
   attention_num_examples: 16
   attention_average_queries: true
   top_k: 3

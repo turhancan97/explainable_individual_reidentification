@@ -15,6 +15,16 @@ from reid.config_defaults import (
     validate_model_type,
 )
 from reid.training.accumulation import should_step_accumulated_gradients
+from reid.methods.vismatch_profiles import FrameFeatures
+from reid.methods.vismatch_profiles import (
+    FEATURE_SCHEMA_VERSION,
+    SUPPORTED_VISMATCH_MATCHERS,
+    default_matcher_threshold,
+    build_matcher_profile,
+    normalize_match_confidences,
+    profile_fingerprint,
+    validate_matcher_name,
+)
 
 try:
     from reid.data.dataset_view import BenchmarkDatasetView
@@ -178,6 +188,86 @@ class AccumulationTests(unittest.TestCase):
     def test_invalid_accumulation_steps_fail(self):
         with self.assertRaises(ValueError):
             should_step_accumulated_gradients(0, total_batches=1, accumulation_steps=0)
+
+
+class VismatchProfileTests(unittest.TestCase):
+    def test_frame_features_use_canonical_schema(self):
+        features = FrameFeatures(
+            keypoints=np.zeros((3, 2), dtype=np.float32),
+            descriptors=np.zeros((3, 8), dtype=np.float32),
+            scores=np.ones(3, dtype=np.float32),
+            image_size=np.asarray([32, 48], dtype=np.int32),
+        )
+        self.assertEqual(features.schema_version, FEATURE_SCHEMA_VERSION)
+        self.assertEqual(features.coordinate_convention, "pixel")
+        self.assertEqual(features.image_size_convention, "hw")
+        normalized = FrameFeatures(
+            keypoints=np.zeros((3, 2), dtype=np.float32),
+            descriptors=np.zeros((3, 8), dtype=np.float32),
+            scores=np.ones(3, dtype=np.float32),
+            image_size=np.asarray([42, 56], dtype=np.int32),
+            coordinate_convention="normalized[-1,1]",
+            original_image_size=np.asarray([40, 53], dtype=np.int32),
+        )
+        self.assertEqual(normalized.coordinate_convention, "normalized[-1,1]")
+        with self.assertRaises(ValueError):
+            FrameFeatures(
+                keypoints=np.zeros((3, 3), dtype=np.float32),
+                descriptors=np.zeros((3, 8), dtype=np.float32),
+                scores=np.ones(3, dtype=np.float32),
+                image_size=np.asarray([32, 48], dtype=np.int32),
+            )
+
+    def test_supported_matchers_and_legacy_method_rejection(self):
+        self.assertEqual(
+            SUPPORTED_VISMATCH_MATCHERS,
+            ("rdd-lightglue", "aliked-lightglue", "superpoint-lightglue", "loma"),
+        )
+        self.assertEqual(validate_matcher_name("RDD-LightGlue"), "rdd-lightglue")
+        self.assertEqual(validate_matcher_name("LoMa"), "loma")
+        self.assertEqual(default_matcher_threshold("loma"), 0.1)
+        self.assertEqual(default_matcher_threshold("rdd-lightglue"), 0.01)
+        with self.assertRaises(ValueError):
+            validate_matcher_name("rdd")
+        with self.assertRaises(ValueError):
+            validate_matcher_name("unknown-lightglue")
+
+    def test_profiles_are_reproducible_and_matcher_specific(self):
+        rdd = build_matcher_profile("rdd-lightglue", 512, 0.01)
+        aliked = build_matcher_profile("aliked-lightglue", 512, 0.01)
+        loma = build_matcher_profile("loma", 512, 0.1)
+        self.assertEqual(rdd.feature_schema_version, FEATURE_SCHEMA_VERSION)
+        self.assertNotEqual(profile_fingerprint(rdd), profile_fingerprint(aliked))
+        self.assertNotEqual(profile_fingerprint(rdd), profile_fingerprint(loma))
+        self.assertIn("multiple of 14", loma.preprocessing)
+        self.assertEqual(loma.score_mode, "mutual_confidence_sum_over_min_keypoints")
+        self.assertNotEqual(
+            profile_fingerprint(rdd),
+            profile_fingerprint(build_matcher_profile("rdd-lightglue", 1024, 0.01)),
+        )
+
+    def test_confidence_normalization_preserves_legacy_formula(self):
+        score, count, values = normalize_match_confidences([0.01, 0.5, 0.9], 4, 8, 0.01)
+        self.assertAlmostEqual(score, (0.01 + 0.5 + 0.9) / 4.0)
+        self.assertEqual(count, 3)
+        self.assertEqual(values, [0.01, 0.5, 0.9])
+
+    def test_empty_confidences_have_zero_score(self):
+        score, count, values = normalize_match_confidences([], 0, 0, 0.01)
+        self.assertEqual((score, count, values), (0.0, 0, []))
+
+    def test_shipped_configs_use_vismatch_public_method(self):
+        root = Path(__file__).resolve().parents[1]
+        probe = (root / "config/probe_config.yaml").read_text(encoding="utf-8")
+        self.assertIn('method: "vismatch"', probe)
+        self.assertIn('    vismatch:', probe)
+        self.assertNotIn('    rdd:', probe)
+        jaguar = (root / "config/kaggle_jaguar.yaml").read_text(encoding="utf-8")
+        self.assertIn('vismatch:', jaguar)
+        self.assertIn('loma', probe)
+        self.assertIn('loma', jaguar)
+        self.assertIn('stage_a_plus_vismatch', jaguar)
+        self.assertNotIn('stage_a_plus_rdd', jaguar)
 
 
 if __name__ == "__main__":

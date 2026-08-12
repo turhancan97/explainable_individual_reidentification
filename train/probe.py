@@ -38,7 +38,7 @@ DEFAULT_CONFIG = {
         },
     },
     "benchmark": {
-        "method": "cosine",
+        "method": "vismatch",
         "top_k": [1, 5, 10],
         "compute_map": True,
         "seed": 0,
@@ -107,15 +107,15 @@ DEFAULT_CONFIG = {
                     "default": ["layers.3", "norm"],
                 },
             },
-            "rdd": {
-                "repo_dir": "/home/kargin/Projects/repositories/rdd",
-                "config_path": "/home/kargin/Projects/repositories/rdd/configs/default.yaml",
-                "weights": "/home/kargin/Projects/repositories/rdd/weights/RDD-v2.pth",
-                "cache_dir": "cache/rdd_features",
+            "vismatch": {
+                "matcher": "rdd-lightglue",  # rdd-lightglue | aliked-lightglue | superpoint-lightglue | loma
+                "cache_dir": "cache/vismatch_features",
                 "device": "auto",
                 "path_col": "path",
                 "resize_max": 448,
                 "top_k": 2048,
+                "matcher_threshold": None,  # profile default: 0.01 for RDD/LightGlue, 0.10 for LoMa
+                "feature_matching_mode": "feature_level",
                 "stage_a_method": "cosine",
                 "candidate_k": 200,
             },
@@ -125,7 +125,7 @@ DEFAULT_CONFIG = {
         "enabled": False,
         "dir": "visualizations",
         "num_examples": 8,
-        "rdd_max_matches": 200,
+        "vismatch_max_matches": 200,
         "attention_num_examples": 8,
         "attention_average_queries": True,
         "top_k": 3,

@@ -17,6 +17,7 @@ wildlife-datasets
 wildlife-tools
 git+https://github.com/WildlifeDatasets/wildlife-tools
 git+https://github.com/WildlifeDatasets/wildlife-datasets@develop
+vismatch @ git+https://github.com/gmberton/vismatch.git@4a743b75749a3770af59d275483ed341dea51ff0
 tqdm
 wandb
 accelerate

@@ -30,7 +30,8 @@ from wildlife_tools.similarity.wildfusion import SimilarityPipeline, WildFusion
 from models.model import get_model
 from reid.engine.finetune_runner import run_finetune
 from reid.features.containers import FeatureContainer, get_labels_string
-from reid.methods.rdd import run_rdd_benchmark
+from reid.methods.vismatch import run_vismatch_benchmark
+from reid.methods.vismatch_profiles import default_matcher_threshold
 from reid.training.checkpointing import resolve_model_checkpoint
 
 
@@ -408,9 +409,9 @@ def _normalize_minmax(x: np.ndarray) -> np.ndarray:
     return (x - vmin) / (vmax - vmin)
 
 
-def _fuse_stage_a_and_rdd(
+def _fuse_stage_a_and_vismatch(
     stage_scores: np.ndarray,
-    rdd_scores_raw: np.ndarray,
+    vismatch_scores_raw: np.ndarray,
     candidate_indices: np.ndarray,
     *,
     mode: str = "delta",
@@ -419,7 +420,7 @@ def _fuse_stage_a_and_rdd(
     symmetrize: bool = True,
 ) -> np.ndarray:
     if mode not in {"delta", "blend", "replace"}:
-        raise ValueError("RDD fusion mode must be one of: delta, blend, replace")
+        raise ValueError("Vismatch fusion mode must be one of: delta, blend, replace")
 
     alpha = float(np.clip(alpha, 0.0, 1.0))
     min_stage_score = float(np.clip(min_stage_score, 0.0, 1.0))
@@ -428,7 +429,7 @@ def _fuse_stage_a_and_rdd(
     n = final.shape[0]
     for i in range(n):
         cands = candidate_indices[i]
-        vals = rdd_scores_raw[i, cands]
+        vals = vismatch_scores_raw[i, cands]
         valid_mask = vals > -1e8
         if not np.any(valid_mask):
             continue
@@ -575,21 +576,21 @@ def run_kaggle_jaguar(cfg: DictConfig) -> None:
     run_dir = Path(cfg.kaggle.output_dir) / run_id
     run_dir.mkdir(parents=True, exist_ok=True)
 
-    mode = str(getattr(cfg.submission, "mode", "stage_a_plus_rdd"))
-    if mode not in {"stage_a_only", "stage_a_plus_rdd"}:
-        raise ValueError("submission.mode must be one of: stage_a_only, stage_a_plus_rdd")
+    mode = str(getattr(cfg.submission, "mode", "stage_a_plus_vismatch"))
+    if mode not in {"stage_a_only", "stage_a_plus_vismatch"}:
+        raise ValueError("submission.mode must be one of: stage_a_only, stage_a_plus_vismatch")
     stage_a_method = str(getattr(cfg.stage_a, "method", "cosine"))
     if stage_a_method not in {"cosine", "wildfusion"}:
         raise ValueError("stage_a.method must be one of: cosine, wildfusion")
-    rdd_fusion_mode = str(getattr(cfg.submission, "rdd_fusion_mode", "delta"))
-    if rdd_fusion_mode not in {"delta", "blend", "replace"}:
-        raise ValueError("submission.rdd_fusion_mode must be one of: delta, blend, replace")
-    rdd_fusion_alpha = float(getattr(cfg.submission, "rdd_fusion_alpha", 0.02))
-    rdd_fusion_min_stage = float(getattr(cfg.submission, "rdd_min_stage_score", 0.0))
-    rdd_fusion_sym = bool(getattr(cfg.submission, "rdd_fusion_symmetrize", True))
+    vismatch_fusion_mode = str(getattr(cfg.submission, "vismatch_fusion_mode", "delta"))
+    if vismatch_fusion_mode not in {"delta", "blend", "replace"}:
+        raise ValueError("submission.vismatch_fusion_mode must be one of: delta, blend, replace")
+    vismatch_fusion_alpha = float(getattr(cfg.submission, "vismatch_fusion_alpha", 0.02))
+    vismatch_fusion_min_stage = float(getattr(cfg.submission, "vismatch_min_stage_score", 0.0))
+    vismatch_fusion_sym = bool(getattr(cfg.submission, "vismatch_fusion_symmetrize", True))
     print(
         f"[kaggle] workflow mode={mode}: finetune -> stage_a({stage_a_method})"
-        + (" + rdd -> submission" if mode == "stage_a_plus_rdd" else " -> submission")
+        + (" + vismatch -> submission" if mode == "stage_a_plus_vismatch" else " -> submission")
     )
     OmegaConf.save(cfg, run_dir / "config.snapshot.yaml")
 
@@ -655,7 +656,7 @@ def run_kaggle_jaguar(cfg: DictConfig) -> None:
 
     transform = T.Compose([T.Resize([img_size, img_size]), T.ToTensor(), T.Normalize(mean=mean, std=std)])
     test_dataset_stage_a = _build_image_dataset(data_dir, test_paths, transform=transform)
-    test_dataset_rdd = _build_image_dataset(data_dir, test_paths, transform=None)
+    test_dataset_vismatch = _build_image_dataset(data_dir, test_paths, transform=None)
 
     timings: Dict[str, float] = {}
 
@@ -724,15 +725,20 @@ def run_kaggle_jaguar(cfg: DictConfig) -> None:
 
     if bool(cfg.kaggle.fast_mode):
         candidate_k = int(cfg.stage_a.fast_candidate_k)
-        rdd_top_k = int(cfg.rdd.fast_top_k)
-        print(f"[kaggle][fast_mode] candidate_k={candidate_k}, rdd.top_k={rdd_top_k}")
+        vismatch_top_k = int(cfg.vismatch.fast_top_k)
+        print(f"[kaggle][fast_mode] candidate_k={candidate_k}, vismatch.top_k={vismatch_top_k}")
     else:
         candidate_k = int(cfg.stage_a.candidate_k)
-        rdd_top_k = int(cfg.rdd.top_k)
+        vismatch_top_k = int(cfg.vismatch.top_k)
 
     timings["stage_a_sec"] = time.perf_counter() - t_stage_a
 
-    rdd_cfg = OmegaConf.create(
+    vismatch_threshold = (
+        default_matcher_threshold(str(cfg.vismatch.matcher))
+        if cfg.vismatch.matcher_threshold is None
+        else float(cfg.vismatch.matcher_threshold)
+    )
+    vismatch_cfg = OmegaConf.create(
         {
             "dataset": {
                 "root": str(data_dir),
@@ -742,15 +748,15 @@ def run_kaggle_jaguar(cfg: DictConfig) -> None:
             },
             "benchmark": {
                 "methods": {
-                    "rdd": {
-                        "repo_dir": str(cfg.rdd.repo_dir),
-                        "config_path": str(cfg.rdd.config_path),
-                        "weights": str(cfg.rdd.weights),
-                        "cache_dir": str(cfg.rdd.cache_dir),
-                        "device": str(cfg.rdd.device),
+                    "vismatch": {
+                        "matcher": str(cfg.vismatch.matcher),
+                        "cache_dir": str(cfg.vismatch.cache_dir),
+                        "device": str(cfg.vismatch.device),
                         "path_col": "path",
-                        "resize_max": int(cfg.rdd.resize_max),
-                        "top_k": int(rdd_top_k),
+                        "resize_max": int(cfg.vismatch.resize_max),
+                        "top_k": int(vismatch_top_k),
+                        "matcher_threshold": vismatch_threshold,
+                        "feature_matching_mode": "feature_level",
                         "stage_a_method": "cosine",
                         "candidate_k": int(candidate_k),
                     }
@@ -762,21 +768,21 @@ def run_kaggle_jaguar(cfg: DictConfig) -> None:
                 "enabled": bool(cfg.visualization.enabled),
                 "dir": str(run_dir / "visualizations"),
                 "num_examples": int(cfg.visualization.num_examples),
-                "rdd_max_matches": int(cfg.visualization.rdd_max_matches),
+                "vismatch_max_matches": int(cfg.visualization.vismatch_max_matches),
             },
         }
     )
 
     candidate_indices: Optional[np.ndarray] = None
     final_scores: np.ndarray
-    rdd_scores_raw: Optional[np.ndarray] = None
-    if mode == "stage_a_plus_rdd":
+    vismatch_scores_raw: Optional[np.ndarray] = None
+    if mode == "stage_a_plus_vismatch":
         candidate_indices = _build_candidate_indices(stage_a_scores, candidate_k=candidate_k)
-        t_rdd = time.perf_counter()
-        rdd_scores_raw, rdd_timings, _ = run_rdd_benchmark(
-            cfg=rdd_cfg,
-            dataset_query=test_dataset_rdd,
-            dataset_database=test_dataset_rdd,
+        t_vismatch = time.perf_counter()
+        vismatch_scores_raw, vismatch_timings, _ = run_vismatch_benchmark(
+            cfg=vismatch_cfg,
+            dataset_query=test_dataset_vismatch,
+            dataset_database=test_dataset_vismatch,
             run_dir=run_dir,
             checkpoint_path=checkpoint_path,
             mean=mean,
@@ -784,34 +790,34 @@ def run_kaggle_jaguar(cfg: DictConfig) -> None:
             candidate_indices=candidate_indices,
             method_artifacts={},
         )
-        timings.update({f"rdd_{k}": float(v) for k, v in rdd_timings.items()})
-        timings["rdd_stage_sec"] = time.perf_counter() - t_rdd
+        timings.update({k: float(v) for k, v in vismatch_timings.items()})
+        timings["vismatch_stage_sec"] = time.perf_counter() - t_vismatch
 
         t_fuse = time.perf_counter()
-        final_scores = _fuse_stage_a_and_rdd(
+        final_scores = _fuse_stage_a_and_vismatch(
             stage_scores=stage_a_scores,
-            rdd_scores_raw=rdd_scores_raw,
+            vismatch_scores_raw=vismatch_scores_raw,
             candidate_indices=candidate_indices,
-            mode=rdd_fusion_mode,
-            alpha=rdd_fusion_alpha,
-            min_stage_score=rdd_fusion_min_stage,
-            symmetrize=rdd_fusion_sym,
+            mode=vismatch_fusion_mode,
+            alpha=vismatch_fusion_alpha,
+            min_stage_score=vismatch_fusion_min_stage,
+            symmetrize=vismatch_fusion_sym,
         )
         timings["fusion_sec"] = time.perf_counter() - t_fuse
         print(
-            f"[kaggle][fusion] mode={rdd_fusion_mode} alpha={rdd_fusion_alpha:.3f} "
-            f"min_stage_score={rdd_fusion_min_stage:.3f} symmetrize={rdd_fusion_sym}"
+            f"[kaggle][fusion] mode={vismatch_fusion_mode} alpha={vismatch_fusion_alpha:.3f} "
+            f"min_stage_score={vismatch_fusion_min_stage:.3f} symmetrize={vismatch_fusion_sym}"
         )
     else:
         final_scores = stage_a_scores.copy()
-        timings["rdd_stage_sec"] = 0.0
+        timings["vismatch_stage_sec"] = 0.0
         timings["fusion_sec"] = 0.0
 
     np.save(run_dir / "stage_a_scores.npy", stage_a_scores)
     if candidate_indices is not None:
         np.save(run_dir / "candidate_indices.npy", candidate_indices)
-    if rdd_scores_raw is not None:
-        np.save(run_dir / "rdd_scores_raw.npy", rdd_scores_raw)
+    if vismatch_scores_raw is not None:
+        np.save(run_dir / "vismatch_scores_raw.npy", vismatch_scores_raw)
     np.save(run_dir / "final_scores.npy", final_scores)
     pd.DataFrame({"image": test_images, "index": np.arange(len(test_images))}).to_csv(run_dir / "test_image_index.csv", index=False)
 
@@ -821,7 +827,7 @@ def run_kaggle_jaguar(cfg: DictConfig) -> None:
         val_images = [Path(p).name for p in val_paths]
         val_labels = split_meta.val_df["identity"].astype(str).tolist()
         val_dataset_stage_a = _build_image_dataset(data_dir, val_paths, transform=transform, labels=val_labels)
-        val_dataset_rdd = _build_image_dataset(data_dir, val_paths, transform=None)
+        val_dataset_vismatch = _build_image_dataset(data_dir, val_paths, transform=None)
 
         if stage_a_method == "cosine":
             val_embeddings = _extract_embeddings_with_cache(
@@ -851,12 +857,12 @@ def run_kaggle_jaguar(cfg: DictConfig) -> None:
                 dtype=np.float32,
             )
             val_stage = np.clip(val_stage, 0.0, 1.0)
-        if mode == "stage_a_plus_rdd":
+        if mode == "stage_a_plus_vismatch":
             val_candidates = _build_candidate_indices(val_stage, candidate_k=min(candidate_k, max(1, len(val_images) - 1)))
-            val_rdd_raw, _, _ = run_rdd_benchmark(
-                cfg=rdd_cfg,
-                dataset_query=val_dataset_rdd,
-                dataset_database=val_dataset_rdd,
+            val_vismatch_raw, _, _ = run_vismatch_benchmark(
+                cfg=vismatch_cfg,
+                dataset_query=val_dataset_vismatch,
+                dataset_database=val_dataset_vismatch,
                 run_dir=run_dir,
                 checkpoint_path=checkpoint_path,
                 mean=mean,
@@ -864,14 +870,14 @@ def run_kaggle_jaguar(cfg: DictConfig) -> None:
                 candidate_indices=val_candidates,
                 method_artifacts={},
             )
-            val_final = _fuse_stage_a_and_rdd(
+            val_final = _fuse_stage_a_and_vismatch(
                 stage_scores=val_stage,
-                rdd_scores_raw=val_rdd_raw,
+                vismatch_scores_raw=val_vismatch_raw,
                 candidate_indices=val_candidates,
-                mode=rdd_fusion_mode,
-                alpha=rdd_fusion_alpha,
-                min_stage_score=rdd_fusion_min_stage,
-                symmetrize=rdd_fusion_sym,
+                mode=vismatch_fusion_mode,
+                alpha=vismatch_fusion_alpha,
+                min_stage_score=vismatch_fusion_min_stage,
+                symmetrize=vismatch_fusion_sym,
             )
         else:
             val_final = val_stage
@@ -881,10 +887,10 @@ def run_kaggle_jaguar(cfg: DictConfig) -> None:
             "val_num_identities": int(split_meta.val_df["identity"].nunique()),
             "identity_balanced_map": float(val_ib_map),
             "submission_mode": mode,
-            "rdd_fusion_mode": rdd_fusion_mode,
-            "rdd_fusion_alpha": float(rdd_fusion_alpha),
-            "rdd_min_stage_score": float(rdd_fusion_min_stage),
-            "rdd_fusion_symmetrize": bool(rdd_fusion_sym),
+            "vismatch_fusion_mode": vismatch_fusion_mode,
+            "vismatch_fusion_alpha": float(vismatch_fusion_alpha),
+            "vismatch_min_stage_score": float(vismatch_fusion_min_stage),
+            "vismatch_fusion_symmetrize": bool(vismatch_fusion_sym),
         }
         with (run_dir / "validation_report.json").open("w", encoding="utf-8") as f:
             json.dump(validation_report, f, indent=2)
@@ -927,10 +933,10 @@ def run_kaggle_jaguar(cfg: DictConfig) -> None:
         "run_id": run_id,
         "run_utc": run_started.isoformat() + "Z",
         "submission_mode": mode,
-        "rdd_fusion_mode": rdd_fusion_mode,
-        "rdd_fusion_alpha": float(rdd_fusion_alpha),
-        "rdd_min_stage_score": float(rdd_fusion_min_stage),
-        "rdd_fusion_symmetrize": bool(rdd_fusion_sym),
+        "vismatch_fusion_mode": vismatch_fusion_mode,
+        "vismatch_fusion_alpha": float(vismatch_fusion_alpha),
+        "vismatch_min_stage_score": float(vismatch_fusion_min_stage),
+        "vismatch_fusion_symmetrize": bool(vismatch_fusion_sym),
         "timings": {k: float(v) for k, v in timings.items()},
         "git_commit": _git_commit_hash(),
         "env": {

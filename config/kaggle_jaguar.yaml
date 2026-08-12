@@ -64,24 +64,23 @@ stage_a:
     local_batch_size: 16
     calibration_size: 800
 
-rdd:
-  repo_dir: "/home/kargin/Projects/repositories/rdd"
-  config_path: "/home/kargin/Projects/repositories/rdd/configs/default.yaml"
-  weights: "/home/kargin/Projects/repositories/rdd/weights/RDD-v2.pth"
-  cache_dir: "/shared/results/common/kargin/lynx/results/kaggle_jaguar/rdd"
+vismatch:
+  matcher: "rdd-lightglue"  # rdd-lightglue | aliked-lightglue | superpoint-lightglue | loma
+  cache_dir: "/shared/results/common/kargin/lynx/results/kaggle_jaguar/vismatch"
   device: "auto"
   resize_max: 672
   top_k: 2048
   fast_top_k: 256
+  matcher_threshold: null  # profile default: 0.01 for RDD/LightGlue, 0.10 for LoMa
 
 submission:
-  mode: "stage_a_plus_rdd"   # stage_a_only | stage_a_plus_rdd
+  mode: "stage_a_plus_vismatch"   # stage_a_only | stage_a_plus_vismatch
   output_csv: "kaggle_runs/jaguar_reid/latest_submission.csv"
   strict_row_count: true
-  rdd_fusion_mode: "delta"       # delta | blend | replace
-  rdd_fusion_alpha: 0.10         # ablation-backed default for jaguar pipeline
-  rdd_min_stage_score: 0.0       # apply RDD only if stage_a score >= threshold
-  rdd_fusion_symmetrize: true    # average S(i,j) and S(j,i) for all-vs-all matrices
+  vismatch_fusion_mode: "delta"       # delta | blend | replace
+  vismatch_fusion_alpha: 0.10         # ablation-backed default for jaguar pipeline
+  vismatch_min_stage_score: 0.0       # apply Vismatch only if stage_a score >= threshold
+  vismatch_fusion_symmetrize: true    # average S(i,j) and S(j,i) for all-vs-all matrices
 
 ensemble:
   enabled: false
@@ -90,7 +89,7 @@ ensemble:
 visualization:
   enabled: true
   num_examples: 8
-  rdd_max_matches: 50
+  vismatch_max_matches: 50
 
 safety_checks:
   enabled: true

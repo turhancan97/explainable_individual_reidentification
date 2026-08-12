@@ -32,7 +32,7 @@ from reid.data.safety_checks import run_split_safety_checks
 from reid.data.dataset_view import BenchmarkDatasetView
 from reid.evaluation.metrics import compute_metrics
 from reid.features.containers import FeatureContainer, get_labels_string
-from reid.methods.rdd import run_rdd_benchmark
+from reid.methods.vismatch import run_vismatch_benchmark
 from reid.training.accumulation import should_step_accumulated_gradients
 from reid.training.checkpointing import resolve_configured_model_checkpoint, resolve_model_checkpoint
 from reid.utils.io import append_csv_row, ensure_dir, ensure_file
@@ -63,17 +63,17 @@ PROBE_CSV_METRIC_COLUMNS = [
     "classification_top_5",
     "classification_top_10",
     "classification_balanced_top_1",
-    "rdd_avg_matches",
+    "vismatch_avg_matches",
 ]
 
 PROBE_CSV_TIMING_COLUMNS = [
     "feature_extraction_sec",
     "similarity_sec",
-    "rdd_stage_a_sec",
-    "rdd_candidate_k",
-    "rdd_model_build_sec",
-    "rdd_feature_extraction_sec",
-    "rdd_rerank_sec",
+    "vismatch_stage_a_sec",
+    "vismatch_candidate_k",
+    "vismatch_model_build_sec",
+    "vismatch_feature_extraction_sec",
+    "vismatch_rerank_sec",
     "linear_probe_train_sec",
     "linear_probe_eval_sec",
     "efficient_probe_train_sec",
@@ -1146,6 +1146,11 @@ def run_method(
     wandb_run: Any = None,
     method_artifacts: Optional[Dict[str, Any]] = None,
 ) -> Tuple[np.ndarray, Dict[str, float], Dict[str, float]]:
+    if method == "rdd":
+        raise ValueError(
+            "The public probe method 'rdd' was removed. Use method='vismatch' with "
+            "benchmark.methods.vismatch.matcher='rdd-lightglue'."
+        )
     timings: Dict[str, float] = {}
     method_metrics: Dict[str, float] = {}
     t0 = time.perf_counter()
@@ -1270,15 +1275,15 @@ def run_method(
             method_artifacts=method_artifacts,
         )
         timings.update(ep_timings)
-    elif method == "rdd":
-        rdd_cfg = cfg.benchmark.methods.rdd
-        stage_a_method = str(rdd_cfg.stage_a_method)
-        if stage_a_method == "rdd":
-            raise ValueError("benchmark.methods.rdd.stage_a_method cannot be 'rdd'")
+    elif method == "vismatch":
+        vismatch_cfg = cfg.benchmark.methods.vismatch
+        stage_a_method = str(vismatch_cfg.stage_a_method)
+        if stage_a_method == "vismatch":
+            raise ValueError("benchmark.methods.vismatch.stage_a_method cannot be 'vismatch'")
 
-        candidate_k = int(rdd_cfg.candidate_k)
+        candidate_k = int(vismatch_cfg.candidate_k)
         if candidate_k <= 0:
-            raise ValueError("benchmark.methods.rdd.candidate_k must be > 0")
+            raise ValueError("benchmark.methods.vismatch.candidate_k must be > 0")
         candidate_k = min(candidate_k, len(dataset_database))
 
         t_stage_a = time.perf_counter()
@@ -1305,14 +1310,14 @@ def run_method(
         )
         stage_a_sec = time.perf_counter() - t_stage_a
         candidate_indices = np.argsort(stage_similarity, axis=1)[:, ::-1][:, :candidate_k]
-        timings["rdd_stage_a_sec"] = float(stage_a_sec)
-        timings["rdd_candidate_k"] = float(candidate_k)
+        timings["vismatch_stage_a_sec"] = float(stage_a_sec)
+        timings["vismatch_candidate_k"] = float(candidate_k)
         for k, v in stage_timings.items():
             if k == "total_method_sec":
                 continue
             timings[f"stage_a_{stage_a_method}_{k}"] = float(v)
 
-        similarity, rdd_timings, method_metrics = run_rdd_benchmark(
+        similarity, vismatch_timings, method_metrics = run_vismatch_benchmark(
             cfg=cfg,
             dataset_query=dataset_query,
             dataset_database=dataset_database,
@@ -1323,11 +1328,11 @@ def run_method(
             candidate_indices=candidate_indices,
             method_artifacts=method_artifacts,
         )
-        timings.update(rdd_timings)
+        timings.update(vismatch_timings)
 
     else:
         raise ValueError(
-            f"Unsupported method '{method}'. Supported: cosine, wildfusion, local_lightglue, linear_probe, efficient_probe, rdd"
+            f"Unsupported method '{method}'. Supported: cosine, wildfusion, local_lightglue, linear_probe, efficient_probe, vismatch"
         )
 
     timings["total_method_sec"] = time.perf_counter() - t0
@@ -1386,6 +1391,11 @@ def run_probe(cfg: DictConfig) -> None:
     run_t0 = time.perf_counter()
     set_reproducible(int(cfg.benchmark.seed), bool(cfg.benchmark.deterministic))
     method = str(cfg.benchmark.method)
+    if method == "rdd":
+        raise ValueError(
+            "The public probe method 'rdd' was removed. Use method='vismatch' with "
+            "benchmark.methods.vismatch.matcher='rdd-lightglue'."
+        )
     run_started = datetime.utcnow()
     run_id = run_started.strftime("run_%Y%m%d_%H%M%S")
     run_dir = Path(cfg.output.run_dir) / run_id
@@ -1395,8 +1405,8 @@ def run_probe(cfg: DictConfig) -> None:
     if bool(getattr(cfg, "safety_checks", {}).get("enabled", True)):
         classifier_methods = {"linear_probe", "efficient_probe"}
         require_closed_set = method in classifier_methods
-        if method == "rdd":
-            stage_a_method = str(cfg.benchmark.methods.rdd.stage_a_method)
+        if method == "vismatch":
+            stage_a_method = str(cfg.benchmark.methods.vismatch.stage_a_method)
             require_closed_set = stage_a_method in classifier_methods
         run_split_safety_checks(
             df_a=dataset_database_raw.df,
@@ -1411,9 +1421,9 @@ def run_probe(cfg: DictConfig) -> None:
             warn_only_unseen=not require_closed_set,
         )
 
-    use_backbone = method != "rdd"
-    if method == "rdd":
-        stage_a_method = str(cfg.benchmark.methods.rdd.stage_a_method)
+    use_backbone = method != "vismatch"
+    if method == "vismatch":
+        stage_a_method = str(cfg.benchmark.methods.vismatch.stage_a_method)
         stage_a_needs_backbone = stage_a_method in {"cosine", "wildfusion", "linear_probe", "efficient_probe"}
         use_backbone = stage_a_needs_backbone
     if use_backbone:
@@ -1422,13 +1432,13 @@ def run_probe(cfg: DictConfig) -> None:
         model.to(device)
         model.eval()
     else:
-        device = choose_device(str(cfg.benchmark.methods.rdd.device))
+        device = choose_device(str(cfg.benchmark.methods.vismatch.device))
         model = None
         embedding_size = 0
         mean = (0.485, 0.456, 0.406)
         std = (0.229, 0.224, 0.225)
         img_size = 224
-        arch = "rdd"
+        arch = "vismatch"
         number_of_patches = None
         checkpoint_path = None
 
@@ -1444,8 +1454,8 @@ def run_probe(cfg: DictConfig) -> None:
         dataset_database = make_dataset_view(cfg, dataset_database_raw, transform=transform_model)
         dataset_query = make_dataset_view(cfg, dataset_query_raw, transform=transform_model)
         dataset_calibration = make_dataset_view(cfg, dataset_calibration_raw, transform=transform_model)
-    elif method == "rdd":
-        stage_a_method = str(cfg.benchmark.methods.rdd.stage_a_method)
+    elif method == "vismatch":
+        stage_a_method = str(cfg.benchmark.methods.vismatch.stage_a_method)
         if stage_a_method in {"cosine", "wildfusion", "linear_probe", "efficient_probe"}:
             dataset_database = make_dataset_view(cfg, dataset_database_raw, transform=transform_model)
             dataset_query = make_dataset_view(cfg, dataset_query_raw, transform=transform_model)
@@ -1530,8 +1540,8 @@ def run_probe(cfg: DictConfig) -> None:
             dataset_database_display=dataset_database_display,
             run_id=run_id,
         )
-        if method == "rdd":
-            visuals.extend([str(p) for p in method_artifacts.get("rdd_match_paths", [])])
+        if method == "vismatch":
+            visuals.extend([str(p) for p in method_artifacts.get("vismatch_match_paths", [])])
         attention_map_path = method_artifacts.get("attention_map_path")
         if attention_map_path:
             visuals.append(str(attention_map_path))

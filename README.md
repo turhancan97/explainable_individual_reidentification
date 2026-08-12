@@ -10,7 +10,7 @@ Modular deep learning codebase for wildlife individual re-identification (ReID),
 
 The repository supports two workflows:
 - `finetune`: train a backbone with ArcFace loss on a train split and evaluate retrieval on a validation split.
-- `probe`: benchmark retrieval methods (`cosine`, `wildfusion`, `local_lightglue`, `linear_probe`, `efficient_probe`, `rdd`) with pretrained or finetuned backbones.
+- `probe`: benchmark retrieval methods (`cosine`, `wildfusion`, `local_lightglue`, `linear_probe`, `efficient_probe`, `vismatch`) with pretrained or finetuned backbones.
 
 The code is organized into reusable modules under `reid/` and thin CLI entrypoints under `train/`.
 
@@ -125,10 +125,10 @@ Run efficient probe:
 python train/probe.py --method efficient_probe
 ```
 
-Run RDD benchmark:
+Run Vismatch benchmark:
 
 ```bash
-python train/probe.py --method rdd
+python train/probe.py --method vismatch
 ```
 
 ### Kaggle Jaguar Re-ID (new standalone pipeline)
@@ -137,7 +137,7 @@ This repository now includes a dedicated competition pipeline that keeps existin
 - finetune backbone with ArcFace
 - local validation (identity-balanced mAP on stratified train/val split)
 - Stage A retrieval (`cosine` or `wildfusion`)
-- optional Stage B RDD reranking
+- optional Stage B Vismatch reranking
 - strict Kaggle submission validation and CSV export
 - optional PNG alpha-mask application (`alpha_mask.enabled`, default `true`)
 
@@ -150,15 +150,15 @@ Alpha-mask mode (Kaggle-only):
 - Debug samples are saved under `<run_dir>/alpha_mask_debug/`.
 
 Submission mode:
-- `submission.mode: stage_a_plus_rdd`: Stage A (`cosine` or `wildfusion`) + Stage B RDD reranking.
-- `submission.mode: stage_a_only`: skip RDD entirely and submit only Stage A scores.
-- Output files are mode-tagged, e.g. `submission_stage_a_only.csv` or `submission_stage_a_plus_rdd.csv`.
+- `submission.mode: stage_a_plus_vismatch`: Stage A (`cosine` or `wildfusion`) + Stage B Vismatch reranking.
+- `submission.mode: stage_a_only`: skip Vismatch entirely and submit only Stage A scores.
+- Output files are mode-tagged, e.g. `submission_stage_a_only.csv` or `submission_stage_a_plus_vismatch.csv`.
 
-RDD fusion controls (Kaggle pipeline):
-- `submission.rdd_fusion_mode`: `delta` (recommended), `blend`, or `replace`.
-- `submission.rdd_fusion_alpha`: fusion strength used by `delta`/`blend` (for Jaguar, start around `0.08-0.10` and validate).
-- `submission.rdd_min_stage_score`: only apply RDD fusion where Stage-A score is above threshold.
-- `submission.rdd_fusion_symmetrize`: enforce symmetric all-vs-all similarity matrix before submission.
+Vismatch fusion controls (Kaggle pipeline):
+- `submission.vismatch_fusion_mode`: `delta` (recommended), `blend`, or `replace`.
+- `submission.vismatch_fusion_alpha`: fusion strength used by `delta`/`blend` (for Jaguar, start around `0.08-0.10` and validate).
+- `submission.vismatch_min_stage_score`: only apply Vismatch fusion where Stage-A score is above threshold.
+- `submission.vismatch_fusion_symmetrize`: enforce symmetric all-vs-all similarity matrix before submission.
 
 Stage-A method:
 - `stage_a.method: cosine` uses finetuned backbone embeddings + cosine matrix.
@@ -203,7 +203,7 @@ Key blocks:
 Key blocks:
 - `dataset`: root/splits + mask options
 - `model`: type/mode/checkpoint behavior
-- `benchmark`: method (`cosine`, `wildfusion`, `local_lightglue`, `linear_probe`, `efficient_probe`, `rdd`), metrics, cache
+- `benchmark`: method (`cosine`, `wildfusion`, `local_lightglue`, `linear_probe`, `efficient_probe`, `vismatch`), metrics, cache
 - `visualization`: optional qualitative retrieval plots
 - `output`: run folder + aggregate CSV
 - `safety_checks`: pre-run split validation (`enabled`)
@@ -284,28 +284,63 @@ Visualization options used by efficient probe overlays:
 - `visualization.attention_num_examples`
 - `visualization.attention_average_queries`
 
-Visualization option used by RDD keypoint match images:
-- `visualization.rdd_max_matches`
+Visualization option used by Vismatch keypoint match images:
+- `visualization.vismatch_max_matches`
 
-#### RDD Settings
+#### Vismatch Settings
 
-`rdd` runs a two-stage pipeline:
+`vismatch` runs a two-stage pipeline:
 - Stage A (fast global retrieval) builds top-K candidates per query.
-- Stage B reranks only those candidates with local RDD+LightGlue.
+- Stage B reranks only those candidates with a configured local matcher.
+
+The production path extracts each image once and matches cached features. The
+optional pairwise Vismatch API is reserved for diagnostics because it would repeat
+feature extraction for every candidate pair.
 
 Config path:
-- `benchmark.methods.rdd`
+- `benchmark.methods.vismatch`
+
+Supported matcher profiles:
+- `rdd-lightglue` (the migrated legacy RDD-LightGlue setup)
+- `aliked-lightglue`
+- `superpoint-lightglue`
+- `loma` (Vismatch-managed LoMa-B)
 
 Core options:
-- `repo_dir`: local path to your `rdd` repository
-- `config_path`: RDD config file path
-- `weights`: RDD model weights path
-- `cache_dir`: per-image feature cache directory (`.npz`)
+- `matcher`: selected Vismatch matcher profile
+- `cache_dir`: matcher-specific per-image feature cache directory (`.npz`)
 - `device`: `auto` | `cpu` | `cuda`
 - `path_col`: metadata image path column
-- `resize_max`, `top_k`
+- `resize_max`, `top_k`, `matcher_threshold` (`null` selects the profile default: `0.01` for
+  RDD/LightGlue and `0.10` for LoMa)
+- `feature_matching_mode`: `feature_level` (production) or `pairwise` (diagnostics only)
 - `stage_a_method`: `cosine` | `wildfusion` | `local_lightglue` | `linear_probe` | `efficient_probe`
-- `candidate_k`: shortlist size from Stage A reranked by RDD
+- `candidate_k`: shortlist size from Stage A reranked by Vismatch
+
+To run LoMa instead of RDD-LightGlue, keep `benchmark.method: "vismatch"` and set:
+
+```yaml
+benchmark:
+  methods:
+    vismatch:
+      matcher: "loma"
+      matcher_threshold: null
+```
+
+LoMa follows the Lynx reference protocol: Vismatch's LoMa-B model, right/bottom
+padding to multiples of 14, normalized[-1,1] cached keypoints, mutual matching,
+and confidence-sum normalization by the smaller keypoint count. Its weights are
+managed and downloaded by Vismatch on first use.
+
+Vismatch is pinned to commit
+`4a743b75749a3770af59d275483ed341dea51ff0` in `requirements.txt`. Its matcher
+weights are downloaded on first use. The wrapper is BSD-3-Clause, but wrapped
+models may have separate licenses.
+The old public `rdd` method and direct RDD repository settings are unsupported.
+Use `vismatch` with `matcher: rdd-lightglue` when reproducing the migrated RDD
+experiment. Feature caches are matcher/profile-specific and are regenerated when
+the schema, matcher, preprocessing, keypoint budget, threshold, or checkpoint
+identity changes.
 
 ## Training and Evaluation Outputs
 
@@ -378,13 +413,15 @@ Logged data:
 ## Known Constraints and Future Work
 
 - Model weights are downloaded from Hugging Face on first use.
-- The RDD benchmark requires a separate local RDD repository and its model weights.
+- Vismatch requires the pinned package, model-weight downloads, and usually CUDA for practical runtimes.
 - Default configs contain environment-specific shared filesystem paths; update them
   for another machine.
-- Masking and RDD settings are dataset-dependent and should be validated rather than
-  assumed to improve every dataset.
-- The test suite intentionally avoids CUDA, downloaded models, and external RDD
-  integration; future work should add optional integration coverage and CI.
+- Masking and Vismatch matcher settings are dataset-dependent and should be validated rather than
+  assumed to improve every dataset. Matcher ablations must keep Stage-A candidates, preprocessing,
+  keypoint budgets, scoring, and evaluation metrics fixed.
+- The test suite intentionally avoids CUDA, downloaded models, private datasets, and external
+  Vismatch integration; optional environment-gated smoke and Lynx parity checks are required
+  before changing the pinned Vismatch commit.
 - Future experiment priorities are tracked in AGENTS.md.
 
 ## Reproducibility

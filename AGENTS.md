@@ -16,7 +16,7 @@ single-label animal-species classifier: identity labels represent individual ani
 - models/objective.py: ArcFace, triplet, softmax, and efficient-probe objectives.
 - reid/engine/finetune_runner.py: ArcFace finetuning and validation retrieval.
 - reid/engine/probe_runner.py: cosine, WildFusion, local LightGlue, linear probe,
-  efficient probe, and RDD benchmark dispatch.
+  efficient probe, and Vismatch matcher benchmark dispatch.
 - reid/engine/kaggle_jaguar_runner.py: standalone Jaguar workflow.
 - reid/data/: dataset views, COCO-RLE masking, and split safety checks.
 - reid/evaluation/metrics.py: top-k, balanced top-1, and mAP calculations.
@@ -40,7 +40,7 @@ python -m py_compile models/*.py reid/**/*.py train/*.py scripts/*.py
 ~~~
 
 Use --dry-run, --pair-limit, or --fast for Jaguar development runs.
-Do not run full GPU training or RDD benchmarks as a default validation step.
+Do not run full GPU training or Vismatch benchmarks as a default validation step.
 
 ## Development Environment
 
@@ -105,7 +105,7 @@ file to inference code expecting a model-only state dict.
 - Keep AGENTS.md current as the operating guide and future-work source of truth;
   keep CHANGELOG.MD as the chronological record of changes and decisions.
 - Do not silently change benchmark protocols, score ranges, split semantics, or
-  external model/RDD behavior while fixing infrastructure issues.
+  external matcher behavior while fixing infrastructure issues.
 - Record assumptions, compatibility decisions, and unresolved issues in the handoff.
 
 ## External environment
@@ -113,7 +113,7 @@ file to inference code expecting a model-only state dict.
 The code depends on PyTorch/torchvision, timm, Hugging Face Transformers,
 wildlife-datasets, wildlife-tools, pycocotools, OpenCV, and other packages listed
 in requirements.txt. Backbone weights may require network access on first use.
-RDD additionally requires a separate local RDD checkout and RDD/LightGlue weights.
+Vismatch is pinned to commit 4a743b75749a3770af59d275483ed341dea51ff0 and downloads matcher weights on first use. The shared ex-reid environment must have an importable, non-broken Vismatch installation; it must not depend on a missing editable checkout.
 Default paths are specific to the original shared compute environment.
 
 ## Future-work checklist
@@ -122,8 +122,30 @@ Default paths are specific to the original shared compute environment.
 - [ ] Add CI for unit tests, syntax checks, and YAML/config validation.
 - [ ] Replace environment-specific absolute paths with machine-local overrides.
 - [ ] Pin external Git dependencies to reproducible commits.
-- [ ] Evaluate masking and RDD settings separately for each animal dataset.
-- [ ] Profile and optimize RDD feature extraction/reranking costs.
+- [ ] Evaluate masking and Vismatch matcher settings separately for each animal dataset.
+- [ ] Profile and optimize cached Vismatch feature extraction/reranking costs.
+- [ ] Run the private Lynx golden-subset parity comparison for RDD-LightGlue before changing matcher defaults.
+- [x] Run the available full-split Lynx parity comparison on 2026-08-12: 66 queries,
+  217 gallery sequences, one frame per sequence; top-1 agreement was 65/66
+  (98.48%), top-5 agreement was 100%, and mAP differed by -0.0018. The fixed
+  golden-subset gate remains open because the comparison was not 100% top-1.
+- [ ] Complete matcher ablations for RDD-LightGlue, ALIKED-LightGlue, SuperPoint-LightGlue, and LoMa-B.
+- [ ] Track wrapped-model licenses and downloaded-weight provenance for paper release.
 - [ ] Consider atomic checkpoint writes and explicit checkpoint retention.
 - [ ] Reconcile historical experiment metadata and stale generated CSV schemas.
 - [ ] Expand experiment reports with identity counts and protocol summaries.
+
+
+## Vismatch matcher policy
+
+The public local-matcher method is `vismatch`; the selected matcher is configured
+under `benchmark.methods.vismatch.matcher`. Supported initial profiles are
+`rdd-lightglue`, `aliked-lightglue`, `superpoint-lightglue`, and `loma` (Vismatch's
+LoMa-B wrapper). The production path extracts features once and matches cached features. `feature_matching_mode: feature_level`
+is required for production; pairwise Vismatch calls are reserved for explicit diagnostics.
+Old `rdd` method names and direct RDD repository paths are unsupported and receive a migration-specific error.
+The `FrameFeatures` contract and matcher profiles remain dependency-light so unit tests can run without Vismatch, CUDA, downloaded weights, or masking packages. LoMa uses normalized[-1,1] keypoints internally, right/bottom padding to multiples of 14, and a default mutual-match threshold of 0.10; its feature cache records the original and padded image sizes.
+The 2026-08-12 full-split parity run found identical keypoint counts and descriptor
+shapes but non-bit-identical feature tensors; mean absolute per-pair score difference
+was 4.38e-05. The only ranking disagreement was a near-tie, so this result supports
+behavioral equivalence but does not establish strict numerical identity.
