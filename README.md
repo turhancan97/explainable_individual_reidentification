@@ -18,9 +18,16 @@ The code is organized into reusable modules under `reid/` and thin CLI entrypoin
 
 ```text
 .
+├── conf/
+│   ├── finetune.yaml
+│   └── probe.yaml
 ├── config/
-│   ├── finetune_config.yaml
-│   └── probe_config.yaml
+│   └── kaggle_jaguar.yaml
+├── experiments/
+│   ├── probe/
+│   └── finetune/
+├── reports/
+│   └── runs.csv
 ├── models/
 │   └── model.py
 ├── reid/
@@ -95,10 +102,10 @@ Default path in configs:
 python train/finetune.py
 ```
 
-With explicit config:
+Override configuration values with Hydra dotlist syntax:
 
 ```bash
-python train/finetune.py --config config/finetune_config.yaml
+python train/finetune.py train.epochs=10 train.batch_size=32
 ```
 
 ### Probe / Benchmark
@@ -107,28 +114,12 @@ python train/finetune.py --config config/finetune_config.yaml
 python train/probe.py
 ```
 
-With explicit config:
+Select methods and override nested settings with Hydra:
 
 ```bash
-python train/probe.py --config config/probe_config.yaml
-```
-
-Run linear probe:
-
-```bash
-python train/probe.py --method linear_probe
-```
-
-Run efficient probe:
-
-```bash
-python train/probe.py --method efficient_probe
-```
-
-Run Vismatch benchmark:
-
-```bash
-python train/probe.py --method vismatch
+python train/probe.py benchmark.method=linear_probe
+python train/probe.py benchmark.method=efficient_probe
+python train/probe.py benchmark.method=vismatch benchmark.methods.vismatch.matcher=loma
 ```
 
 ### Kaggle Jaguar Re-ID (new standalone pipeline)
@@ -185,7 +176,22 @@ python scripts/kaggle_jaguar_submit.py --config config/kaggle_jaguar.yaml --data
 
 ## Configuration Guide
 
-### `config/finetune_config.yaml`
+Hydra is the primary configuration interface for probe and finetuning. The shipped
+defaults are in `conf/probe.yaml` and `conf/finetune.yaml`; Hydra resolves their
+interpolations before the runner starts. Nested overrides use `key=value` dotlist
+syntax and values are type-converted by OmegaConf.
+
+Unknown keys and misspelled paths fail immediately. The old `--config`, `--method`,
+`--dataset-root`, and related argparse flags are no longer supported for these two
+entrypoints. The Jaguar submission script intentionally keeps its separate
+argparse plus `config/kaggle_jaguar.yaml` workflow.
+
+Hydra is configured not to change the working directory or replace project-managed
+artifact paths. Probe and finetune continue writing their normal run directories and
+store a fully resolved `config.snapshot.yaml` in each run. Hydra multirun sweeps are
+not part of the supported experiment workflow.
+
+### `conf/finetune.yaml`
 
 Key blocks:
 - `dataset`: root, metadata file, split values, `no_background`, `mask_col`
@@ -193,12 +199,13 @@ Key blocks:
 - `train`: epochs, batch size, AMP, deterministic mode, resume checkpoint
 - `loss`: ArcFace parameters
 - `scheduler`: cosine settings
-- `output`: save frequency, best metric, CSV path
+- `output`: experiment root, save frequency, best metric, and legacy aggregate CSV path
+- `reporting`: run-index path and reporting enablement
 - `benchmark`: validation retrieval metrics (`top_k`, `mAP`)
 - `safety_checks`: pre-run split validation (`enabled`)
 - `wandb`: optional experiment logging
 
-### `config/probe_config.yaml`
+### `conf/probe.yaml`
 
 Key blocks:
 - `dataset`: root/splits + mask options
@@ -206,7 +213,8 @@ Key blocks:
 - `benchmark`: method (`cosine`, `wildfusion`, `local_lightglue`, `linear_probe`, `efficient_probe`, `vismatch`), metrics, cache
 - WildFusion settings: `B` controls candidate pairs per query, `local_batch_size` controls pair-processing batches, and `local_top_k` controls ALIKED keypoints (default `512`).
 - `visualization`: optional qualitative retrieval plots
-- `output`: run folder + aggregate CSV
+- `output`: experiment root, legacy run folder, and aggregate CSV
+- `reporting`: central run-index path
 - `safety_checks`: pre-run split validation (`enabled`)
 - `wandb`: optional experiment logging
 
@@ -359,39 +367,49 @@ preprocessing, thresholds, or keypoint budgets.
 
 ## Training and Evaluation Outputs
 
-### Finetune outputs
+### Experiment artifacts and reporting
 
-Under results/<run_id>/:
+New probe and finetune runs are stored under `experiments/` using dataset, split,
+model, method, matcher, timestamp, and configuration-hash components. For example:
 
-Canonical files:
-- checkpoint-final.pth — model-only inference checkpoint
-- checkpoint-final-full.pth — full resume checkpoint
-- checkpoint-latest-full.pth — latest full resume checkpoint
-- optional checkpoint-best.pth and checkpoint-best-full.pth
-- periodic checkpoint-epoch-<n>.pth (controlled by output.save_every)
-- safety_checks/ artifacts when enabled
+```text
+experiments/probe/CzechLynx_v2/CzechLynx/split-time_closed/
+  megadescriptor-l/vismatch/loma/20260813T142530Z_a1b2c3d4/
+    config.snapshot.yaml
+    run_manifest.json
+    metrics.json
+    timings.json
+    visualizations/index.csv
+    visualizations/contact_sheet_top1.png
+```
 
-Aggregate metrics CSV:
-- results/train_metrics.csv
-- Finetuning CSV rows for a completed run include `total_run_sec` and `total_run_min`.
+Finetune run directories also contain canonical checkpoints and
+`training_metrics.csv`. Each manifest records status, resolved configuration, git
+commit, environment information, dataset sizes, metrics, timings, and artifact paths.
+Failed runs are retained with status and error information.
 
-For compatibility, finetuning also writes historical tagged forms such as
-checkpoint-final_<dataset_tag>.pth. Probe and Jaguar checkpoint discovery
-recognize both canonical and tagged model-only final checkpoints, while explicit
-checkpoint paths always take precedence.
+Existing aggregate files remain active for compatibility:
 
-### Probe outputs
-
-Under `benchmark_runs/<run_id>/`:
-- `result.json`
-- `config.snapshot.yaml`
-- `safety_checks/` artifacts when enabled
-
-Aggregate benchmark CSV:
+- `results/.../train_metrics.csv`
 - `benchmark_runs/benchmark_results.csv`
+- `reports/runs.csv` (one row per modern run)
 
-Optional visualizations:
-- `visualizations/<run_id>/predictions_*.png`
+New visualizations are stored with their run under `visualizations/`. The local
+`index.csv` connects query/database indices, identities, ranks, scores, correctness,
+and image paths. Top-1 and failure contact sheets are generated when images are
+available. Historical `visualizations/<run_id>/` folders are not migrated.
+
+Summarize runs with:
+
+```bash
+python scripts/summarize_runs.py --dataset CzechLynx_v2
+python scripts/summarize_runs.py --method vismatch --matcher loma
+python scripts/summarize_runs.py --sort-by top_1 --format markdown
+```
+
+For compatibility, tagged model-only checkpoints remain readable. Automatic probe
+discovery searches the new `experiments/finetune/` root first and then historical
+`results/`; explicit checkpoint paths always take precedence.
 
 ## Checkpoints and Gradient Accumulation
 

@@ -1,5 +1,6 @@
 iopath
 omegaconf
+hydra-core==1.3.2
 ipykernel
 pandas 
 scikit-learn

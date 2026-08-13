@@ -7,6 +7,9 @@ kept under Unreleased until a project version is assigned.
 
 ### Added
 
+- Added self-contained `experiments/` artifacts for new probe and finetune runs, including manifests, metrics, timings, training history, and a central `reports/runs.csv` index.
+- Added run-local visualization indexes, top-1/failure contact sheets, and `scripts/summarize_runs.py` for filtered Markdown/CSV reporting.
+- Added Hydra 1.3 configuration entrypoints and dependency-light composition tests for probe and finetuning.
 - Added configurable WildFusion ALIKED keypoint budgets via `local_top_k` (default 512), with forced keypoint counts and cache/experiment identity tracking.
 
 - Added a repository policy requiring AI agents to update AGENTS.md and
@@ -25,6 +28,10 @@ kept under Unreleased until a project version is assigned.
 
 ### Changed
 
+- Preserved historical generated artifacts and aggregate CSVs while routing future probe and finetune runs through the readable experiment layout.
+- Updated automatic checkpoint discovery to search modern finetune experiments before legacy results, without changing explicit-path priority or model-only safety.
+- Moved probe and finetune defaults to `conf/probe.yaml` and `conf/finetune.yaml`, making Hydra the primary single-run configuration interface.
+- Preserved project-managed output directories and added fully resolved finetune configuration snapshots.
 - Documented the required shared ex-reid conda environment path and activation
   instructions for future AI sessions.
 - Standardized shipped finetune and probe defaults on megadescriptor-l.
@@ -37,13 +44,15 @@ kept under Unreleased until a project version is assigned.
 
 ### Fixed
 
+- Added running/completed/failed run lifecycle reporting so failed experiments retain a concise error manifest.
+- Rejected unknown and misspelled Hydra override paths during configuration composition.
 - Added `total_run_sec` and `total_run_min` to completed finetuning runs in the
   aggregate training CSV, while preserving incremental epoch writes.
 - Fixed the missing `Sequence` typing import that prevented batched Vismatch
   probe runs from starting.
 - Added an ex-reid-gated runtime smoke test that invokes batched extraction with a
   fake backend, catching runtime annotation/import failures before full benchmarks.
-- Restored explicit batched Vismatch defaults in `config/probe_config.yaml` while
+- Restored explicit batched Vismatch defaults in `conf/probe.yaml` while
   preserving the user-selected LoMa, Stage-A, and candidate settings.
 - Prevented gradients from a final partial accumulation group from being discarded
   in finetuning, linear probing, and efficient probing.
@@ -54,6 +63,10 @@ kept under Unreleased until a project version is assigned.
 
 ### Known Issues
 
+- New visualization contact sheets require Pillow-readable image files and are omitted when no images are available.
+- Historical `results/`, `benchmark_runs/`, and top-level visualization artifacts are intentionally not migrated.
+- Probe and finetune no longer accept the legacy argparse flags or `--config`; existing scripts must use Hydra dotlist overrides.
+- Hydra multirun sweeps are not supported by the project experiment contract.
 - Full experiments require heavyweight dependencies, model downloads, and often
   CUDA-capable hardware.
 - Vismatch downloads matcher-specific weights on first use and can be expensive for

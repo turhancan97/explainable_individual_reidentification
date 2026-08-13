@@ -303,6 +303,7 @@ def _build_finetune_cfg(cfg: DictConfig, metadata_path: Path) -> DictConfig:
     base.output.save_every = int(cfg.finetune.save_every)
     base.output.save_best = bool(cfg.finetune.save_best)
     base.output.best_metric = str(cfg.finetune.best_metric)
+    base.reporting.enabled = False
 
     base.benchmark.top_k = [1, 5, 10]
     base.benchmark.compute_map = True

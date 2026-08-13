@@ -33,6 +33,8 @@ from reid.data.dataset_view import BenchmarkDatasetView
 from reid.evaluation.metrics import compute_metrics
 from reid.features.containers import FeatureContainer, get_labels_string
 from reid.methods.vismatch import run_vismatch_benchmark
+from reid.reporting.artifacts import build_run_context, run_index_row, upsert_run_index
+from reid.reporting.visualizations import finalize_visualizations
 from reid.training.accumulation import should_step_accumulated_gradients
 from reid.training.checkpointing import resolve_configured_model_checkpoint, resolve_model_checkpoint
 from reid.utils.io import append_csv_row, ensure_dir, ensure_file
@@ -142,9 +144,19 @@ def load_backbone(
                 explicit_path=Path(cfg.model.checkpoint.path),
                 results_dir=Path(cfg.model.checkpoint.results_dir),
                 filename=cfg.model.checkpoint.filename,
+                fallback_dirs=[Path(cfg.model.checkpoint.legacy_results_dir)]
+                if getattr(cfg.model.checkpoint, "legacy_results_dir", None)
+                else [],
             )
         elif cfg.model.checkpoint.from_latest_results:
-            checkpoint_path = find_latest_checkpoint(Path(cfg.model.checkpoint.results_dir), cfg.model.checkpoint.filename)
+            checkpoint_path = resolve_configured_model_checkpoint(
+                explicit_path=None,
+                results_dir=Path(cfg.model.checkpoint.results_dir),
+                filename=cfg.model.checkpoint.filename,
+                fallback_dirs=[Path(cfg.model.checkpoint.legacy_results_dir)]
+                if getattr(cfg.model.checkpoint, "legacy_results_dir", None)
+                else [],
+            )
         else:
             raise ValueError("Finetuned mode requires checkpoint.path or checkpoint.from_latest_results=true")
 
@@ -1111,7 +1123,7 @@ def run_efficient_probe(
         )
 
     if collect_attention and sampled_images:
-        vis_dir = Path(cfg.visualization.dir) / run_dir.name
+        vis_dir = Path(run_dir) / "visualizations"
         attention_path = _save_attention_overlay_grid(
             out_path=vis_dir / "efficient_probe_attention_map.png",
             images=sampled_images,
@@ -1352,10 +1364,10 @@ def visualize_predictions(
     similarity: np.ndarray,
     dataset_query_display: WildlifeDataset,
     dataset_database_display: WildlifeDataset,
-    run_id: str,
+    run_dir: Path,
 ) -> List[str]:
     vis_cfg = cfg.visualization
-    out_dir = Path(vis_cfg.dir) / run_id
+    out_dir = Path(run_dir) / "visualizations" / "predictions"
     out_dir.mkdir(parents=True, exist_ok=True)
 
     ranked_idx = np.argsort(similarity, axis=1)[:, ::-1]
@@ -1386,7 +1398,7 @@ def visualize_predictions(
             ax[i + 1].set_title(f"{_wrap_title(database_data[1])}\nscore: {scores[i]:.3f}", fontsize=9)
             ax[i + 1].axis("off")
 
-        out_path = out_dir / f"predictions_{query_idx}.png"
+        out_path = out_dir / f"query_{int(query_idx):06d}.png"
         plt.tight_layout()
         plt.savefig(out_path)
         plt.close()
@@ -1396,6 +1408,52 @@ def visualize_predictions(
 
 
 def run_probe(cfg: DictConfig) -> None:
+    run_started = datetime.utcnow()
+    context = build_run_context(cfg, "probe", run_started=run_started)
+    context.write_config(cfg)
+    context.write_manifest(
+        {
+            "dataset": str(cfg.dataset.name),
+            "animal": str(cfg.dataset.animal),
+            "split_protocol": str(cfg.dataset.split_col),
+            "model": str(cfg.model.type),
+            "method": str(cfg.benchmark.method),
+            "variant": str(cfg.benchmark.methods.vismatch.matcher)
+            if str(cfg.benchmark.method) == "vismatch"
+            else "default",
+        },
+        status="running",
+    )
+    try:
+        return _run_probe(cfg, context)
+    except Exception as exc:
+        context.write_manifest(
+            {
+                "status": "failed",
+                "error": {"type": type(exc).__name__, "message": str(exc)},
+            },
+            status="failed",
+        )
+        index_path = Path(str(getattr(cfg.reporting, "index_path", "reports/runs.csv")))
+        upsert_run_index(
+            index_path,
+            run_index_row(
+                context,
+                {
+                    "status": "failed",
+                    "dataset": str(cfg.dataset.name),
+                    "animal": str(cfg.dataset.animal),
+                    "split_protocol": str(cfg.dataset.split_col),
+                    "model": str(cfg.model.type),
+                    "method": str(cfg.benchmark.method),
+                    "variant": context.run_dir.parts[-2],
+                },
+            ),
+        )
+        raise
+
+
+def _run_probe(cfg: DictConfig, context: Any) -> None:
     run_t0 = time.perf_counter()
     set_reproducible(int(cfg.benchmark.seed), bool(cfg.benchmark.deterministic))
     method = str(cfg.benchmark.method)
@@ -1404,9 +1462,8 @@ def run_probe(cfg: DictConfig) -> None:
             "The public probe method 'rdd' was removed. Use method='vismatch' with "
             "benchmark.methods.vismatch.matcher='rdd-lightglue'."
         )
-    run_started = datetime.utcnow()
-    run_id = run_started.strftime("run_%Y%m%d_%H%M%S")
-    run_dir = Path(cfg.output.run_dir) / run_id
+    run_id = context.run_id
+    run_dir = context.run_dir
     run_dir.mkdir(parents=True, exist_ok=True)
 
     _, dataset_database_raw, dataset_query_raw = load_dataset_splits(cfg)
@@ -1536,44 +1593,66 @@ def run_probe(cfg: DictConfig) -> None:
         compute_map=bool(cfg.benchmark.compute_map),
     )
     metrics.update(method_metrics)
+    elapsed_sec = time.perf_counter() - run_t0
+    timings["total_run_sec"] = float(elapsed_sec)
+    timings["total_run_min"] = float(elapsed_sec / 60.0)
 
-    visuals: List[str] = []
+    prediction_visuals: List[str] = []
+    extra_visuals: Dict[str, List[str]] = {}
     if bool(cfg.visualization.enabled):
         dataset_database_display = make_dataset_view(cfg, dataset_database_raw, transform=transform_display)
         dataset_query_display = make_dataset_view(cfg, dataset_query_raw, transform=transform_display)
-        visuals = visualize_predictions(
+        prediction_visuals = visualize_predictions(
             cfg=cfg,
             similarity=similarity,
             dataset_query_display=dataset_query_display,
             dataset_database_display=dataset_database_display,
-            run_id=run_id,
+            run_dir=run_dir,
         )
         if method == "vismatch":
-            visuals.extend([str(p) for p in method_artifacts.get("vismatch_match_paths", [])])
+            extra_visuals["vismatch_match"] = [
+                str(p) for p in method_artifacts.get("vismatch_match_paths", [])
+            ]
         attention_map_path = method_artifacts.get("attention_map_path")
         if attention_map_path:
-            visuals.append(str(attention_map_path))
-        if wandb_run is not None:
-            try:
-                import wandb  # type: ignore
+            extra_visuals["attention_map"] = [str(attention_map_path)]
 
-                wandb_run.log(
-                    {
-                        "visualizations": [wandb.Image(path) for path in visuals],
-                    },
-                    step=1,
-                )
-            except Exception:
-                pass
+    visualization_artifacts = finalize_visualizations(
+        context,
+        prediction_paths=prediction_visuals,
+        similarity=similarity,
+        dataset_query=dataset_query_raw,
+        dataset_database=dataset_database_raw,
+        label_col=str(cfg.dataset.label_col),
+        top_k=int(cfg.visualization.top_k),
+        path_col=str(getattr(cfg.benchmark.methods.vismatch, "path_col", "path"))
+        if method == "vismatch"
+        else "path",
+        extra_paths=extra_visuals,
+    )
+    visuals = list(prediction_visuals)
+    for paths in extra_visuals.values():
+        visuals.extend(paths)
+    visuals.extend(str(path) for path in visualization_artifacts.values())
+    if wandb_run is not None and visuals:
+        try:
+            import wandb  # type: ignore
+
+            wandb_run.log(
+                {"visualizations": [wandb.Image(path) for path in visuals if Path(path).is_file()]},
+                step=1,
+            )
+        except Exception:
+            pass
 
     run_dir.mkdir(parents=True, exist_ok=True)
     output_json = run_dir / "result.json"
-    config_snapshot = run_dir / "config.snapshot.yaml"
-    OmegaConf.save(cfg, config_snapshot)
+    config_snapshot = context.config_snapshot_path
+    context.write_config(cfg)
 
     result = {
         "run_id": run_id,
-        "run_utc": run_started.isoformat() + "Z",
+        "run_utc": context.run_utc,
         "method": method,
         "device": device.type,
         "model_type": cfg.model.type,
@@ -1594,6 +1673,53 @@ def run_probe(cfg: DictConfig) -> None:
     with output_json.open("w", encoding="utf-8") as f:
         json.dump(result, f, indent=2)
 
+    context.write_metrics(metrics)
+    context.write_timings(timings)
+    context.write_manifest(
+        {
+            "dataset": str(cfg.dataset.name),
+            "animal": str(cfg.dataset.animal),
+            "split_protocol": str(cfg.dataset.split_col),
+            "model": str(cfg.model.type),
+            "method": method,
+            "variant": str(cfg.benchmark.methods.vismatch.matcher)
+            if method == "vismatch"
+            else "default",
+            "checkpoint": file_identity(checkpoint_path),
+            "num_query": len(dataset_query),
+            "num_database": len(dataset_database),
+            "metrics": metrics,
+            "timings": timings,
+            "visualizations": visuals,
+            "status": "completed",
+        },
+        status="completed",
+    )
+    upsert_run_index(
+        Path(str(getattr(cfg.reporting, "index_path", "reports/runs.csv"))),
+        run_index_row(
+            context,
+            {
+                "status": "completed",
+                "dataset": str(cfg.dataset.name),
+                "animal": str(cfg.dataset.animal),
+                "split_protocol": str(cfg.dataset.split_col),
+                "model": str(cfg.model.type),
+                "method": method,
+                "variant": str(cfg.benchmark.methods.vismatch.matcher)
+                if method == "vismatch"
+                else "default",
+                "num_query": len(dataset_query),
+                "num_database": len(dataset_database),
+                "feature_extraction_sec": timings.get("vismatch_feature_extraction_sec", timings.get("feature_extraction_sec", "")),
+                "matching_sec": timings.get("vismatch_rerank_sec", timings.get("similarity_sec", "")),
+                "total_runtime_sec": elapsed_sec,
+                **metrics,
+                **timings,
+            },
+        ),
+    )
+
     csv_base: Dict[str, Any] = {
         "run_id": run_id,
         "run_utc": result["run_utc"],
@@ -1607,6 +1733,11 @@ def run_probe(cfg: DictConfig) -> None:
         "metadata_file": cfg.dataset.metadata_file,
         "num_query": len(dataset_query),
         "num_database": len(dataset_database),
+        "config_hash": context.config_hash,
+        "run_dir": str(context.run_dir),
+        "manifest_path": str(context.manifest_path),
+        "metrics_path": str(context.metrics_path),
+        "visualization_dir": str(context.visualization_dir),
     }
     csv_row = _build_probe_csv_row(csv_base, metrics, timings)
     append_csv_row(Path(cfg.output.csv_path), csv_row)
@@ -1617,7 +1748,7 @@ def run_probe(cfg: DictConfig) -> None:
     print(f"Saved JSON: {output_json}")
     print(f"Appended CSV row: {cfg.output.csv_path}")
     if visuals:
-        print(f"Saved {len(visuals)} visualizations under {Path(cfg.visualization.dir) / run_id}")
+        print(f"Saved {len(visuals)} visualizations under {context.visualization_dir}")
 
     if wandb_run is not None:
         wandb_run.log(
@@ -1644,5 +1775,4 @@ def run_probe(cfg: DictConfig) -> None:
         wandb_run.summary["elapsed_min"] = float(elapsed_sec / 60.0)
         wandb_run.finish()
 
-    elapsed_sec = time.perf_counter() - run_t0
     print(f"Elapsed time: {elapsed_sec / 60.0:.2f} min ({elapsed_sec:.1f} sec)")

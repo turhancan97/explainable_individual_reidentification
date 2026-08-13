@@ -219,6 +219,8 @@ __marimo__/
 .DS_Store
 
 # Results
+experiments/
+reports/
 results/
 benchmark_runs/
 logs/

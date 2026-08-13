@@ -22,7 +22,7 @@ model:
 
 finetune:
   run_finetune: true
-  base_config: "config/finetune_config.yaml"
+  base_config: "conf/finetune.yaml"
   output_run_dir: "results/kaggle_jaguar"
   checkpoint_path: null
   epochs: 30

@@ -20,7 +20,8 @@ model:
   checkpoint:
     path: null
     from_latest_results: true
-    results_dir: "results"
+    results_dir: "experiments/finetune"
+    legacy_results_dir: "results"
     filename: "checkpoint-final.pth"
 
 benchmark:
@@ -118,11 +119,16 @@ visualization:
   top_k: 3
 
 output:
+  experiment_root: "experiments"
   run_dir: "benchmark_runs"
   csv_path: "benchmark_runs/benchmark_results.csv"
 
 safety_checks:
   enabled: true
+
+reporting:
+  enabled: true
+  index_path: "reports/runs.csv"
 
 wandb:
   enabled: false
@@ -131,3 +137,10 @@ wandb:
   group: null
   tags: []
   name: null
+
+hydra:
+  run:
+    dir: ${hydra:runtime.cwd}
+  job:
+    chdir: false
+  output_subdir: null

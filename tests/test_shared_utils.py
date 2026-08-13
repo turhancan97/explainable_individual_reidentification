@@ -94,8 +94,8 @@ class ConfigurationTests(unittest.TestCase):
     def test_shipped_yaml_model_defaults_are_supported(self):
         root = Path(__file__).resolve().parents[1]
         for relative_path in (
-            "config/finetune_config.yaml",
-            "config/probe_config.yaml",
+            "conf/finetune.yaml",
+            "conf/probe.yaml",
             "config/kaggle_jaguar.yaml",
         ):
             text = (root / relative_path).read_text(encoding="utf-8")
@@ -155,6 +155,24 @@ class CheckpointResolutionTests(unittest.TestCase):
         with TemporaryDirectory() as temp_dir:
             with self.assertRaises(FileNotFoundError):
                 resolve_model_checkpoint(Path(temp_dir))
+
+    def test_new_checkpoint_root_falls_back_to_legacy_root(self):
+        with TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            modern = root / "experiments" / "finetune"
+            legacy = root / "results"
+            legacy_run = legacy / "run-legacy"
+            legacy_run.mkdir(parents=True)
+            checkpoint = legacy_run / "checkpoint-final_legacy.pth"
+            checkpoint.touch()
+            self.assertEqual(
+                resolve_configured_model_checkpoint(
+                    explicit_path=None,
+                    results_dir=modern,
+                    fallback_dirs=[legacy],
+                ),
+                checkpoint,
+            )
 
     def test_full_checkpoint_is_not_selected_as_model_checkpoint(self):
         with TemporaryDirectory() as temp_dir:
@@ -280,7 +298,7 @@ class VismatchProfileTests(unittest.TestCase):
 
     def test_shipped_configs_use_vismatch_public_method(self):
         root = Path(__file__).resolve().parents[1]
-        probe = (root / "config/probe_config.yaml").read_text(encoding="utf-8")
+        probe = (root / "conf/probe.yaml").read_text(encoding="utf-8")
         # Keep the user's current Stage-A default intact while validating that
         # Vismatch remains a shipped, independently selectable public method.
         self.assertRegex(probe, r'(?m)^  method: "(?:vismatch|wildfusion)"')

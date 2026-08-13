@@ -1116,7 +1116,7 @@ def run_vismatch_benchmark(
         num_examples = min(int(cfg.visualization.num_examples), len(dataset_query))
         sampled_indices = rng.choice(np.arange(len(dataset_query)), size=num_examples, replace=False) if num_examples > 0 else []
         max_matches = int(getattr(cfg.visualization, "vismatch_max_matches", 200))
-        out_dir = Path(cfg.visualization.dir) / run_dir.name
+        out_dir = Path(run_dir) / "visualizations" / "matches"
         match_paths: List[str] = []
         for q_idx in sampled_indices:
             q_idx_int = int(q_idx)

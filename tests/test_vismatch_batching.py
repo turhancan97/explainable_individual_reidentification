@@ -147,7 +147,7 @@ class VismatchBatchingTests(unittest.TestCase):
 
     def test_shipped_config_enables_feature_level_batching(self):
         root = Path(__file__).resolve().parents[1]
-        text = (root / "config/probe_config.yaml").read_text(encoding="utf-8")
+        text = (root / "conf/probe.yaml").read_text(encoding="utf-8")
         self.assertIn('feature_matching_mode: "feature_level"', text)
         self.assertIn('batch_mode: "batched"', text)
         self.assertIn("match_batch_size: 16", text)

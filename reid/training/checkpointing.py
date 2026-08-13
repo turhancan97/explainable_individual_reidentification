@@ -8,6 +8,7 @@ def resolve_configured_model_checkpoint(
     explicit_path: Optional[Path],
     results_dir: Path,
     filename: str = "checkpoint-final.pth",
+    fallback_dirs: Optional[list[Path]] = None,
 ) -> Path:
     """Resolve an explicit model path before searching result directories."""
     if explicit_path is not None:
@@ -17,7 +18,14 @@ def resolve_configured_model_checkpoint(
                 f"Model-only inference cannot use a full checkpoint: {explicit}"
             )
         return explicit
-    return resolve_model_checkpoint(results_dir=results_dir, filename=filename)
+    search_dirs = [Path(results_dir), *(Path(path) for path in (fallback_dirs or []))]
+    errors = []
+    for search_dir in search_dirs:
+        try:
+            return resolve_model_checkpoint(results_dir=search_dir, filename=filename)
+        except FileNotFoundError as exc:
+            errors.append(str(exc))
+    raise FileNotFoundError("No model-only checkpoint found. " + " | ".join(errors))
 
 
 def _is_full_checkpoint_name(filename: str) -> bool:

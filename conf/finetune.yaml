@@ -3,7 +3,7 @@ dataset:
   animal: "CzechLynx" # LeopardID2022 | ReunionTurtles| CzechLynx
   root: "/shared/sets/datasets/vision/czechlynx/${dataset.name}"
   metadata_file: "CzechLynxDataset-Metadata-Real.csv" # metadata/metadata_${dataset.animal}.csv | CzechLynxDataset-Metadata-Real.csv
-  label_col: "unique_name" # identity | unique_name
+  label_col: "unique_name"
   mask_col: "mask"
   no_background: false # false | true
   split_col: "split-time_closed" # split | split-time_closed
@@ -35,6 +35,7 @@ scheduler:
   eta_min_scale: 1e-3
 
 output:
+  experiment_root: "experiments"
   run_dir: "results/${dataset.name}/${dataset.animal}/mask_${dataset.no_background}"
   save_every: 10
   save_best: true
@@ -50,6 +51,10 @@ benchmark:
 safety_checks:
   enabled: true
 
+reporting:
+  enabled: true
+  index_path: "reports/runs.csv"
+
 wandb:
   enabled: false
   project: "explainable-reid"
@@ -57,3 +62,10 @@ wandb:
   group: null
   tags: []
   name: null
+
+hydra:
+  run:
+    dir: ${hydra:runtime.cwd}
+  job:
+    chdir: false
+  output_subdir: null

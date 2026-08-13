@@ -21,10 +21,12 @@ single-label animal-species classifier: identity labels represent individual ani
 - reid/data/: dataset views, COCO-RLE masking, and split safety checks.
 - reid/evaluation/metrics.py: top-k, balanced top-1, and mAP calculations.
 - reid/training/: checkpoint serialization and accumulation helpers.
-- config/: YAML experiment configuration.
+- reid/reporting/: run identities, manifests, metrics, visualization indexes, and summaries.
+- conf/: Hydra configuration for probe and finetuning.
+- config/: standalone Jaguar YAML configuration and other non-Hydra configs.
 - train/ and scripts/: command-line entrypoints.
 - tests/: dependency-light regression tests.
-- results/, benchmark_runs/, kaggle_runs/, cache/, and visualizations/:
+- experiments/, reports/, results/, benchmark_runs/, kaggle_runs/, cache/, and visualizations/:
   generated artifacts; do not edit them manually.
 
 ## Standard commands
@@ -32,15 +34,58 @@ single-label animal-species classifier: identity labels represent individual ani
 Run from the repository root:
 
 ~~~bash
-python train/finetune.py --config config/finetune_config.yaml
-python train/probe.py --config config/probe_config.yaml
+python train/finetune.py
+python train/finetune.py train.epochs=10
+python train/probe.py
+python train/probe.py benchmark.method=vismatch benchmark.methods.vismatch.matcher=loma
 python scripts/kaggle_jaguar_submit.py --config config/kaggle_jaguar.yaml --data-dir /path/to/jaguar-re-id
+python scripts/summarize_runs.py --format markdown
 python -m unittest discover -s tests -p 'test_*.py'
 python -m py_compile models/*.py reid/**/*.py train/*.py scripts/*.py
 ~~~
 
 Use --dry-run, --pair-limit, or --fast for Jaguar development runs.
 Do not run full GPU training or Vismatch benchmarks as a default validation step.
+
+## Hydra configuration
+
+`train/probe.py` and `train/finetune.py` use Hydra 1.3 as their primary single-run
+configuration interface. Defaults live in `conf/probe.yaml` and `conf/finetune.yaml`;
+use nested dotlist overrides such as `benchmark.method=vismatch` or
+`train.epochs=10`. Hydra/OmegaConf performs type conversion and rejects unknown or
+misspelled configuration paths. The legacy argparse flags and `--config` option are
+not supported by these entrypoints.
+
+Hydra does not change the working directory. New probe and finetune runs use the
+reporting-managed `experiments/` layout while legacy aggregate CSVs remain under
+`benchmark_runs/` and `results/`. Hydra multirun sweeps are intentionally outside
+the current experiment contract. Jaguar remains on its
+existing argparse and `config/kaggle_jaguar.yaml` workflow; its internal finetune
+template points to `conf/finetune.yaml`.
+
+## Experiment artifacts
+
+Modern probe and finetune runs use `experiments/` and are self-contained. Paths are
+organized as dataset/animal/split/model/method/variant/run-id. Each run must retain
+`config.snapshot.yaml`, `run_manifest.json`, `metrics.json`, and `timings.json`;
+finetune runs also retain `training_metrics.csv` and canonical checkpoints.
+
+`reports/runs.csv` is the central one-row-per-run index. Legacy
+`benchmark_runs/benchmark_results.csv` and `results/.../train_metrics.csv` remain
+populated for compatibility. Historical generated artifacts are never migrated or
+rewritten automatically.
+
+New visualizations belong inside the run’s `visualizations/` directory. Their
+`index.csv` must map query/database identities, ranks, scores, correctness, and
+artifact paths. Top-1 and failure contact sheets are optional when no images or
+labels are available. Use `scripts/summarize_runs.py` for filtered Markdown/CSV
+comparisons.
+
+Run directories use UTC timestamps plus a short resolved-configuration hash. Do not
+reuse a run directory or manually edit manifests, indexes, checkpoints, or generated
+images. Explicit checkpoint paths take precedence; automatic discovery searches
+`experiments/finetune/` before legacy `results/` and never selects full checkpoints
+for inference.
 
 ## Development Environment
 
@@ -113,13 +158,14 @@ file to inference code expecting a model-only state dict.
 The code depends on PyTorch/torchvision, timm, Hugging Face Transformers,
 wildlife-datasets, wildlife-tools, pycocotools, OpenCV, and other packages listed
 in requirements.txt. Backbone weights may require network access on first use.
-Vismatch is pinned to commit 4a743b75749a3770af59d275483ed341dea51ff0 and downloads matcher weights on first use. The shared ex-reid environment must have an importable, non-broken Vismatch installation; it must not depend on a missing editable checkout.
+Hydra is pinned to `hydra-core==1.3.2`; Vismatch is pinned to commit 4a743b75749a3770af59d275483ed341dea51ff0 and downloads matcher weights on first use. The shared ex-reid environment must have an importable, non-broken Vismatch installation; it must not depend on a missing editable checkout.
 Default paths are specific to the original shared compute environment.
 
 ## Future-work checklist
 
 - [ ] Add optional integration tests with a fake/local backbone and synthetic images.
 - [ ] Add CI for unit tests, syntax checks, and YAML/config validation.
+- [x] Migrate probe and finetuning configuration to Hydra with strict dotlist overrides and resolved snapshots.
 - [ ] Replace environment-specific absolute paths with machine-local overrides.
 - [ ] Pin external Git dependencies to reproducible commits.
 - [ ] Evaluate masking and Vismatch matcher settings separately for each animal dataset.
@@ -139,7 +185,7 @@ Default paths are specific to the original shared compute environment.
 - [ ] Consider atomic checkpoint writes and explicit checkpoint retention.
 - [x] Record completed finetuning total runtime in train_metrics.csv.
 - [ ] Reconcile historical experiment metadata and stale generated CSV schemas.
-- [ ] Expand experiment reports with identity counts and protocol summaries.
+- [x] Add readable experiment manifests, run indexing, visualization indexes, and summary reports.
 
 
 ## Vismatch matcher policy

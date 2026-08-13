@@ -25,6 +25,7 @@ from reid.evaluation.metrics import compute_metrics
 from reid.features.containers import FeatureContainer, get_labels_string, normalize_features
 from reid.training.checkpointing import load_full_checkpoint, save_full_checkpoint
 from reid.training.accumulation import should_step_accumulated_gradients
+from reid.reporting.artifacts import build_run_context, run_index_row, upsert_run_index
 from reid.utils.io import append_csv_row, ensure_dir, ensure_file, update_csv_rows
 from reid.utils.repro import set_reproducible
 
@@ -114,6 +115,52 @@ def evaluate(
 
 
 def run_finetune(cfg: DictConfig) -> None:
+    reporting_enabled = bool(getattr(cfg, "reporting", {}).get("enabled", False))
+    if not reporting_enabled:
+        return _run_finetune(cfg, None)
+
+    context = build_run_context(cfg, "finetune", run_started=datetime.utcnow())
+    context.write_config(cfg)
+    context.write_manifest(
+        {
+            "dataset": str(cfg.dataset.name),
+            "animal": str(cfg.dataset.animal),
+            "split_protocol": str(cfg.dataset.split_col),
+            "model": str(cfg.model.type),
+            "method": "arcface",
+            "variant": "default",
+        },
+        status="running",
+    )
+    try:
+        return _run_finetune(cfg, context)
+    except Exception as exc:
+        context.write_manifest(
+            {
+                "status": "failed",
+                "error": {"type": type(exc).__name__, "message": str(exc)},
+            },
+            status="failed",
+        )
+        upsert_run_index(
+            Path(str(getattr(cfg.reporting, "index_path", "reports/runs.csv"))),
+            run_index_row(
+                context,
+                {
+                    "status": "failed",
+                    "dataset": str(cfg.dataset.name),
+                    "animal": str(cfg.dataset.animal),
+                    "split_protocol": str(cfg.dataset.split_col),
+                    "model": str(cfg.model.type),
+                    "method": "arcface",
+                    "variant": "default",
+                },
+            ),
+        )
+        raise
+
+
+def _run_finetune(cfg: DictConfig, context: Any) -> None:
     run_t0 = time.perf_counter()
     set_reproducible(int(cfg.train.seed), bool(cfg.train.deterministic))
     device = choose_device()
@@ -135,11 +182,17 @@ def run_finetune(cfg: DictConfig) -> None:
     train_metadata = metadata[metadata[cfg.dataset.split_col] == cfg.dataset.train_split_value]
     val_metadata = metadata[metadata[cfg.dataset.split_col] == cfg.dataset.val_split_value]
 
-    run_started = datetime.utcnow()
     dataset_tag = _dataset_tag_from_metadata_file(str(cfg.dataset.metadata_file))
-    run_id = f"{run_started.strftime('run_%Y%m%d_%H%M%S')}_{dataset_tag}"
-    output_folder = Path(cfg.output.run_dir) / run_id
-    output_folder.mkdir(parents=True, exist_ok=True)
+    if context is not None:
+        run_id = context.run_id
+        output_folder = context.run_dir
+        context.write_config(cfg)
+    else:
+        run_started = datetime.utcnow()
+        run_id = f"{run_started.strftime('run_%Y%m%d_%H%M%S')}_{dataset_tag}"
+        output_folder = Path(cfg.output.run_dir) / run_id
+        output_folder.mkdir(parents=True, exist_ok=True)
+        OmegaConf.save(cfg, output_folder / "config.snapshot.yaml", resolve=True)
 
     if bool(getattr(cfg, "safety_checks", {}).get("enabled", True)):
         run_split_safety_checks(
@@ -319,9 +372,20 @@ def run_finetune(cfg: DictConfig) -> None:
             "no_background": bool(cfg.dataset.no_background),
             "dataset_tag": dataset_tag,
         }
+        if context is not None:
+            row.update(
+                {
+                    "config_hash": context.config_hash,
+                    "run_dir": str(context.run_dir),
+                    "manifest_path": str(context.manifest_path),
+                    "metrics_path": str(context.metrics_path),
+                }
+            )
         row.update(train_metrics)
         row.update(metrics)
         append_csv_row(Path(cfg.output.csv_path), row)
+        if context is not None:
+            append_csv_row(context.run_dir / "training_metrics.csv", row)
 
         if wandb_run is not None:
             lr = float(optimizer.param_groups[0].get("lr", 0.0))
@@ -365,6 +429,62 @@ def run_finetune(cfg: DictConfig) -> None:
     )
 
     elapsed_sec = time.perf_counter() - run_t0
+    if context is not None:
+        final_metrics = dict(metrics)
+        final_metrics.update(
+            {
+                "best_metric": best_metric_name,
+                "best_metric_value": best_metric_value,
+                "total_run_sec": float(elapsed_sec),
+                "total_run_min": float(elapsed_sec / 60.0),
+            }
+        )
+        context.write_metrics(final_metrics)
+        context.write_timings(
+            {
+                "total_run_sec": float(elapsed_sec),
+                "total_run_min": float(elapsed_sec / 60.0),
+            }
+        )
+        context.write_manifest(
+            {
+                "dataset": str(cfg.dataset.name),
+                "animal": str(cfg.dataset.animal),
+                "split_protocol": str(cfg.dataset.split_col),
+                "model": str(cfg.model.type),
+                "method": "arcface",
+                "variant": "default",
+                "num_train": len(dataset_train),
+                "num_database": len(dataset_train),
+                "num_query": len(dataset_val),
+                "metrics": final_metrics,
+                "timings": {"total_run_sec": float(elapsed_sec)},
+                "status": "completed",
+                "checkpoints": [path.name for path in output_folder.glob("checkpoint*.pth")],
+                "checkpoint_identity": file_identity(output_folder / "checkpoint-final.pth"),
+            },
+            status="completed",
+        )
+        upsert_run_index(
+            Path(str(getattr(cfg.reporting, "index_path", "reports/runs.csv"))),
+            run_index_row(
+                context,
+                {
+                    "status": "completed",
+                    "dataset": str(cfg.dataset.name),
+                    "animal": str(cfg.dataset.animal),
+                    "split_protocol": str(cfg.dataset.split_col),
+                    "model": str(cfg.model.type),
+                    "method": "arcface",
+                    "variant": "default",
+                    "num_query": len(dataset_val),
+                    "num_database": len(dataset_train),
+                    **metrics,
+                    "total_runtime_sec": float(elapsed_sec),
+                },
+            ),
+        )
+
     updated_rows = update_csv_rows(
         Path(cfg.output.csv_path),
         match={"run_id": run_id},
