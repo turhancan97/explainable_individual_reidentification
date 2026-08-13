@@ -581,6 +581,11 @@ def make_cache_key(cfg: DictConfig, method: str, split_name: str, dataset_sig: s
         "mode": cfg.model.mode,
         "no_background": bool(cfg.dataset.no_background),
         "checkpoint": checkpoint_tag,
+        "wildfusion_local_top_k": (
+            int(getattr(cfg.benchmark.methods.wildfusion, "local_top_k", 512))
+            if method == "wildfusion"
+            else None
+        ),
     }
     return hashlib.sha256(json.dumps(payload, sort_keys=True).encode("utf-8")).hexdigest()
 
@@ -1202,7 +1207,10 @@ def run_method(
         t_extract = time.perf_counter()
         matcher_aliked = SimilarityPipeline(
             matcher=MatchLightGlue(features="aliked", device=device, batch_size=settings.local_batch_size),
-            extractor=AlikedExtractor(),
+            extractor=AlikedExtractor(
+                max_num_keypoints=int(getattr(settings, "local_top_k", 512)),
+                force_num_keypoints=True,
+            ),
             transform=transform_aliked,
             calibration=IsotonicCalibration(),
         )

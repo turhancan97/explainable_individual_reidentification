@@ -25,7 +25,7 @@ from reid.evaluation.metrics import compute_metrics
 from reid.features.containers import FeatureContainer, get_labels_string, normalize_features
 from reid.training.checkpointing import load_full_checkpoint, save_full_checkpoint
 from reid.training.accumulation import should_step_accumulated_gradients
-from reid.utils.io import append_csv_row, ensure_dir, ensure_file
+from reid.utils.io import append_csv_row, ensure_dir, ensure_file, update_csv_rows
 from reid.utils.repro import set_reproducible
 
 
@@ -364,11 +364,21 @@ def run_finetune(cfg: DictConfig) -> None:
         int(cfg.train.epochs),
     )
 
+    elapsed_sec = time.perf_counter() - run_t0
+    updated_rows = update_csv_rows(
+        Path(cfg.output.csv_path),
+        match={"run_id": run_id},
+        updates={
+            "total_run_sec": float(elapsed_sec),
+            "total_run_min": float(elapsed_sec / 60.0),
+        },
+    )
+    if updated_rows == 0:
+        print(f"Warning: no finetuning CSV rows found to annotate for run_id={run_id}")
+
     if wandb_run is not None:
-        elapsed_sec = time.perf_counter() - run_t0
         wandb_run.summary["elapsed_sec"] = float(elapsed_sec)
         wandb_run.summary["elapsed_min"] = float(elapsed_sec / 60.0)
         wandb_run.finish()
 
-    elapsed_sec = time.perf_counter() - run_t0
     print(f"Elapsed time: {elapsed_sec / 60.0:.2f} min ({elapsed_sec:.1f} sec)")

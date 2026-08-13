@@ -55,6 +55,7 @@ DEFAULT_CONFIG = {
                 "deep_batch_size": 16,
                 "deep_num_workers": 4,
                 "local_batch_size": 16,
+                "local_top_k": 512,
             },
             "local_lightglue": {
                 "B": 10,

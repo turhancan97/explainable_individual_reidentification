@@ -137,6 +137,7 @@ Default paths are specific to the original shared compute environment.
 - [ ] Complete matcher ablations for RDD-LightGlue, ALIKED-LightGlue, SuperPoint-LightGlue, and LoMa-B.
 - [ ] Track wrapped-model licenses and downloaded-weight provenance for paper release.
 - [ ] Consider atomic checkpoint writes and explicit checkpoint retention.
+- [x] Record completed finetuning total runtime in train_metrics.csv.
 - [ ] Reconcile historical experiment metadata and stale generated CSV schemas.
 - [ ] Expand experiment reports with identity counts and protocol summaries.
 
@@ -155,6 +156,7 @@ shapes but non-bit-identical feature tensors; mean absolute per-pair score diffe
 was 4.38e-05. The only ranking disagreement was a near-tie, so this result supports
 behavioral equivalence but does not establish strict numerical identity.
 The shipped probe YAML may intentionally select another Stage-A method (currently wildfusion); this does not disable the independently selectable `vismatch` method.
+WildFusion uses `B` for candidate pairs per query, `local_batch_size` for pair-processing batches, and `local_top_k` for the ALIKED local keypoint budget. `local_top_k` defaults to 512 with `force_num_keypoints=True`; it is included in WildFusion cache/experiment identity so changing it does not reuse a different local-feature configuration.
 The production batching defaults are `batch_mode: batched`, `match_batch_size: 16`,
 Matching displays a pair-counted tqdm progress bar with percentage, throughput, and ETA; progress advances only after successful batches, including after OOM retries.
 and `extract_batch_size: 8`; `batch_mode: serial` remains the diagnostic/reference

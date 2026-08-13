@@ -632,7 +632,8 @@ def run_kaggle_jaguar(cfg: DictConfig) -> None:
     checkpoint_stat = checkpoint_path.stat()
     cache_tag = (
         f"model={cfg.model.type}|checkpoint={checkpoint_path}|size={checkpoint_stat.st_size}|mtime={int(checkpoint_stat.st_mtime)}|"
-        f"img={img_size}|tta={bool(cfg.stage_a.tta_hflip)}"
+        f"img={img_size}|tta={bool(cfg.stage_a.tta_hflip)}|"
+        f"wildfusion_local_top_k={int(getattr(cfg.stage_a.wildfusion, 'local_top_k', 512)) if str(cfg.stage_a.method) == 'wildfusion' else 'na'}"
     )
 
     test_images = sorted(set(test_df["query_image"].astype(str).tolist()) | set(test_df["gallery_image"].astype(str).tolist()))
@@ -689,7 +690,10 @@ def run_kaggle_jaguar(cfg: DictConfig) -> None:
         transform_aliked = T.Compose([T.Resize([512, 512]), T.ToTensor()])
         matcher_aliked = SimilarityPipeline(
             matcher=MatchLightGlue(features="aliked", device=device, batch_size=int(wf_cfg.local_batch_size)),
-            extractor=AlikedExtractor(),
+            extractor=AlikedExtractor(
+                max_num_keypoints=int(getattr(wf_cfg, "local_top_k", 512)),
+                force_num_keypoints=True,
+            ),
             transform=transform_aliked,
             calibration=IsotonicCalibration(),
         )

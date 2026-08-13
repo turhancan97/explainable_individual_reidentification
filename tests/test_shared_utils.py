@@ -15,6 +15,7 @@ from reid.config_defaults import (
     validate_model_type,
 )
 from reid.training.accumulation import should_step_accumulated_gradients
+from reid.utils.io import append_csv_row, update_csv_rows
 from reid.methods.vismatch_profiles import FrameFeatures
 from reid.methods.vismatch_profiles import (
     FEATURE_SCHEMA_VERSION,
@@ -170,6 +171,27 @@ class CheckpointResolutionTests(unittest.TestCase):
                 resolve_configured_model_checkpoint(full_checkpoint, root)
 
 
+class CsvRuntimeTests(unittest.TestCase):
+    def test_update_csv_rows_adds_final_finetune_runtime(self):
+        with TemporaryDirectory() as temp_dir:
+            csv_path = Path(temp_dir) / "train_metrics.csv"
+            append_csv_row(csv_path, {"run_id": "run-a", "epoch": 1, "top_1": 0.5})
+            append_csv_row(csv_path, {"run_id": "run-a", "epoch": 2, "top_1": 0.6})
+            append_csv_row(csv_path, {"run_id": "run-b", "epoch": 1, "top_1": 0.7})
+
+            updated = update_csv_rows(
+                csv_path,
+                match={"run_id": "run-a"},
+                updates={"total_run_sec": 12.5, "total_run_min": 12.5 / 60.0},
+            )
+
+            self.assertEqual(updated, 2)
+            rows = pd.read_csv(csv_path)
+            self.assertEqual(rows.loc[0, "total_run_sec"], 12.5)
+            self.assertAlmostEqual(rows.loc[1, "total_run_min"], 12.5 / 60.0)
+            self.assertTrue(pd.isna(rows.loc[2, "total_run_sec"]))
+
+
 class AccumulationTests(unittest.TestCase):
     def test_divisible_batches_step_only_at_accumulation_boundaries(self):
         flags = [
@@ -265,6 +287,8 @@ class VismatchProfileTests(unittest.TestCase):
         self.assertIn('    vismatch:', probe)
         self.assertNotIn('    rdd:', probe)
         jaguar = (root / "config/kaggle_jaguar.yaml").read_text(encoding="utf-8")
+        self.assertIn('      local_top_k: 512', probe)
+        self.assertIn('    local_top_k: 512', jaguar)
         self.assertIn('vismatch:', jaguar)
         self.assertIn('loma', probe)
         self.assertIn('loma', jaguar)

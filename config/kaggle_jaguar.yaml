@@ -62,6 +62,7 @@ stage_a:
     deep_batch_size: 32
     deep_num_workers: 8
     local_batch_size: 16
+    local_top_k: 512
     calibration_size: 800
 
 vismatch:

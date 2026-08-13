@@ -204,6 +204,7 @@ Key blocks:
 - `dataset`: root/splits + mask options
 - `model`: type/mode/checkpoint behavior
 - `benchmark`: method (`cosine`, `wildfusion`, `local_lightglue`, `linear_probe`, `efficient_probe`, `vismatch`), metrics, cache
+- WildFusion settings: `B` controls candidate pairs per query, `local_batch_size` controls pair-processing batches, and `local_top_k` controls ALIKED keypoints (default `512`).
 - `visualization`: optional qualitative retrieval plots
 - `output`: run folder + aggregate CSV
 - `safety_checks`: pre-run split validation (`enabled`)
@@ -372,6 +373,7 @@ Canonical files:
 
 Aggregate metrics CSV:
 - results/train_metrics.csv
+- Finetuning CSV rows for a completed run include `total_run_sec` and `total_run_min`.
 
 For compatibility, finetuning also writes historical tagged forms such as
 checkpoint-final_<dataset_tag>.pth. Probe and Jaguar checkpoint discovery

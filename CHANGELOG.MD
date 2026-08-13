@@ -7,6 +7,8 @@ kept under Unreleased until a project version is assigned.
 
 ### Added
 
+- Added configurable WildFusion ALIKED keypoint budgets via `local_top_k` (default 512), with forced keypoint counts and cache/experiment identity tracking.
+
 - Added a repository policy requiring AI agents to update AGENTS.md and
   CHANGELOG.MD after changes and important decisions.
 - Added AGENTS.md with architecture, operating rules, configuration contracts,
@@ -35,6 +37,8 @@ kept under Unreleased until a project version is assigned.
 
 ### Fixed
 
+- Added `total_run_sec` and `total_run_min` to completed finetuning runs in the
+  aggregate training CSV, while preserving incremental epoch writes.
 - Fixed the missing `Sequence` typing import that prevented batched Vismatch
   probe runs from starting.
 - Added an ex-reid-gated runtime smoke test that invokes batched extraction with a

@@ -24,7 +24,7 @@ model:
     filename: "checkpoint-final.pth"
 
 benchmark:
-  method: "vismatch"  # cosine | wildfusion | local_lightglue | linear_probe | efficient_probe | vismatch
+  method: "wildfusion"  # cosine | wildfusion | local_lightglue | linear_probe | efficient_probe | vismatch
   top_k: [1, 5, 10]
   compute_map: true
   seed: 0
@@ -40,6 +40,7 @@ benchmark:
       deep_batch_size: 16
       deep_num_workers: 4
       local_batch_size: 16
+      local_top_k: 512
     local_lightglue:
       B: 10
       local_batch_size: 16

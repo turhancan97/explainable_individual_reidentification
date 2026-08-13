@@ -54,6 +54,34 @@ def append_csv_row(csv_path: Path, row: Dict[str, Any]) -> None:
         writer.writerow(row)
 
 
+def update_csv_rows(
+    csv_path: Path,
+    match: Dict[str, Any],
+    updates: Dict[str, Any],
+) -> int:
+    """Update rows matching all key/value pairs and rewrite the CSV atomically."""
+
+    if not csv_path.is_file():
+        return 0
+    with csv_path.open("r", newline="", encoding="utf-8") as f:
+        reader = csv.DictReader(f)
+        header = list(reader.fieldnames or [])
+        rows = list(reader)
+    if not header:
+        return 0
+
+    new_keys = [key for key in updates if key not in header]
+    header.extend(new_keys)
+    updated_count = 0
+    for row in rows:
+        if all(str(row.get(key, "")) == str(value) for key, value in match.items()):
+            row.update({key: value for key, value in updates.items()})
+            updated_count += 1
+    if updated_count:
+        _rewrite_csv_with_header(csv_path=csv_path, rows=rows, header=header)
+    return updated_count
+
+
 def _rewrite_csv_with_header(csv_path: Path, rows: List[Dict[str, Any]], header: List[str]) -> None:
     tmp_path = csv_path.with_suffix(csv_path.suffix + ".tmp")
     with tmp_path.open("w", newline="", encoding="utf-8") as f:
