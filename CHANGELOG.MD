@@ -3,7 +3,7 @@
 All notable repository changes are recorded here. The current development line is
 kept under Unreleased until a project version is assigned.
 
-## [Unreleased] - 2026-08-12
+## [Unreleased] - 2026-08-13
 
 ### Added
 
@@ -14,6 +14,11 @@ kept under Unreleased until a project version is assigned.
 - Added lightweight supported-model constants and validation.
 - Added regression tests for model defaults, checkpoint discovery, and gradient
   accumulation boundaries.
+- Kept configuration regression checks compatible with the user-preserved wildfusion Stage-A default.
+- Added dependency-light batching tests covering shape bucketing, candidate placement,
+  partial batches, serial mode, score parity scaffolding, and CUDA OOM backoff.
+- Added batched Vismatch extraction and feature-level matching for LoMa and
+  RDD-LightGlue-compatible profiles.
 
 ### Changed
 
@@ -29,6 +34,12 @@ kept under Unreleased until a project version is assigned.
 
 ### Fixed
 
+- Fixed the missing `Sequence` typing import that prevented batched Vismatch
+  probe runs from starting.
+- Added an ex-reid-gated runtime smoke test that invokes batched extraction with a
+  fake backend, catching runtime annotation/import failures before full benchmarks.
+- Restored explicit batched Vismatch defaults in `config/probe_config.yaml` while
+  preserving the user-selected LoMa, Stage-A, and candidate settings.
 - Prevented gradients from a final partial accumulation group from being discarded
   in finetuning, linear probing, and efficient probing.
 - Ensured explicit checkpoint paths take precedence over automatic discovery.
@@ -76,6 +87,11 @@ kept under Unreleased until a project version is assigned.
 - Repaired the shared ex-reid Vismatch installation and recorded the pinned commit.
 - Extended probe and Jaguar configuration examples so `matcher: loma` can be
   selected without changing the public `vismatch` method name.
+- Made batched Vismatch execution the default with configurable extraction and
+  matching batch sizes, cross-query exact shape bucketing, serial fallback, and CUDA
+OOM backoff.
+- Added effective/configured batch-size and batch-count timing fields without changing
+  Stage-A candidate selection, candidate_k, matrix placement, or score normalization.
 
 ### Fixed
 
@@ -87,6 +103,8 @@ kept under Unreleased until a project version is assigned.
   divided by the smaller keypoint count, with the reference 0.10 filter threshold.
 - Added a clear migration error for callers that still request the removed public
   `rdd` probe method.
+- Recovered from interrupted/corrupt feature-cache writes with atomic cache replacement
+  and recomputation of invalid `.npz` entries.
 
 ### Known Issues
 
@@ -96,6 +114,10 @@ kept under Unreleased until a project version is assigned.
   changing the LoMa wrapper or threshold requires a separate parity check.
 - Private Lynx golden-subset parity and CUDA matcher smoke tests still require the
   external dataset, downloaded weights, and the ex-reid environment.
+- Exact shape bucketing is deliberately conservative: heterogeneous feature shapes
+  may fall back to serial processing, so throughput depends on the dataset and matcher.
+- Batched-vs-serial CUDA parity and the 100% top-1 golden-subset gate remain environment-
+  gated checks; lightweight tests do not prove numerical equivalence of downloaded models.
 - Full available-split parity was measured on 2026-08-12 with 66 queries and 217
   gallery sequences: 98.48% top-1 ranking agreement, identical top-5 accuracy,
   mAP difference -0.0018, and mean absolute per-pair score difference 4.38e-05.

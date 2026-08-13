@@ -116,6 +116,10 @@ DEFAULT_CONFIG = {
                 "top_k": 2048,
                 "matcher_threshold": None,  # profile default: 0.01 for RDD/LightGlue, 0.10 for LoMa
                 "feature_matching_mode": "feature_level",
+                "batch_mode": "batched",
+                "match_batch_size": 16,
+                "extract_batch_size": 8,
+                "oom_backoff": True,
                 "stage_a_method": "cosine",
                 "candidate_k": 200,
             },

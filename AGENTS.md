@@ -123,6 +123,11 @@ Default paths are specific to the original shared compute environment.
 - [ ] Replace environment-specific absolute paths with machine-local overrides.
 - [ ] Pin external Git dependencies to reproducible commits.
 - [ ] Evaluate masking and Vismatch matcher settings separately for each animal dataset.
+- [x] Fix runtime annotation import validation for the batched Vismatch path.
+- [x] Add an ex-reid-gated runtime smoke test that invokes batched extraction.
+- [x] Keep explicit batching defaults in the user-preserved probe YAML.
+- [x] Add production-batched Vismatch feature extraction and feature-level reranking
+  with a permanent serial parity/reference mode.
 - [ ] Profile and optimize cached Vismatch feature extraction/reranking costs.
 - [ ] Run the private Lynx golden-subset parity comparison for RDD-LightGlue before changing matcher defaults.
 - [x] Run the available full-split Lynx parity comparison on 2026-08-12: 66 queries,
@@ -149,3 +154,16 @@ The 2026-08-12 full-split parity run found identical keypoint counts and descrip
 shapes but non-bit-identical feature tensors; mean absolute per-pair score difference
 was 4.38e-05. The only ranking disagreement was a near-tie, so this result supports
 behavioral equivalence but does not establish strict numerical identity.
+The shipped probe YAML may intentionally select another Stage-A method (currently wildfusion); this does not disable the independently selectable `vismatch` method.
+The production batching defaults are `batch_mode: batched`, `match_batch_size: 16`,
+and `extract_batch_size: 8`; `batch_mode: serial` remains the diagnostic/reference
+workflow for parity checks. Extraction buckets images by matcher-native spatial shape.
+Feature matching buckets candidate pairs across queries by exact left/right keypoint
+cardinality and falls back to serial for empty, singleton, or otherwise incompatible
+groups. LoMa is never
+naively padded because padding would change assignment-softmax normalization. When
+CUDA runs out of memory and `oom_backoff: true`, the current batch is retried at half
+size, temporary CUDA memory is cleared, and effective batch sizes are recorded in
+Vismatch timing metadata. Stage-A candidates, `candidate_k`, matrix placement, and
+score normalization are unchanged; the 1e-4 score/top-1 parity gate remains required
+before interpreting performance results.

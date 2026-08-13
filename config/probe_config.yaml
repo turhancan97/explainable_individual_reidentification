@@ -1,8 +1,8 @@
 dataset:
   name: "CzechLynx_v2" # WildlifeReID-10k | CzechLynx_v2
-  animal: "CzechLynx" # LeopardID2022 | ReunionTurtles| CzechLynx
+  animal: "CzechLynx" # CzechLynx | LeopardID2022 | ReunionTurtles | NyalaData | WhaleSharkID | BelugaID
   root: "/shared/sets/datasets/vision/czechlynx/${dataset.name}"
-  metadata_file: "CzechLynxDataset-Metadata-Real.csv" # metadata/metadata_${dataset.animal}.csv | CzechLynxDataset-Metadata-Real.csv
+  metadata_file: "CzechLynxDataset-Metadata-Real.csv" # metadata/metadata_${dataset.animal}.csv | metadata_masked/metadata_${dataset.animal}.csv | CzechLynxDataset-Metadata-Real.csv
   label_col: "unique_name" # identity | unique_name
   mask_col: "mask"
   no_background: true # false | true
@@ -36,7 +36,7 @@ benchmark:
   methods:
     cosine: {}
     wildfusion:
-      B: 10
+      B: 100
       deep_batch_size: 16
       deep_num_workers: 4
       local_batch_size: 16
@@ -96,12 +96,16 @@ benchmark:
       device: "auto"            # auto | cpu | cuda
       path_col: "path"
       resize_max: 448
-      top_k: 2048
+      top_k: 512
       matcher_threshold: null  # profile default: 0.01 for RDD/LightGlue, 0.10 for LoMa
       feature_matching_mode: "feature_level"  # feature_level | pairwise (diagnostics only)
+      batch_mode: "batched"       # batched | serial
+      match_batch_size: 16
+      extract_batch_size: 8
+      oom_backoff: true
       cache_dir: "/shared/results/common/kargin/lynx/results/${dataset.name}/${dataset.animal}/cache/vismatch"
       stage_a_method: "cosine"   # cosine | wildfusion | local_lightglue | linear_probe | efficient_probe
-      candidate_k: 10
+      candidate_k: 100
 
 visualization:
   enabled: true

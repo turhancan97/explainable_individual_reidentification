@@ -1,11 +1,14 @@
 """Vismatch-backed local matcher benchmark."""
 
 import hashlib
+import gc
 import json
+import os
 import time
+import zipfile
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 import matplotlib.cm as cm
 import matplotlib.pyplot as plt
@@ -26,6 +29,10 @@ from reid.methods.vismatch_profiles import (
     default_matcher_threshold,
     normalize_match_confidences,
     validate_matcher_name,
+)
+from reid.methods.vismatch_batching import (
+    grouped_pair_batches,
+    run_with_batch_backoff,
 )
 from reid.utils.io import ensure_file
 
@@ -73,6 +80,20 @@ def _drop_batch(value: Any) -> np.ndarray:
     return array
 
 
+def _batch_item(value: Any, index: int, batch_size: int) -> Any:
+    if isinstance(value, (list, tuple)):
+        if len(value) == batch_size:
+            return value[index]
+        if batch_size == 1 and len(value) == 1:
+            return value[0]
+    array = _as_numpy(value)
+    if array.ndim > 0 and array.shape[0] == batch_size:
+        return array[index]
+    if batch_size == 1:
+        return _drop_batch(value)
+    return value
+
+
 class VismatchMatcherBackend:
     """Feature-level Vismatch adapter with explicit pairwise diagnostics."""
 
@@ -95,6 +116,14 @@ class VismatchMatcherBackend:
             raise ValueError("pairwise Vismatch mode is diagnostics-only; use match_images() explicitly")
         self.profile = build_matcher_profile(matcher, top_k, threshold, self.feature_matching_mode)
         self.last_diagnostics: Dict[str, Any] = {}
+        self.batch_diagnostics: Dict[str, Any] = {
+            "extract_batches": 0,
+            "match_batches": 0,
+            "configured_extract_batch_size": None,
+            "configured_match_batch_size": None,
+            "effective_extract_batch_size": None,
+            "effective_match_batch_size": None,
+        }
         self.model = get_matcher(matcher, device=str(device), max_num_keypoints=self.top_k)
 
         if matcher == "rdd-lightglue":
@@ -200,6 +229,93 @@ class VismatchMatcherBackend:
             original_image_size=original_image_size,
         )
 
+    def prepared_shape(self, image: torch.Tensor) -> tuple[int, int]:
+        """Return the matcher-native spatial shape used for safe extraction batches."""
+
+        if self.matcher_name == "rdd-lightglue":
+            return tuple(int(value) for value in self._prepare_rdd(image)[0].shape[-2:])
+        if self.matcher_name == "loma":
+            return tuple(int(value) for value in self._prepare_loma(image)[0].shape[-2:])
+        tensor = image[0] if image.ndim == 4 else image
+        return tuple(int(value) for value in tensor.shape[-2:])
+
+    @torch.no_grad()
+    def extract_frames_batch(self, images: List[torch.Tensor]) -> List[FrameFeatures]:
+        """Extract a batch whose images share a matcher-native spatial shape."""
+
+        if not images:
+            return []
+        if len(images) == 1:
+            return [self.extract_frame(images[0])]
+
+        tensors = [image.to(self.device) for image in images]
+        prepared: List[torch.Tensor] = []
+        metadata: List[tuple[int, int, int, int]] = []
+        for tensor in tensors:
+            if self.matcher_name == "rdd-lightglue":
+                item, height, width, _height_scale, _width_scale = self._prepare_rdd(tensor)
+                prepared.append(item)
+                metadata.append((height, width, int(item.shape[-2]), int(item.shape[-1])))
+            elif self.matcher_name == "loma":
+                item, height, width, padded_height, padded_width = self._prepare_loma(tensor)
+                prepared.append(item)
+                metadata.append((height, width, padded_height, padded_width))
+            else:
+                item = tensor[0] if tensor.ndim == 4 else tensor
+                prepared.append(item.unsqueeze(0))
+                metadata.append((int(item.shape[-2]), int(item.shape[-1]), int(item.shape[-2]), int(item.shape[-1])))
+
+        if len({tuple(int(value) for value in item.shape[-2:]) for item in prepared}) != 1:
+            return [self.extract_frame(image) for image in images]
+        prepared_batch = torch.cat(prepared, dim=0)
+        batch_size = len(images)
+        features: List[FrameFeatures] = []
+
+        if self.matcher_name == "loma":
+            keypoints_batch, descriptors_batch, _height, _width = self.extractor.detect_and_describe(
+                prepared_batch, self.top_k
+            )
+            for index, (height, width, padded_height, padded_width) in enumerate(metadata):
+                keypoints = _as_numpy(_batch_item(keypoints_batch, index, batch_size)).astype(np.float32, copy=False)
+                descriptors = _as_numpy(_batch_item(descriptors_batch, index, batch_size)).astype(np.float32, copy=False)
+                features.append(FrameFeatures(
+                    keypoints=keypoints,
+                    descriptors=descriptors,
+                    scores=np.ones(keypoints.shape[0], dtype=np.float32),
+                    image_size=np.asarray([padded_height, padded_width], dtype=np.int32),
+                    schema_version=FEATURE_SCHEMA_VERSION,
+                    coordinate_convention="normalized[-1,1]",
+                    image_size_convention="hw",
+                    original_image_size=np.asarray([height, width], dtype=np.int32),
+                ))
+            return features
+
+        outputs = self.extractor.extract(prepared_batch)
+        for index, (height, width, _prepared_height, _prepared_width) in enumerate(metadata):
+            if isinstance(outputs, (list, tuple)):
+                output = outputs[index]
+            else:
+                output = {key: _batch_item(value, index, batch_size) for key, value in outputs.items()}
+            keypoints = _as_numpy(output["keypoints"]).astype(np.float32, copy=False)
+            descriptors = _as_numpy(output["descriptors"]).astype(np.float32, copy=False)
+            raw_scores = output.get("scores", output.get("keypoint_scores", np.ones(keypoints.shape[0])))
+            scores = _as_numpy(raw_scores).astype(np.float32, copy=False)
+            if self.matcher_name == "rdd-lightglue":
+                _prepared, _h, _w, height_scale, width_scale = self._prepare_rdd(tensors[index])
+                keypoints = keypoints * np.asarray([width_scale, height_scale], dtype=np.float32)
+            image_size = np.asarray([height, width], dtype=np.int32)
+            features.append(FrameFeatures(
+                keypoints=keypoints,
+                descriptors=descriptors,
+                scores=scores,
+                image_size=image_size,
+                schema_version=FEATURE_SCHEMA_VERSION,
+                coordinate_convention="pixel",
+                image_size_convention="hw",
+                original_image_size=image_size.copy(),
+            ))
+        return features
+
     def _matcher_inputs(self, left: FrameFeatures, right: FrameFeatures) -> Dict[str, Dict[str, torch.Tensor]]:
         return {
             "image0": {
@@ -211,6 +327,23 @@ class VismatchMatcherBackend:
                 "keypoints": torch.from_numpy(right.keypoints).to(self.device).unsqueeze(0),
                 "descriptors": torch.from_numpy(right.descriptors).to(self.device).unsqueeze(0),
                 "image_size": torch.tensor(right.image_size[::-1].copy(), device=self.device).unsqueeze(0),
+            },
+        }
+
+    def _matcher_inputs_batch(
+        self, pairs: List[Tuple[FrameFeatures, FrameFeatures]]
+    ) -> Dict[str, Dict[str, torch.Tensor]]:
+        left, right = zip(*pairs)
+        return {
+            "image0": {
+                "keypoints": torch.from_numpy(np.stack([item.keypoints for item in left])).to(self.device),
+                "descriptors": torch.from_numpy(np.stack([item.descriptors for item in left])).to(self.device),
+                "image_size": torch.from_numpy(np.stack([item.image_size[::-1] for item in left])).to(self.device),
+            },
+            "image1": {
+                "keypoints": torch.from_numpy(np.stack([item.keypoints for item in right])).to(self.device),
+                "descriptors": torch.from_numpy(np.stack([item.descriptors for item in right])).to(self.device),
+                "image_size": torch.from_numpy(np.stack([item.image_size[::-1] for item in right])).to(self.device),
             },
         }
 
@@ -288,6 +421,112 @@ class VismatchMatcherBackend:
             "homography_available": None,
         }
         return MatchResult(score, int(match_count), confidence_sum, self.last_diagnostics["confidence_mean"], matched0, matched1, dict(self.last_diagnostics), confidences.astype(np.float32, copy=False))
+
+    @torch.no_grad()
+    def _match_loma_features_batch(
+        self, pairs: List[Tuple[FrameFeatures, FrameFeatures]]
+    ) -> List[MatchResult]:
+        left, right = zip(*pairs)
+        k0 = torch.from_numpy(np.stack([item.keypoints for item in left])).to(self.device)
+        k1 = torch.from_numpy(np.stack([item.keypoints for item in right])).to(self.device)
+        d0 = torch.from_numpy(np.stack([item.descriptors for item in left])).to(self.device)
+        d1 = torch.from_numpy(np.stack([item.descriptors for item in right])).to(self.device)
+        prediction = self.pair_matcher(k0, k1, d0, d1)
+        m0, _, match_scores0, _ = self._loma_filter_matches(prediction["scores"], self._loma_threshold)
+        results: List[MatchResult] = []
+        for index, (left_item, right_item) in enumerate(pairs):
+            valid = m0[index] >= 0
+            matched_indices0 = torch.where(valid)[0]
+            matched_indices1 = m0[index][valid]
+            confidences = match_scores0[index][valid].float()
+            confidence_sum = float(confidences.sum().item())
+            denominator = min(max(1, len(left_item.keypoints)), max(1, len(right_item.keypoints)))
+            diagnostics = {
+                "match_count": int(confidences.numel()),
+                "confidence_sum": confidence_sum,
+                "confidence_mean": float(confidences.mean().item()) if confidences.numel() else 0.0,
+                "inlier_count": None,
+                "homography_available": None,
+            }
+            results.append(MatchResult(
+                score=confidence_sum / float(denominator),
+                match_count=int(confidences.numel()),
+                confidence_sum=confidence_sum,
+                confidence_mean=diagnostics["confidence_mean"],
+                matched_kpts0=left_item.keypoints[matched_indices0.detach().cpu().numpy()] if valid.any() else np.empty((0, 2), dtype=np.float32),
+                matched_kpts1=right_item.keypoints[matched_indices1.detach().cpu().numpy()] if valid.any() else np.empty((0, 2), dtype=np.float32),
+                diagnostics=diagnostics,
+                confidences=confidences.detach().cpu().numpy().astype(np.float32, copy=False),
+            ))
+        self.last_diagnostics = dict(results[-1].diagnostics) if results else {}
+        return results
+
+    @torch.no_grad()
+    def _match_generic_features_batch(
+        self, pairs: List[Tuple[FrameFeatures, FrameFeatures]]
+    ) -> List[MatchResult]:
+        prediction = self.pair_matcher(self._matcher_inputs_batch(pairs))
+        results: List[MatchResult] = []
+        batch_size = len(pairs)
+        for index, (left, right) in enumerate(pairs):
+            confidences = _as_numpy(_batch_item(prediction.get("scores", np.empty((batch_size, 0))), index, batch_size)).reshape(-1).astype(np.float64)
+            matches = prediction.get("matches")
+            if matches is not None:
+                matches_np = _as_numpy(_batch_item(matches, index, batch_size)).astype(np.int64, copy=False)
+                if matches_np.ndim == 2 and matches_np.shape[1] == 2 and len(matches_np) == len(confidences):
+                    valid = matches_np[:, 0] >= 0
+                    matches_np = matches_np[valid]
+                    confidences = confidences[valid]
+                else:
+                    matches_np = np.empty((0, 2), dtype=np.int64)
+            else:
+                matches_np = np.empty((0, 2), dtype=np.int64)
+            score, match_count, filtered = normalize_match_confidences(confidences, len(left.keypoints), len(right.keypoints), self.threshold)
+            filtered_confidences = np.asarray(filtered, dtype=np.float64)
+            if len(matches_np) == len(confidences):
+                matches_np = matches_np[confidences >= self.threshold]
+            diagnostics = {
+                "match_count": int(len(filtered_confidences)),
+                "confidence_sum": float(filtered_confidences.sum()),
+                "confidence_mean": float(filtered_confidences.mean()) if len(filtered_confidences) else 0.0,
+                "inlier_count": None,
+                "homography_available": None,
+            }
+            results.append(MatchResult(
+                score=score,
+                match_count=int(match_count),
+                confidence_sum=diagnostics["confidence_sum"],
+                confidence_mean=diagnostics["confidence_mean"],
+                matched_kpts0=left.keypoints[matches_np[:, 0]] if len(matches_np) else np.empty((0, 2), dtype=np.float32),
+                matched_kpts1=right.keypoints[matches_np[:, 1]] if len(matches_np) else np.empty((0, 2), dtype=np.float32),
+                diagnostics=diagnostics,
+                confidences=filtered_confidences.astype(np.float32, copy=False),
+            ))
+        self.last_diagnostics = dict(results[-1].diagnostics) if results else {}
+        return results
+
+    def match_features_batch(
+        self, pairs: List[Tuple[FrameFeatures, FrameFeatures]]
+    ) -> List[MatchResult]:
+        """Match compatible feature pairs in one model call, preserving serial semantics."""
+
+        if not pairs:
+            return []
+        if len(pairs) == 1:
+            left, right = pairs[0]
+            return [self.match_features(left, right)]
+        for left, right in pairs:
+            if left.schema_version != FEATURE_SCHEMA_VERSION or right.schema_version != FEATURE_SCHEMA_VERSION:
+                raise RuntimeError("Cached Vismatch features use an unsupported schema version")
+        shape_keys = {
+            (left.keypoints.shape, right.keypoints.shape, left.descriptors.shape, right.descriptors.shape)
+            for left, right in pairs
+        }
+        if len(shape_keys) != 1 or any(len(left.keypoints) == 0 or len(right.keypoints) == 0 for left, right in pairs):
+            return [self.match_features(left, right) for left, right in pairs]
+        if self.matcher_name == "loma":
+            return self._match_loma_features_batch(pairs)
+        return self._match_generic_features_batch(pairs)
 
     @torch.no_grad()
     def match_images(self, image0: Any, image1: Any) -> MatchResult:
@@ -395,18 +634,25 @@ def _cache_path(cache_dir: Path, key: str) -> Path:
 
 
 def _save_cached_feat(path: Path, feat: FrameFeat) -> None:
+    """Write a feature cache atomically so interrupted jobs cannot poison a run."""
+
     path.parent.mkdir(parents=True, exist_ok=True)
-    np.savez_compressed(
-        path,
-        keypoints=feat.keypoints,
-        descriptors=feat.descriptors,
-        scores=feat.scores,
-        image_size=feat.image_size,
-        original_image_size=(feat.original_image_size if feat.original_image_size is not None else feat.image_size),
-        schema_version=np.asarray(feat.schema_version, dtype=np.int64),
-        coordinate_convention=np.asarray(feat.coordinate_convention, dtype="U16"),
-        image_size_convention=np.asarray(feat.image_size_convention, dtype="U8"),
-    )
+    temporary_path = path.with_name(path.name + ".tmp.npz")
+    try:
+        np.savez_compressed(
+            temporary_path,
+            keypoints=feat.keypoints,
+            descriptors=feat.descriptors,
+            scores=feat.scores,
+            image_size=feat.image_size,
+            original_image_size=(feat.original_image_size if feat.original_image_size is not None else feat.image_size),
+            schema_version=np.asarray(feat.schema_version, dtype=np.int64),
+            coordinate_convention=np.asarray(feat.coordinate_convention, dtype="U16"),
+            image_size_convention=np.asarray(feat.image_size_convention, dtype="U8"),
+        )
+        os.replace(temporary_path, path)
+    finally:
+        temporary_path.unlink(missing_ok=True)
 
 
 def _load_cached_feat(path: Path) -> FrameFeat:
@@ -608,6 +854,12 @@ def _letterbox_image_and_keypoints(
     return canvas, remapped
 
 
+def _clear_cuda_memory() -> None:
+    gc.collect()
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+
+
 def _extract_split_features(
     dataset: Any,
     split_name: str,
@@ -621,23 +873,71 @@ def _extract_split_features(
     mask_col: str,
     path_col: str,
     cfg_tag: str,
+    batch_mode: str = "batched",
+    extract_batch_size: int = 8,
+    oom_backoff: bool = True,
 ) -> List[FrameFeat]:
     if path_col not in dataset.df.columns:
         raise KeyError(f"Vismatch method requires path_col='{path_col}' in dataset dataframe")
+    batch_mode = str(batch_mode).lower()
+    if batch_mode not in {"batched", "serial"}:
+        raise ValueError("vismatch batch_mode must be 'batched' or 'serial'")
+    if extract_batch_size <= 0:
+        raise ValueError("vismatch extract_batch_size must be > 0")
 
-    feats: List[FrameFeat] = []
+    features: List[Optional[FrameFeat]] = [None] * len(dataset)
+    pending: Dict[tuple[int, int], List[Tuple[int, torch.Tensor, Path]]] = {}
+    backend.batch_diagnostics["configured_extract_batch_size"] = int(extract_batch_size)
+
+    def store_batch(
+        entries: Sequence[Tuple[int, torch.Tensor, Path]],
+        extracted: Sequence[FrameFeat],
+        effective_size: int,
+    ) -> None:
+        if len(entries) != len(extracted):
+            raise RuntimeError("Vismatch batched extraction returned an unexpected number of features")
+        backend.batch_diagnostics["extract_batches"] += 1
+        current = backend.batch_diagnostics["effective_extract_batch_size"]
+        backend.batch_diagnostics["effective_extract_batch_size"] = (
+            effective_size if current is None else min(int(current), int(effective_size))
+        )
+        for (index, _image, cache_path), feature in zip(entries, extracted):
+            features[index] = feature
+            _save_cached_feat(cache_path, feature)
+
+    def process_entries(entries: Sequence[Tuple[int, torch.Tensor, Path]]) -> None:
+        if not entries:
+            return
+        if batch_mode == "serial":
+            for entry in entries:
+                store_batch([entry], [backend.extract_frame(entry[1])], 1)
+            return
+
+        def process_batch(current: Sequence[Tuple[int, torch.Tensor, Path]]) -> Tuple[List[Tuple[int, torch.Tensor, Path]], List[FrameFeat]]:
+            current_list = list(current)
+            return current_list, backend.extract_frames_batch([item[1] for item in current_list])
+
+        for (processed_entries, extracted), effective_size in run_with_batch_backoff(
+            list(entries),
+            extract_batch_size,
+            process_batch,
+            oom_backoff=oom_backoff,
+            clear_memory=_clear_cuda_memory,
+        ):
+            store_batch(processed_entries, extracted, effective_size)
+
     iterator = tqdm(range(len(dataset)), desc=f"[vismatch][extract:{split_name}]", mininterval=1, ncols=120)
     for idx in iterator:
         image_path = str(dataset.df.iloc[idx][path_col])
         key = _cache_key(image_path=image_path, split_name=split_name, resize_max=resize_max, top_k=top_k, cfg_tag=cfg_tag)
-        cp = _cache_path(cache_dir, key)
-        if cp.is_file():
+        cache_path = _cache_path(cache_dir, key)
+        if cache_path.is_file():
             try:
-                cached = _load_cached_feat(cp)
+                cached = _load_cached_feat(cache_path)
                 if cached.schema_version == FEATURE_SCHEMA_VERSION:
-                    feats.append(cached)
+                    features[idx] = cached
                     continue
-            except (OSError, ValueError, KeyError):
+            except (OSError, ValueError, KeyError, zipfile.BadZipFile):
                 pass
         row = dataset.df.iloc[idx]
         image = _load_raw_rgb_image(
@@ -649,10 +949,21 @@ def _extract_split_features(
             mask_col=mask_col,
         )
         image_tensor = _to_image_tensor(image=image, resize_max=resize_max)
-        feat = _extract_frame(backend=backend, image_tensor=image_tensor)
-        _save_cached_feat(cp, feat)
-        feats.append(feat)
-    return feats
+        if batch_mode == "serial":
+            process_entries([(idx, image_tensor, cache_path)])
+            continue
+        shape_key = backend.prepared_shape(image_tensor)
+        bucket = pending.setdefault(shape_key, [])
+        bucket.append((idx, image_tensor, cache_path))
+        if len(bucket) >= extract_batch_size:
+            process_entries(bucket[:extract_batch_size])
+            del bucket[:extract_batch_size]
+
+    for entries in pending.values():
+        process_entries(entries)
+    if any(feature is None for feature in features):
+        raise RuntimeError(f"Vismatch extraction did not produce features for all {split_name} samples")
+    return [feature for feature in features if feature is not None]
 
 
 def run_vismatch_benchmark(
@@ -692,6 +1003,14 @@ def run_vismatch_benchmark(
             checkpoint_tag = f"{checkpoint_path}|{stat.st_size}|{int(stat.st_mtime)}"
     stage_a_method = str(settings.stage_a_method) if "stage_a_method" in settings else "none"
     feature_matching_mode = str(getattr(settings, "feature_matching_mode", "feature_level"))
+    batch_mode = str(getattr(settings, "batch_mode", "batched")).lower()
+    match_batch_size = int(getattr(settings, "match_batch_size", 16))
+    extract_batch_size = int(getattr(settings, "extract_batch_size", 8))
+    oom_backoff = bool(getattr(settings, "oom_backoff", True))
+    if batch_mode not in {"batched", "serial"}:
+        raise ValueError("vismatch batch_mode must be 'batched' or 'serial'")
+    if match_batch_size <= 0 or extract_batch_size <= 0:
+        raise ValueError("vismatch batch sizes must be > 0")
     profile = build_matcher_profile(matcher_name, top_k, threshold, feature_matching_mode)
     cfg_tag = hashlib.sha256(
         (
@@ -710,22 +1029,66 @@ def run_vismatch_benchmark(
 
     t_build = time.perf_counter()
     backend = VismatchMatcherBackend(matcher_name, device, top_k, threshold, feature_matching_mode)
+    backend.batch_diagnostics["configured_extract_batch_size"] = extract_batch_size
+    backend.batch_diagnostics["configured_match_batch_size"] = match_batch_size
     model_build_sec = time.perf_counter() - t_build
 
     t_extract = time.perf_counter()
-    query_feats = _extract_split_features(dataset_query, "query", backend, device, top_k, resize_max, cache_dir, dataset_root, no_background, mask_col, path_col, cfg_tag)
-    db_feats = _extract_split_features(dataset_database, "database", backend, device, top_k, resize_max, cache_dir, dataset_root, no_background, mask_col, path_col, cfg_tag)
+    query_feats = _extract_split_features(
+        dataset_query, "query", backend, device, top_k, resize_max, cache_dir, dataset_root,
+        no_background, mask_col, path_col, cfg_tag, batch_mode, extract_batch_size, oom_backoff,
+    )
+    db_feats = _extract_split_features(
+        dataset_database, "database", backend, device, top_k, resize_max, cache_dir, dataset_root,
+        no_background, mask_col, path_col, cfg_tag, batch_mode, extract_batch_size, oom_backoff,
+    )
     extract_sec = time.perf_counter() - t_extract
 
     t_sim = time.perf_counter()
     similarity = np.full((len(query_feats), len(db_feats)), fill_value=-1e9, dtype=np.float32)
     match_counts: List[int] = []
-    for qi in tqdm(range(len(query_feats)), desc="[vismatch][match]", mininterval=1, ncols=120):
-        db_candidates = range(len(db_feats)) if candidate_indices is None else candidate_indices[qi].tolist()
-        for di in db_candidates:
-            score, nm = _score_pair(backend, query_feats[qi], db_feats[di])
-            similarity[qi, di] = float(score)
-            match_counts.append(int(nm))
+    if batch_mode == "serial":
+        for qi in tqdm(range(len(query_feats)), desc="[vismatch][match]", mininterval=1, ncols=120):
+            db_candidates = list(range(len(db_feats))) if candidate_indices is None else [int(index) for index in candidate_indices[qi].tolist()]
+            for di in db_candidates:
+                score, nm = _score_pair(backend, query_feats[qi], db_feats[di])
+                similarity[qi, di] = float(score)
+                match_counts.append(int(nm))
+                backend.batch_diagnostics["match_batches"] += 1
+                backend.batch_diagnostics["effective_match_batch_size"] = 1
+    else:
+        candidate_pairs: List[Tuple[int, int]] = []
+        for qi in range(len(query_feats)):
+            db_candidates = list(range(len(db_feats))) if candidate_indices is None else [int(index) for index in candidate_indices[qi].tolist()]
+            candidate_pairs.extend((qi, di) for di in db_candidates)
+        for pair_batch in tqdm(
+            grouped_pair_batches(candidate_pairs, query_feats, db_feats, match_batch_size),
+            desc="[vismatch][match]",
+            mininterval=1,
+            ncols=120,
+        ):
+            def process_match_batch(current: Sequence[Tuple[int, int]]) -> Tuple[List[Tuple[int, int]], List[MatchResult]]:
+                current_list = list(current)
+                feature_pairs = [(query_feats[q_index], db_feats[d_index]) for q_index, d_index in current_list]
+                return current_list, backend.match_features_batch(feature_pairs)
+
+            for (processed_pairs, results), effective_size in run_with_batch_backoff(
+                pair_batch,
+                match_batch_size,
+                process_match_batch,
+                oom_backoff=oom_backoff,
+                clear_memory=_clear_cuda_memory,
+            ):
+                if len(processed_pairs) != len(results):
+                    raise RuntimeError("Vismatch batched matching returned an unexpected number of results")
+                backend.batch_diagnostics["match_batches"] += 1
+                current_effective = backend.batch_diagnostics["effective_match_batch_size"]
+                backend.batch_diagnostics["effective_match_batch_size"] = (
+                    effective_size if current_effective is None else min(int(current_effective), int(effective_size))
+                )
+                for (query_index, database_index), result in zip(processed_pairs, results):
+                    similarity[query_index, database_index] = float(result.score)
+                    match_counts.append(int(result.match_count))
     rerank_sec = time.perf_counter() - t_sim
 
     if bool(cfg.visualization.enabled):
@@ -756,6 +1119,12 @@ def run_vismatch_benchmark(
         "vismatch_model_build_sec": float(model_build_sec),
         "vismatch_feature_extraction_sec": float(extract_sec),
         "vismatch_rerank_sec": float(rerank_sec),
+        "vismatch_extract_batches": float(backend.batch_diagnostics["extract_batches"]),
+        "vismatch_match_batches": float(backend.batch_diagnostics["match_batches"]),
+        "vismatch_configured_extract_batch_size": float(extract_batch_size),
+        "vismatch_configured_match_batch_size": float(match_batch_size),
+        "vismatch_effective_extract_batch_size": float(backend.batch_diagnostics["effective_extract_batch_size"] or 0),
+        "vismatch_effective_match_batch_size": float(backend.batch_diagnostics["effective_match_batch_size"] or 0),
         "total_method_sec": float(model_build_sec + extract_sec + rerank_sec),
     }
     method_metrics = {

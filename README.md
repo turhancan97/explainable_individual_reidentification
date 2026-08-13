@@ -314,6 +314,10 @@ Core options:
 - `resize_max`, `top_k`, `matcher_threshold` (`null` selects the profile default: `0.01` for
   RDD/LightGlue and `0.10` for LoMa)
 - `feature_matching_mode`: `feature_level` (production) or `pairwise` (diagnostics only)
+- `batch_mode`: `batched` (production default) or `serial` (parity/debug reference)
+- `match_batch_size`: candidate-pair batch size (default `16`)
+- `extract_batch_size`: cached feature-extraction batch size (default `8`)
+- `oom_backoff`: halve and retry the active CUDA batch on OOM (default `true`)
 - `stage_a_method`: `cosine` | `wildfusion` | `local_lightglue` | `linear_probe` | `efficient_probe`
 - `candidate_k`: shortlist size from Stage A reranked by Vismatch
 
@@ -341,6 +345,15 @@ Use `vismatch` with `matcher: rdd-lightglue` when reproducing the migrated RDD
 experiment. Feature caches are matcher/profile-specific and are regenerated when
 the schema, matcher, preprocessing, keypoint budget, threshold, or checkpoint
 identity changes.
+
+Batched mode preserves the Stage-A shortlist and score protocol. Feature extraction
+uses matcher-native spatial-shape buckets; pair matching groups candidate pairs across
+queries by exact keypoint shape, so LoMa is not padded in a way that changes softmax
+normalization. Incompatible
+or singleton groups use the serial backend, and CUDA OOM retries halve the active batch
+size. Timing metadata records configured/effective extraction and matching sizes.
+Use `batch_mode: serial` for a direct parity reference before changing matcher profiles,
+preprocessing, thresholds, or keypoint budgets.
 
 ## Training and Evaluation Outputs
 

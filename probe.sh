@@ -1,10 +1,11 @@
 #!/bin/bash
-#SBATCH -p dgxa100
+#SBATCH -p rtx4090_batch
 #SBATCH --gpus=1
-#SBATCH --qos=big
+#SBATCH --qos=batch
 #SBATCH --cpus-per-task=10
 #SBATCH --mem=64G
 #SBATCH --ntasks=1
+#SBATCH --exclude=c22
 #SBATCH --job-name=probe_reid
 #SBATCH --time=24:00:00
 #SBATCH --output=logs/%x_%j.log
