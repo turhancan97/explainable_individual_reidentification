@@ -37,6 +37,7 @@ from reid.reporting.artifacts import build_run_context, run_index_row, upsert_ru
 from reid.reporting.visualizations import finalize_visualizations
 from reid.training.accumulation import should_step_accumulated_gradients
 from reid.training.checkpointing import resolve_configured_model_checkpoint, resolve_model_checkpoint
+from reid.utils.cache_identity import build_dataset_cache_identity
 from reid.utils.io import append_csv_row, ensure_dir, ensure_file
 from reid.utils.repro import set_reproducible
 
@@ -48,6 +49,7 @@ PROBE_CSV_METADATA_COLUMNS = [
     "model_type",
     "model_mode",
     "no_background",
+    "image_variant",
     "checkpoint_path",
     "dataset_root",
     "metadata_file",
@@ -176,6 +178,7 @@ def build_transforms(mean: Tuple[float, ...], std: Tuple[float, ...], img_size: 
 
 def load_dataset_splits(cfg: DictConfig) -> Tuple[WildlifeDataset, WildlifeDataset, WildlifeDataset]:
     root = Path(cfg.dataset.root)
+    build_dataset_cache_identity(cfg.dataset)
     ensure_dir(root, "Dataset root")
     metadata_path = root / cfg.dataset.metadata_file
     ensure_file(metadata_path, "Metadata CSV")
@@ -592,6 +595,7 @@ def make_cache_key(cfg: DictConfig, method: str, split_name: str, dataset_sig: s
         "model_type": cfg.model.type,
         "mode": cfg.model.mode,
         "no_background": bool(cfg.dataset.no_background),
+        **build_dataset_cache_identity(cfg.dataset),
         "checkpoint": checkpoint_tag,
         "wildfusion_local_top_k": (
             int(getattr(cfg.benchmark.methods.wildfusion, "local_top_k", 512))
@@ -1658,6 +1662,7 @@ def _run_probe(cfg: DictConfig, context: Any) -> None:
         "model_type": cfg.model.type,
         "model_mode": cfg.model.mode,
         "no_background": bool(cfg.dataset.no_background),
+        "image_variant": str(cfg.dataset.image_variant),
         "checkpoint_path": str(checkpoint_path) if checkpoint_path is not None else None,
         "dataset_root": cfg.dataset.root,
         "metadata_file": cfg.dataset.metadata_file,
@@ -1682,6 +1687,7 @@ def _run_probe(cfg: DictConfig, context: Any) -> None:
             "split_protocol": str(cfg.dataset.split_col),
             "model": str(cfg.model.type),
             "method": method,
+            "image_variant": str(cfg.dataset.image_variant),
             "variant": str(cfg.benchmark.methods.vismatch.matcher)
             if method == "vismatch"
             else "default",
@@ -1706,6 +1712,7 @@ def _run_probe(cfg: DictConfig, context: Any) -> None:
                 "split_protocol": str(cfg.dataset.split_col),
                 "model": str(cfg.model.type),
                 "method": method,
+                "image_variant": str(cfg.dataset.image_variant),
                 "variant": str(cfg.benchmark.methods.vismatch.matcher)
                 if method == "vismatch"
                 else "default",
@@ -1728,6 +1735,7 @@ def _run_probe(cfg: DictConfig, context: Any) -> None:
         "model_type": cfg.model.type,
         "model_mode": cfg.model.mode,
         "no_background": bool(cfg.dataset.no_background),
+        "image_variant": str(cfg.dataset.image_variant),
         "checkpoint_path": result["checkpoint_path"],
         "dataset_root": cfg.dataset.root,
         "metadata_file": cfg.dataset.metadata_file,
@@ -1757,6 +1765,7 @@ def _run_probe(cfg: DictConfig, context: Any) -> None:
                 "model_type": cfg.model.type,
                 "model_mode": cfg.model.mode,
                 "no_background": bool(cfg.dataset.no_background),
+                "image_variant": str(cfg.dataset.image_variant),
                 "num_query": len(dataset_query),
                 "num_database": len(dataset_database),
                 **metrics,
@@ -1767,6 +1776,7 @@ def _run_probe(cfg: DictConfig, context: Any) -> None:
         wandb_run.summary["run_id"] = run_id
         wandb_run.summary["dataset_root"] = cfg.dataset.root
         wandb_run.summary["metadata_file"] = cfg.dataset.metadata_file
+        wandb_run.summary["image_variant"] = str(cfg.dataset.image_variant)
         wandb_run.summary["split_col"] = cfg.dataset.split_col
         wandb_run.summary["database_split_value"] = cfg.dataset.database_split_value
         wandb_run.summary["query_split_value"] = cfg.dataset.query_split_value

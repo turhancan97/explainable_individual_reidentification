@@ -26,6 +26,7 @@ from reid.features.containers import FeatureContainer, get_labels_string, normal
 from reid.training.checkpointing import load_full_checkpoint, save_full_checkpoint
 from reid.training.accumulation import should_step_accumulated_gradients
 from reid.reporting.artifacts import build_run_context, run_index_row, upsert_run_index
+from reid.utils.cache_identity import build_dataset_cache_identity
 from reid.utils.io import append_csv_row, ensure_dir, ensure_file, update_csv_rows
 from reid.utils.repro import set_reproducible
 
@@ -128,6 +129,7 @@ def run_finetune(cfg: DictConfig) -> None:
             "split_protocol": str(cfg.dataset.split_col),
             "model": str(cfg.model.type),
             "method": "arcface",
+            "image_variant": str(cfg.dataset.image_variant),
             "variant": "default",
         },
         status="running",
@@ -153,6 +155,7 @@ def run_finetune(cfg: DictConfig) -> None:
                     "split_protocol": str(cfg.dataset.split_col),
                     "model": str(cfg.model.type),
                     "method": "arcface",
+                    "image_variant": str(cfg.dataset.image_variant),
                     "variant": "default",
                 },
             ),
@@ -166,6 +169,7 @@ def _run_finetune(cfg: DictConfig, context: Any) -> None:
     device = choose_device()
 
     root = Path(cfg.dataset.root)
+    build_dataset_cache_identity(cfg.dataset)
     ensure_dir(root, "Dataset root")
     metadata_path = root / cfg.dataset.metadata_file
     ensure_file(metadata_path, "Metadata CSV")
@@ -370,6 +374,7 @@ def _run_finetune(cfg: DictConfig, context: Any) -> None:
             "best_metric": best_metric_name,
             "best_metric_value": best_metric_value,
             "no_background": bool(cfg.dataset.no_background),
+            "image_variant": str(cfg.dataset.image_variant),
             "dataset_tag": dataset_tag,
         }
         if context is not None:
@@ -453,6 +458,7 @@ def _run_finetune(cfg: DictConfig, context: Any) -> None:
                 "split_protocol": str(cfg.dataset.split_col),
                 "model": str(cfg.model.type),
                 "method": "arcface",
+                "image_variant": str(cfg.dataset.image_variant),
                 "variant": "default",
                 "num_train": len(dataset_train),
                 "num_database": len(dataset_train),
@@ -476,6 +482,7 @@ def _run_finetune(cfg: DictConfig, context: Any) -> None:
                     "split_protocol": str(cfg.dataset.split_col),
                     "model": str(cfg.model.type),
                     "method": "arcface",
+                    "image_variant": str(cfg.dataset.image_variant),
                     "variant": "default",
                     "num_query": len(dataset_val),
                     "num_database": len(dataset_train),

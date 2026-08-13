@@ -11,6 +11,7 @@ kept under Unreleased until a project version is assigned.
 - Added run-local visualization indexes, top-1/failure contact sheets, and `scripts/summarize_runs.py` for filtered Markdown/CSV reporting.
 - Added Hydra 1.3 configuration entrypoints and dependency-light composition tests for probe and finetuning.
 - Added configurable WildFusion ALIKED keypoint budgets via `local_top_k` (default 512), with forced keypoint counts and cache/experiment identity tracking.
+- Added explicit `dataset.image_variant` provenance to standard and Vismatch feature-cache identities, preventing normal and pre-masked feature reuse; added regression coverage.
 
 - Added a repository policy requiring AI agents to update AGENTS.md and
   CHANGELOG.MD after changes and important decisions.

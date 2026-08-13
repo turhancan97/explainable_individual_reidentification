@@ -26,7 +26,9 @@ class HydraConfigurationTests(unittest.TestCase):
         self.assertEqual(probe.model.type, "megadescriptor-l")
         self.assertEqual(probe.benchmark.method, "wildfusion")
         self.assertEqual(probe.benchmark.methods.vismatch.matcher, "rdd-lightglue")
+        self.assertEqual(probe.dataset.image_variant, "no_background")
         self.assertEqual(finetune.model.type, "megadescriptor-l")
+        self.assertEqual(finetune.dataset.image_variant, "background")
         self.assertEqual(finetune.train.epochs, 30)
 
     def test_nested_dotlist_overrides_convert_types(self):

@@ -35,6 +35,7 @@ from reid.methods.vismatch_batching import (
     grouped_pair_batches,
     run_with_batch_backoff,
 )
+from reid.utils.cache_identity import build_dataset_cache_identity
 from reid.utils.io import ensure_file
 
 
@@ -993,6 +994,7 @@ def run_vismatch_benchmark(
     mask_col = str(cfg.dataset.mask_col)
     dataset_root = Path(str(cfg.dataset.root))
     no_background = bool(cfg.dataset.no_background)
+    dataset_identity = build_dataset_cache_identity(cfg.dataset)
     cache_dir = Path(str(settings.cache_dir))
     cache_dir.mkdir(parents=True, exist_ok=True)
 
@@ -1018,6 +1020,7 @@ def run_vismatch_benchmark(
             f"matcher={matcher_name}|vismatch_commit={VISMATCH_COMMIT}|stage_a={stage_a_method}|"
             f"model_type={cfg.model.type}|model_mode={cfg.model.mode}|checkpoint={checkpoint_tag}|"
             f"top_k={top_k}|resize_max={resize_max}|threshold={threshold}|no_bg={no_background}|"
+            f"dataset_identity={json.dumps(dataset_identity, sort_keys=True)}|"
             f"path_col={path_col}|mask_col={mask_col}|feature_matching_mode={feature_matching_mode}|schema={FEATURE_SCHEMA_VERSION}"
         ).encode("utf-8")
     ).hexdigest()

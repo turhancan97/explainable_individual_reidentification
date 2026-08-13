@@ -197,6 +197,7 @@ LoMa-B wrapper). The production path extracts features once and matches cached f
 is required for production; pairwise Vismatch calls are reserved for explicit diagnostics.
 Old `rdd` method names and direct RDD repository paths are unsupported and receive a migration-specific error.
 The `FrameFeatures` contract and matcher profiles remain dependency-light so unit tests can run without Vismatch, CUDA, downloaded weights, or masking packages. LoMa uses normalized[-1,1] keypoints internally, right/bottom padding to multiples of 14, and a default mutual-match threshold of 0.10; its feature cache records the original and padded image sizes.
+Standard and Vismatch feature-cache fingerprints also include the resolved dataset root, metadata file, and `dataset.image_variant`; normal and pre-masked features must never share a cache identity.
 The 2026-08-12 full-split parity run found identical keypoint counts and descriptor
 shapes but non-bit-identical feature tensors; mean absolute per-pair score difference
 was 4.38e-05. The only ranking disagreement was a near-tie, so this result supports
@@ -216,3 +217,8 @@ size, temporary CUDA memory is cleared, and effective batch sizes are recorded i
 Vismatch timing metadata. Stage-A candidates, `candidate_k`, matrix placement, and
 score normalization are unchanged; the 1e-4 score/top-1 parity gate remains required
 before interpreting performance results.
+The explicit `dataset.image_variant` field must be `background` or `no_background`.
+Use `background` for normal `images/` inputs and `no_background` for pre-masked
+`masked_images/` inputs or dynamically masked images. This field is provenance,
+separate from `dataset.no_background`, which controls whether an RLE mask is
+applied at load time.

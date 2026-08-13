@@ -1,11 +1,12 @@
 dataset:
   name: "CzechLynx_v2" # WildlifeReID-10k | CzechLynx_v2
-  animal: "CzechLynx" # LeopardID2022 | ReunionTurtles| CzechLynx
+  animal: "CzechLynx" # CzechLynx | NyalaData | WhaleSharkID | BelugaID | ZindiTurtleRecall | LeopardID2022 | ReunionTurtles
   root: "/shared/sets/datasets/vision/czechlynx/${dataset.name}"
-  metadata_file: "CzechLynxDataset-Metadata-Real.csv" # metadata/metadata_${dataset.animal}.csv | CzechLynxDataset-Metadata-Real.csv
+  metadata_file: "CzechLynxDataset-Metadata-Real.csv" # metadata_no_background/metadata_${dataset.animal}.csv | metadata_with_background/metadata_${dataset.animal}.csv | CzechLynxDataset-Metadata-Real.csv
   label_col: "unique_name"
   mask_col: "mask"
   no_background: false # false | true
+  image_variant: "background" # background | no_background; identifies the image tree used by feature caches
   split_col: "split-time_closed" # split | split-time_closed
   train_split_value: "train"
   val_split_value: "test"

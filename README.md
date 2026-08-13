@@ -194,7 +194,7 @@ not part of the supported experiment workflow.
 ### `conf/finetune.yaml`
 
 Key blocks:
-- `dataset`: root, metadata file, split values, `no_background`, `mask_col`
+- `dataset`: root, metadata file, split values, `no_background`, `mask_col`, and `image_variant` (`background` or `no_background`)
 - `model`: backbone type
 - `train`: epochs, batch size, AMP, deterministic mode, resume checkpoint
 - `loss`: ArcFace parameters
@@ -208,7 +208,7 @@ Key blocks:
 ### `conf/probe.yaml`
 
 Key blocks:
-- `dataset`: root/splits + mask options
+- `dataset`: root/splits + mask options and explicit `image_variant` (`background` or `no_background`)
 - `model`: type/mode/checkpoint behavior
 - `benchmark`: method (`cosine`, `wildfusion`, `local_lightglue`, `linear_probe`, `efficient_probe`, `vismatch`), metrics, cache
 - WildFusion settings: `B` controls candidate pairs per query, `local_batch_size` controls pair-processing batches, and `local_top_k` controls ALIKED keypoints (default `512`).
@@ -464,6 +464,7 @@ Logged data:
 - deterministic mode toggle (`deterministic: true/false`)
 - finetune resume from full checkpoints via `train.resume_checkpoint`
 - probe feature caching keyed by method/model/checkpoint/dataset signature and `no_background`
+- Cache identities also include the resolved dataset root, metadata file, and explicit `dataset.image_variant` (`background` or `no_background`) so normal and pre-masked features cannot be reused interchangeably.
 
 ## Testing
 

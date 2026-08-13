@@ -312,6 +312,29 @@ class VismatchProfileTests(unittest.TestCase):
         self.assertIn('loma', jaguar)
         self.assertIn('stage_a_plus_vismatch', jaguar)
         self.assertNotIn('stage_a_plus_rdd', jaguar)
+    def test_image_variant_cache_identity_is_explicit_and_stable(self):
+        from reid.utils.cache_identity import build_dataset_cache_identity, validate_image_variant
+
+        base = type("DatasetConfig", (), {
+            "root": "/tmp/dataset",
+            "metadata_file": "metadata_with_background/metadata_NyalaData.csv",
+            "image_variant": "background",
+        })()
+        identity = build_dataset_cache_identity(base)
+        self.assertEqual(identity["image_variant"], "background")
+        self.assertEqual(identity["metadata_file"], "metadata_with_background/metadata_NyalaData.csv")
+        self.assertNotIn("/tmp/", identity["metadata_file"])
+        self.assertEqual(validate_image_variant("NO_BACKGROUND"), "no_background")
+
+        masked = type("DatasetConfig", (), {
+            "root": "/tmp/dataset",
+            "metadata_file": "metadata_no_background/metadata_NyalaData.csv",
+            "image_variant": "no_background",
+        })()
+        masked_identity = build_dataset_cache_identity(masked)
+        self.assertNotEqual(identity, masked_identity)
+        with self.assertRaises(ValueError):
+            validate_image_variant("masked-ish")
 
 
 if __name__ == "__main__":

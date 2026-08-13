@@ -279,6 +279,7 @@ def _build_finetune_cfg(cfg: DictConfig, metadata_path: Path) -> DictConfig:
     base.dataset.train_split_value = "train"
     base.dataset.val_split_value = "val"
     base.dataset.no_background = False
+    base.dataset.image_variant = "no_background" if bool(cfg.alpha_mask.enabled) else "background"
     base.dataset.mask_col = "mask"
 
     base.model.type = str(cfg.model.type)
@@ -747,8 +748,10 @@ def run_kaggle_jaguar(cfg: DictConfig) -> None:
         {
             "dataset": {
                 "root": str(data_dir),
+                "metadata_file": str(cfg.kaggle.test_csv),
                 "mask_col": "mask",
                 "no_background": False,
+                "image_variant": "no_background" if bool(cfg.alpha_mask.enabled) else "background",
                 "label_col": "identity",
             },
             "benchmark": {
