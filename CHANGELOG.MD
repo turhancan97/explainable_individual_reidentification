@@ -15,6 +15,7 @@ kept under Unreleased until a project version is assigned.
 - Added regression tests for model defaults, checkpoint discovery, and gradient
   accumulation boundaries.
 - Kept configuration regression checks compatible with the user-preserved wildfusion Stage-A default.
+- Added pair-counted Vismatch matching progress with ETA and retry-safe progress updates.
 - Added dependency-light batching tests covering shape bucketing, candidate placement,
   partial batches, serial mode, score parity scaffolding, and CUDA OOM backoff.
 - Added batched Vismatch extraction and feature-level matching for LoMa and

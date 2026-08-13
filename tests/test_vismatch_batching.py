@@ -15,6 +15,7 @@ except ModuleNotFoundError:
     HAS_VISMATCH_RUNTIME = False
 
 from reid.methods.vismatch_batching import (
+    candidate_pair_count,
     grouped_pair_batches,
     run_with_batch_backoff,
 )
@@ -93,6 +94,12 @@ class VismatchBatchingTests(unittest.TestCase):
         self.assertEqual(len(features), 2)
         self.assertEqual(backend.batch_diagnostics["extract_batches"], 1)
         self.assertEqual(backend.batch_diagnostics["effective_extract_batch_size"], 2)
+
+    def test_candidate_pair_count_supports_full_and_shortlisted_matching(self):
+        self.assertEqual(candidate_pair_count(3, 5), 15)
+        self.assertEqual(candidate_pair_count(3, 5, [[0, 1], [2], []]), 3)
+        with self.assertRaises(ValueError):
+            candidate_pair_count(2, 5, [[0]])
 
     def test_shape_bucketing_keeps_loma_shapes_separate_and_flushes_partial_batch(self):
         query = [_feature(3), _feature(4)]

@@ -31,6 +31,7 @@ from reid.methods.vismatch_profiles import (
     validate_matcher_name,
 )
 from reid.methods.vismatch_batching import (
+    candidate_pair_count,
     grouped_pair_batches,
     run_with_batch_backoff,
 )
@@ -1048,47 +1049,66 @@ def run_vismatch_benchmark(
     similarity = np.full((len(query_feats), len(db_feats)), fill_value=-1e9, dtype=np.float32)
     match_counts: List[int] = []
     if batch_mode == "serial":
-        for qi in tqdm(range(len(query_feats)), desc="[vismatch][match]", mininterval=1, ncols=120):
-            db_candidates = list(range(len(db_feats))) if candidate_indices is None else [int(index) for index in candidate_indices[qi].tolist()]
-            for di in db_candidates:
-                score, nm = _score_pair(backend, query_feats[qi], db_feats[di])
-                similarity[qi, di] = float(score)
-                match_counts.append(int(nm))
-                backend.batch_diagnostics["match_batches"] += 1
-                backend.batch_diagnostics["effective_match_batch_size"] = 1
+        total_pairs = candidate_pair_count(len(query_feats), len(db_feats), candidate_indices)
+        match_progress = tqdm(
+            total=total_pairs,
+            desc="[vismatch][match]",
+            unit="pair",
+            mininterval=1,
+            ncols=120,
+        )
+        try:
+            for qi in range(len(query_feats)):
+                db_candidates = list(range(len(db_feats))) if candidate_indices is None else [int(index) for index in candidate_indices[qi].tolist()]
+                for di in db_candidates:
+                    score, nm = _score_pair(backend, query_feats[qi], db_feats[di])
+                    similarity[qi, di] = float(score)
+                    match_counts.append(int(nm))
+                    backend.batch_diagnostics["match_batches"] += 1
+                    backend.batch_diagnostics["effective_match_batch_size"] = 1
+                    match_progress.update(1)
+        finally:
+            match_progress.close()
     else:
         candidate_pairs: List[Tuple[int, int]] = []
         for qi in range(len(query_feats)):
             db_candidates = list(range(len(db_feats))) if candidate_indices is None else [int(index) for index in candidate_indices[qi].tolist()]
             candidate_pairs.extend((qi, di) for di in db_candidates)
-        for pair_batch in tqdm(
-            grouped_pair_batches(candidate_pairs, query_feats, db_feats, match_batch_size),
+        match_progress = tqdm(
+            total=len(candidate_pairs),
             desc="[vismatch][match]",
+            unit="pair",
             mininterval=1,
             ncols=120,
-        ):
-            def process_match_batch(current: Sequence[Tuple[int, int]]) -> Tuple[List[Tuple[int, int]], List[MatchResult]]:
-                current_list = list(current)
-                feature_pairs = [(query_feats[q_index], db_feats[d_index]) for q_index, d_index in current_list]
-                return current_list, backend.match_features_batch(feature_pairs)
+        )
+        try:
+            for pair_batch in grouped_pair_batches(candidate_pairs, query_feats, db_feats, match_batch_size):
+                def process_match_batch(current: Sequence[Tuple[int, int]]) -> Tuple[List[Tuple[int, int]], List[MatchResult]]:
+                    current_list = list(current)
+                    feature_pairs = [(query_feats[q_index], db_feats[d_index]) for q_index, d_index in current_list]
+                    return current_list, backend.match_features_batch(feature_pairs)
 
-            for (processed_pairs, results), effective_size in run_with_batch_backoff(
-                pair_batch,
-                match_batch_size,
-                process_match_batch,
-                oom_backoff=oom_backoff,
-                clear_memory=_clear_cuda_memory,
-            ):
-                if len(processed_pairs) != len(results):
-                    raise RuntimeError("Vismatch batched matching returned an unexpected number of results")
-                backend.batch_diagnostics["match_batches"] += 1
-                current_effective = backend.batch_diagnostics["effective_match_batch_size"]
-                backend.batch_diagnostics["effective_match_batch_size"] = (
-                    effective_size if current_effective is None else min(int(current_effective), int(effective_size))
-                )
-                for (query_index, database_index), result in zip(processed_pairs, results):
-                    similarity[query_index, database_index] = float(result.score)
-                    match_counts.append(int(result.match_count))
+                for (processed_pairs, results), effective_size in run_with_batch_backoff(
+                    pair_batch,
+                    match_batch_size,
+                    process_match_batch,
+                    oom_backoff=oom_backoff,
+                    clear_memory=_clear_cuda_memory,
+                ):
+                    if len(processed_pairs) != len(results):
+                        raise RuntimeError("Vismatch batched matching returned an unexpected number of results")
+                    backend.batch_diagnostics["match_batches"] += 1
+                    current_effective = backend.batch_diagnostics["effective_match_batch_size"]
+                    backend.batch_diagnostics["effective_match_batch_size"] = (
+                        effective_size if current_effective is None else min(int(current_effective), int(effective_size))
+                    )
+                    for (query_index, database_index), result in zip(processed_pairs, results):
+                        similarity[query_index, database_index] = float(result.score)
+                        match_counts.append(int(result.match_count))
+                    match_progress.update(len(processed_pairs))
+                    match_progress.set_postfix(batch=effective_size, refresh=False)
+        finally:
+            match_progress.close()
     rerank_sec = time.perf_counter() - t_sim
 
     if bool(cfg.visualization.enabled):

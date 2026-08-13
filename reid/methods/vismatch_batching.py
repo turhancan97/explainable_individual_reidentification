@@ -52,6 +52,22 @@ def grouped_pair_batches(
         yield from (list(chunk) for chunk in iter_chunks(group, batch_size))
 
 
+def candidate_pair_count(
+    query_count: int,
+    database_count: int,
+    candidate_indices: Sequence[Sequence[int]] | None = None,
+) -> int:
+    """Return the number of candidate pairs the matcher must process."""
+
+    if query_count < 0 or database_count < 0:
+        raise ValueError("query_count and database_count must be non-negative")
+    if candidate_indices is None:
+        return int(query_count) * int(database_count)
+    if len(candidate_indices) != query_count:
+        raise ValueError("candidate_indices must contain one row per query")
+    return sum(len(row) for row in candidate_indices)
+
+
 def is_cuda_oom(error: BaseException) -> bool:
     """Recognize CUDA OOM errors without importing torch in unit-test helpers."""
 

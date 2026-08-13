@@ -318,6 +318,7 @@ Core options:
 - `match_batch_size`: candidate-pair batch size (default `16`)
 - `extract_batch_size`: cached feature-extraction batch size (default `8`)
 - `oom_backoff`: halve and retry the active CUDA batch on OOM (default `true`)
+- Batched and serial matching show a pair-counted progress bar with throughput and ETA; OOM retries advance it only after successful completion.
 - `stage_a_method`: `cosine` | `wildfusion` | `local_lightglue` | `linear_probe` | `efficient_probe`
 - `candidate_k`: shortlist size from Stage A reranked by Vismatch
 

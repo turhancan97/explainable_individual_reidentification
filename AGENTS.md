@@ -156,6 +156,7 @@ was 4.38e-05. The only ranking disagreement was a near-tie, so this result suppo
 behavioral equivalence but does not establish strict numerical identity.
 The shipped probe YAML may intentionally select another Stage-A method (currently wildfusion); this does not disable the independently selectable `vismatch` method.
 The production batching defaults are `batch_mode: batched`, `match_batch_size: 16`,
+Matching displays a pair-counted tqdm progress bar with percentage, throughput, and ETA; progress advances only after successful batches, including after OOM retries.
 and `extract_batch_size: 8`; `batch_mode: serial` remains the diagnostic/reference
 workflow for parity checks. Extraction buckets images by matcher-native spatial shape.
 Feature matching buckets candidate pairs across queries by exact left/right keypoint
