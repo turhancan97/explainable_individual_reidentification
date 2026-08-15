@@ -331,6 +331,29 @@ Core options:
 - `stage_a_method`: `cosine` | `wildfusion` | `local_lightglue` | `linear_probe` | `efficient_probe`
 - `candidate_k`: shortlist size from Stage A reranked by Vismatch
 
+Vismatch probe scoring is shortlist-constrained, matching the WildFusion baseline:
+only the `candidate_k` pairs are scored by Vismatch; all unscored matrix positions
+are `-inf`. The primary metrics and visualizations use this same matrix. The run
+records `score_matrix_policy=shortlist_only_neg_inf`, `num_candidate_pairs`,
+`num_unscored_pairs`, and `candidate_fraction`. WildFusion uses its separate `B`
+setting for the same purpose; use `B=100` and `candidate_k=100` for the shipped
+fair-comparison protocol. These are not full-gallery matcher metrics, so always
+interpret them together with candidate recall.
+
+Checkpoint selection options:
+- `checkpoint_source`: `default` (bundled Vismatch weights) or `custom`.
+- `checkpoint_path`: an exact `.safetensors`, `.pth`, `.pt`, or epoch directory; no newest-epoch auto-selection is performed.
+- `checkpoint_components`: `auto`, `matcher_only`, `extractor_only`, or `full`.
+- `loma_arch`: explicit LoMa variant, default `LoMa-B`.
+
+For the current LightGlue-only RDD checkpoint, use:
+
+```bash
+python train/probe.py benchmark.method=vismatch benchmark.methods.vismatch.matcher=rdd-lightglue benchmark.methods.vismatch.checkpoint_source=custom benchmark.methods.vismatch.checkpoint_path=/path/to/epoch_15 benchmark.methods.vismatch.checkpoint_components=matcher_only
+```
+
+The resolver detects components from tensor schemas and optionally validates `checkpoint_manifest.json`; it does not trust filenames such as `model.safetensors` or `model_1.safetensors`. RDD-LightGlue may combine custom RDD and LightGlue files, while a LightGlue/RDD checkpoint is never accepted for LoMa. Custom component hashes are included in feature-cache identities and run manifests.
+
 To run LoMa instead of RDD-LightGlue, keep `benchmark.method: "vismatch"` and set:
 
 ```yaml
@@ -481,4 +504,37 @@ python -m unittest discover -s tests -p 'test_*.py'
 - mask decoding errors with `no_background: true`
   - Verify metadata has valid `mask` field (JSON string or COCO-RLE dict).
 - CUDA mismatch or availability issues
+
+## Research-validity reporting
+
+The reported retrieval metrics now follow a documented primary/diagnostic split:
+
+- `mAP` includes every query. Queries without a relevant gallery identity contribute
+  AP=0; `mAP_eligible` retains the eligible-query-only diagnostic, while
+  `mAP_query_coverage`, `num_queries_with_gallery_match`, and
+  `num_queries_without_gallery_match` expose coverage.
+- Linear and efficient probes report identity-level retrieval as primary. Their
+  image-level metrics remain available as `image_top_1`, `image_top_5`, `image_top_10`,
+  and `image_mAP` diagnostics.
+- All ranking and visualization paths use deterministic descending score order with
+  original database index as the tie-breaker.
+- Vismatch and WildFusion use shortlist-constrained ranking. Vismatch scores only
+  Stage-A candidates; unscored positions are `-inf` and are excluded from the final
+  ranking. Vismatch reports `candidate_hit_rate`/`candidate_recall_at_k` plus
+  `num_candidate_pairs`, `num_unscored_pairs`, and `candidate_fraction`.
+
+Split safety checks retain path-overlap detection and now compute SHA-256 hashes for
+resolved image files. Identical content across protected splits fails closed, with
+sample paths and missing/unreadable files recorded in `safety_checks/summary.json`.
+Feature caches similarly include image content, metadata, preprocessing, image variant,
+model/checkpoint weights, and matcher-profile identities. This adds I/O but prevents
+stale features when a file or model changes at the same path.
+
+Automatic checkpoint discovery recursively searches `experiments/finetune/` before
+legacy `results/`, ignores failed/incomplete runs and full resume checkpoints, and
+prefers completed canonical model-only files before tagged historical files. Explicit
+checkpoint paths retain highest priority. Finetune reports reload the best checkpoint
+for primary metrics and retain final-epoch metrics separately. The current test split
+is still the model-selection split; this limitation has not been changed.
+
   - Adjust device/AMP settings in config.

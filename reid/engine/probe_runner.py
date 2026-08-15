@@ -30,16 +30,28 @@ from models.model import get_model
 from models.objective import SoftmaxLoss, SoftmaxLossEP
 from reid.data.safety_checks import run_split_safety_checks
 from reid.data.dataset_view import BenchmarkDatasetView
-from reid.evaluation.metrics import compute_metrics
+from reid.evaluation.candidate_scoring import candidate_recall_metrics
+from reid.evaluation.metrics import compute_identity_metrics, compute_metrics
+from reid.evaluation.ranking import stable_rank_indices
 from reid.features.containers import FeatureContainer, get_labels_string
 from reid.methods.vismatch import run_vismatch_benchmark
-from reid.reporting.artifacts import build_run_context, run_index_row, upsert_run_index
+from reid.methods.wildfusion_calibration import fit_pipeline_calibration, fit_wildfusion_calibration
+from reid.reporting.artifacts import build_run_context, file_identity, run_index_row, upsert_run_index
 from reid.reporting.visualizations import finalize_visualizations
-from reid.training.accumulation import should_step_accumulated_gradients
+from reid.training.accumulation import accumulation_group_size, should_step_accumulated_gradients
 from reid.training.checkpointing import resolve_configured_model_checkpoint, resolve_model_checkpoint
 from reid.utils.cache_identity import build_dataset_cache_identity
+from reid.utils.fingerprints import model_fingerprint, sha256_file
 from reid.utils.io import append_csv_row, ensure_dir, ensure_file
 from reid.utils.repro import set_reproducible
+
+
+def _format_metric_value(value: Any) -> str:
+    """Format console metrics without assuming every diagnostic is numeric."""
+    if isinstance(value, (int, float, np.integer, np.floating)):
+        return f"{float(value):.6f}"
+    return str(value)
+
 
 PROBE_CSV_METADATA_COLUMNS = [
     "run_id",
@@ -68,6 +80,10 @@ PROBE_CSV_METRIC_COLUMNS = [
     "classification_top_10",
     "classification_balanced_top_1",
     "vismatch_avg_matches",
+    "num_candidate_pairs",
+    "num_unscored_pairs",
+    "candidate_fraction",
+    "score_matrix_policy",
 ]
 
 PROBE_CSV_TIMING_COLUMNS = [
@@ -205,22 +221,47 @@ def load_dataset_splits(cfg: DictConfig) -> Tuple[WildlifeDataset, WildlifeDatas
     return dataset, dataset_database, dataset_query
 
 
-def get_calibration_dataset(dataset_database: WildlifeDataset, size: int, root: str, label_col: str) -> WildlifeDataset:
+def get_calibration_dataset(
+    dataset_database: WildlifeDataset,
+    size: int,
+    root: str,
+    label_col: str,
+    source_dataset: Optional[WildlifeDataset] = None,
+    split_col: Optional[str] = None,
+    split_value: Optional[str] = None,
+) -> WildlifeDataset:
     if size <= 0:
         raise ValueError("dataset.calibration_size must be > 0")
+    source = source_dataset
+    if source is not None and split_col and split_value is not None and split_col in source.metadata.columns:
+        selected = source.metadata[source.metadata[split_col] == split_value]
+        if len(selected) > 0:
+            return WildlifeDataset(root, df=selected.iloc[:size], load_label=True, col_label=label_col)
     if len(dataset_database.metadata) < size:
         size = len(dataset_database.metadata)
     return WildlifeDataset(root, df=dataset_database.metadata.iloc[:size], load_label=True, col_label=label_col)
 
-
-def dataset_digest(dataset: WildlifeDataset, label_col: str) -> str:
+def dataset_digest(dataset: WildlifeDataset, label_col: str, root: Optional[Path] = None) -> str:
     df = dataset.df if hasattr(dataset, "df") else dataset.metadata
     candidate_cols = ["path", "filepath", "file", "image_path", label_col]
     cols = [c for c in candidate_cols if c in df.columns]
     if not cols:
         cols = [label_col] if label_col in df.columns else []
     if cols:
-        payload = "\n".join(df[cols].astype(str).agg("|".join, axis=1).tolist())
+        records = []
+        path_col = next((c for c in ("path", "filepath", "file", "image_path") if c in df.columns), None)
+        for _, row in df[cols].iterrows():
+            values = [str(row[col]) for col in cols]
+            if path_col is not None and root is not None:
+                path = Path(values[cols.index(path_col)])
+                if not path.is_absolute():
+                    path = root / path
+                try:
+                    values.append(sha256_file(path))
+                except (OSError, FileNotFoundError):
+                    values.append("missing")
+            records.append("|".join(values))
+        payload = "\n".join(records)
     else:
         payload = f"n={len(df)}"
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
@@ -231,6 +272,7 @@ class FeatureCache:
         self.enabled = enabled
         self.cache_dir = cache_dir
         self.fmt = fmt
+        self.used_keys: List[str] = []
         if self.enabled:
             self.cache_dir.mkdir(parents=True, exist_ok=True)
         if self.fmt not in {"pt", "npz"}:
@@ -241,6 +283,7 @@ class FeatureCache:
         return self.cache_dir / f"{key}.{ext}"
 
     def get_or_compute(self, key: str, compute_fn) -> np.ndarray:
+        self.used_keys.append(str(key))
         path = self._path_for(key)
         if self.enabled and path.is_file():
             return self._load(path)
@@ -423,7 +466,7 @@ def _build_optimizer(params, method_cfg: DictConfig, method_key: str):
 
 def _classification_topk_accuracy(probs: np.ndarray, query_labels_idx: np.ndarray, topk_values: List[int]) -> Dict[str, float]:
     metrics: Dict[str, float] = {}
-    ranked = np.argsort(probs, axis=1)[:, ::-1]
+    ranked = stable_rank_indices(probs)
     num_classes = probs.shape[1]
     for k in topk_values:
         kk = min(int(k), num_classes)
@@ -441,6 +484,35 @@ def _classification_topk_accuracy(probs: np.ndarray, query_labels_idx: np.ndarra
 def _similarity_from_class_probs(probs_query: np.ndarray, db_labels_idx: np.ndarray) -> np.ndarray:
     return probs_query[:, db_labels_idx]
 
+
+def _probe_retrieval_metrics(
+    cfg: DictConfig,
+    dataset_query: Any,
+    dataset_database: Any,
+    probs_query: np.ndarray,
+    db_labels_idx: np.ndarray,
+    query_labels_idx: np.ndarray,
+) -> Dict[str, float]:
+    """Return identity-level metrics plus image-level diagnostic metrics."""
+    identity_labels = np.unique(db_labels_idx)
+    identity_similarity = np.column_stack(
+        [np.max(probs_query[:, db_labels_idx == identity], axis=1) for identity in identity_labels]
+    )
+    primary = compute_identity_metrics(
+        query_labels=query_labels_idx,
+        identity_labels=identity_labels,
+        similarity=identity_similarity,
+        top_k_values=[int(k) for k in cfg.benchmark.top_k],
+        compute_map=bool(cfg.benchmark.compute_map),
+    )
+    diagnostic = compute_metrics(
+        dataset_query=dataset_query,
+        dataset_database=dataset_database,
+        similarity=_similarity_from_class_probs(probs_query, db_labels_idx),
+        top_k_values=[int(k) for k in cfg.benchmark.top_k],
+        compute_map=bool(cfg.benchmark.compute_map),
+    )
+    return {**primary, **{f"image_{key}": value for key, value in diagnostic.items()}}
 
 def _balanced_accuracy_top1_idx(query_labels_idx: np.ndarray, predicted_top1_labels: np.ndarray) -> float:
     classes = np.unique(query_labels_idx)
@@ -583,11 +655,10 @@ def _save_attention_overlay_grid(
     return str(out_path)
 
 
-def make_cache_key(cfg: DictConfig, method: str, split_name: str, dataset_sig: str, checkpoint_path: Optional[Path]) -> str:
+def make_cache_key(cfg: DictConfig, method: str, split_name: str, dataset_sig: str, checkpoint_path: Optional[Path], model_weight_fingerprint: Optional[str] = None) -> str:
     checkpoint_tag = "pretrained"
     if checkpoint_path is not None:
-        stat = checkpoint_path.stat()
-        checkpoint_tag = f"{checkpoint_path}|{stat.st_size}|{int(stat.st_mtime)}"
+        checkpoint_tag = f"{checkpoint_path}|{sha256_file(checkpoint_path)}"
     payload = {
         "method": method,
         "split": split_name,
@@ -597,6 +668,7 @@ def make_cache_key(cfg: DictConfig, method: str, split_name: str, dataset_sig: s
         "no_background": bool(cfg.dataset.no_background),
         **build_dataset_cache_identity(cfg.dataset),
         "checkpoint": checkpoint_tag,
+        "model_weight_fingerprint": model_weight_fingerprint or "unknown",
         "wildfusion_local_top_k": (
             int(getattr(cfg.benchmark.methods.wildfusion, "local_top_k", 512))
             if method == "wildfusion"
@@ -618,8 +690,12 @@ def extract_deep_features_with_cache(
     method_name: str,
     checkpoint_path: Optional[Path],
 ) -> np.ndarray:
-    dataset_sig = dataset_digest(dataset, cfg.dataset.label_col)
-    cache_key = make_cache_key(cfg, method_name, split_name, dataset_sig, checkpoint_path)
+    dataset_sig = dataset_digest(dataset, cfg.dataset.label_col, Path(str(cfg.dataset.root)))
+    weight_fingerprint = getattr(model, "_reid_weight_fingerprint", None)
+    if weight_fingerprint is None:
+        weight_fingerprint = model_fingerprint(model, revision=str(cfg.model.type))
+        setattr(model, "_reid_weight_fingerprint", weight_fingerprint)
+    cache_key = make_cache_key(cfg, method_name, split_name, dataset_sig, checkpoint_path, weight_fingerprint)
 
     def _compute():
         extractor = DeepFeatures(model, device=device, batch_size=batch_size, num_workers=num_workers)
@@ -658,10 +734,11 @@ class CachedDeepExtractor:
         self.cfg = cfg
         self.method_name = method_name
         self.checkpoint_path = checkpoint_path
+        self.model_weight_fingerprint = model_fingerprint(model, revision=str(cfg.model.type))
 
     def __call__(self, dataset: WildlifeDataset) -> np.ndarray:
-        dataset_sig = dataset_digest(dataset, self.cfg.dataset.label_col)
-        cache_key = make_cache_key(self.cfg, self.method_name, "dynamic_split", dataset_sig, self.checkpoint_path)
+        dataset_sig = dataset_digest(dataset, self.cfg.dataset.label_col, Path(str(self.cfg.dataset.root)))
+        cache_key = make_cache_key(self.cfg, self.method_name, "dynamic_split", dataset_sig, self.checkpoint_path, self.model_weight_fingerprint)
 
         def _compute():
             extractor = DeepFeatures(self.model, device=self.device, batch_size=self.batch_size, num_workers=self.num_workers)
@@ -756,7 +833,7 @@ def run_linear_probe(
             train_probs = _predict_class_probabilities(objective, embeddings).detach().cpu().numpy()
             train_probs_list.append(train_probs)
             train_targets_list.append(y.detach().cpu().numpy())
-            loss.backward()
+            (loss / float(accumulation_group_size(i, total_batches, int(lp_cfg.accumulation_steps)))).backward()
             if should_step_accumulated_gradients(i, total_batches, int(lp_cfg.accumulation_steps)):
                 optimizer.step()
                 optimizer.zero_grad(set_to_none=True)
@@ -792,13 +869,7 @@ def run_linear_probe(
         train_cls_metrics = _classification_topk_accuracy(probs_train, train_targets, [1, 5, 10])
         cls_metrics = _classification_topk_accuracy(probs_query, query_labels_idx, [1, 5, 10])
         similarity_epoch = _similarity_from_class_probs(probs_query, db_labels_idx)
-        retrieval_metrics = compute_metrics(
-            dataset_query=dataset_query,
-            dataset_database=dataset_database,
-            similarity=similarity_epoch,
-            top_k_values=[int(k) for k in cfg.benchmark.top_k],
-            compute_map=bool(cfg.benchmark.compute_map),
-        )
+        retrieval_metrics = _probe_retrieval_metrics(cfg, dataset_query, dataset_database, probs_query, db_labels_idx, query_labels_idx)
 
         if wandb_run is not None:
             lr = float(optimizer.param_groups[0].get("lr", 0.0))
@@ -866,6 +937,7 @@ def run_linear_probe(
 
     similarity = _similarity_from_class_probs(probs_query, db_labels_idx)
     method_metrics.update(_classification_topk_accuracy(probs_query, query_labels_idx, [1, 5, 10]))
+    method_metrics.update(_probe_retrieval_metrics(cfg, dataset_query, dataset_database, probs_query, db_labels_idx, query_labels_idx))
 
     if bool(lp_cfg.save_checkpoint):
         run_dir.mkdir(parents=True, exist_ok=True)
@@ -977,7 +1049,7 @@ def run_efficient_probe(
             train_probs = _predict_class_probabilities(objective, patch_tokens).detach().cpu().numpy()
             train_probs_list.append(train_probs)
             train_targets_list.append(y.detach().cpu().numpy())
-            loss.backward()
+            (loss / float(accumulation_group_size(i, total_batches, int(ep_cfg.accumulation_steps)))).backward()
             if should_step_accumulated_gradients(i, total_batches, int(ep_cfg.accumulation_steps)):
                 optimizer.step()
                 optimizer.zero_grad(set_to_none=True)
@@ -1013,13 +1085,7 @@ def run_efficient_probe(
         train_cls_metrics = _classification_topk_accuracy(probs_train, train_targets, [1, 5, 10])
         cls_metrics = _classification_topk_accuracy(probs_query, query_labels_idx, [1, 5, 10])
         similarity_epoch = _similarity_from_class_probs(probs_query, db_labels_idx)
-        retrieval_metrics = compute_metrics(
-            dataset_query=dataset_query,
-            dataset_database=dataset_database,
-            similarity=similarity_epoch,
-            top_k_values=[int(k) for k in cfg.benchmark.top_k],
-            compute_map=bool(cfg.benchmark.compute_map),
-        )
+        retrieval_metrics = _probe_retrieval_metrics(cfg, dataset_query, dataset_database, probs_query, db_labels_idx, query_labels_idx)
 
         if wandb_run is not None:
             lr = float(optimizer.param_groups[0].get("lr", 0.0))
@@ -1113,6 +1179,7 @@ def run_efficient_probe(
 
     similarity = _similarity_from_class_probs(probs_query, db_labels_idx)
     method_metrics.update(_classification_topk_accuracy(probs_query, query_labels_idx, [1, 5, 10]))
+    method_metrics.update(_probe_retrieval_metrics(cfg, dataset_query, dataset_database, probs_query, db_labels_idx, query_labels_idx))
 
     if bool(ep_cfg.save_checkpoint):
         run_dir.mkdir(parents=True, exist_ok=True)
@@ -1246,7 +1313,9 @@ def run_method(
             calibration=IsotonicCalibration(),
         )
         wildfusion = WildFusion(calibrated_pipelines=[matcher_aliked, matcher_mega], priority_pipeline=matcher_mega)
-        wildfusion.fit_calibration(dataset_calibration, dataset_calibration)
+        calibration_cfg = getattr(cfg.benchmark, "calibration", {})
+        calibration_info = fit_wildfusion_calibration(wildfusion, dataset_calibration, dataset_calibration, exclude_self_pairs=bool(getattr(calibration_cfg, "exclude_self_pairs", True)), official_same_set=bool(getattr(calibration_cfg, "official_same_set", False)))
+        if method_artifacts is not None: method_artifacts["wildfusion_calibration"] = calibration_info
         timings["feature_extraction_sec"] = time.perf_counter() - t_extract
         t_sim = time.perf_counter()
         similarity = _call_similarity(wildfusion, dataset_query, dataset_database, settings.B)
@@ -1261,7 +1330,9 @@ def run_method(
             transform=transform_aliked,
             calibration=IsotonicCalibration(),
         )
-        matcher_local.fit_calibration(dataset_calibration, dataset_calibration)
+        calibration_cfg = getattr(cfg.benchmark, "calibration", {})
+        calibration_info = fit_pipeline_calibration(matcher_local, dataset_calibration, dataset_calibration, exclude_self_pairs=bool(getattr(calibration_cfg, "exclude_self_pairs", True)) and not bool(getattr(calibration_cfg, "official_same_set", False)))
+        if method_artifacts is not None: method_artifacts["local_calibration"] = calibration_info
         timings["feature_extraction_sec"] = time.perf_counter() - t_extract
         t_sim = time.perf_counter()
         similarity = _call_similarity(matcher_local, dataset_query, dataset_database, settings.B)
@@ -1333,7 +1404,7 @@ def run_method(
             method_artifacts=None,
         )
         stage_a_sec = time.perf_counter() - t_stage_a
-        candidate_indices = np.argsort(stage_similarity, axis=1)[:, ::-1][:, :candidate_k]
+        candidate_indices = stable_rank_indices(stage_similarity)[:, :candidate_k]
         timings["vismatch_stage_a_sec"] = float(stage_a_sec)
         timings["vismatch_candidate_k"] = float(candidate_k)
         for k, v in stage_timings.items():
@@ -1350,6 +1421,7 @@ def run_method(
             mean=mean,
             std=std,
             candidate_indices=candidate_indices,
+            stage_similarity=stage_similarity,
             method_artifacts=method_artifacts,
         )
         timings.update(vismatch_timings)
@@ -1374,7 +1446,7 @@ def visualize_predictions(
     out_dir = Path(run_dir) / "visualizations" / "predictions"
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    ranked_idx = np.argsort(similarity, axis=1)[:, ::-1]
+    ranked_idx = stable_rank_indices(similarity)
     rng = np.random.default_rng(cfg.benchmark.seed)
     num_queries = len(dataset_query_display)
     num_examples = min(vis_cfg.num_examples, num_queries)
@@ -1470,7 +1542,7 @@ def _run_probe(cfg: DictConfig, context: Any) -> None:
     run_dir = context.run_dir
     run_dir.mkdir(parents=True, exist_ok=True)
 
-    _, dataset_database_raw, dataset_query_raw = load_dataset_splits(cfg)
+    dataset, dataset_database_raw, dataset_query_raw = load_dataset_splits(cfg)
     if bool(getattr(cfg, "safety_checks", {}).get("enabled", True)):
         classifier_methods = {"linear_probe", "efficient_probe"}
         require_closed_set = method in classifier_methods
@@ -1517,6 +1589,9 @@ def _run_probe(cfg: DictConfig, context: Any) -> None:
         size=int(cfg.dataset.calibration_size),
         root=cfg.dataset.root,
         label_col=cfg.dataset.label_col,
+        source_dataset=dataset,
+        split_col=str(cfg.dataset.split_col),
+        split_value=getattr(cfg.benchmark.calibration, "split_value", None),
     )
 
     if method in {"cosine", "linear_probe", "efficient_probe"}:
@@ -1672,8 +1747,11 @@ def _run_probe(cfg: DictConfig, context: Any) -> None:
         "num_query": len(dataset_query),
         "num_database": len(dataset_database),
         "metrics": metrics,
+        "score_matrix_policy": metrics.get("score_matrix_policy"),
         "timings": timings,
         "visualizations": visuals,
+        "cache_fingerprints": list(cache.used_keys),
+        "vismatch_checkpoint": method_artifacts.get("vismatch_checkpoint"),
     }
     with output_json.open("w", encoding="utf-8") as f:
         json.dump(result, f, indent=2)
@@ -1695,8 +1773,12 @@ def _run_probe(cfg: DictConfig, context: Any) -> None:
             "num_query": len(dataset_query),
             "num_database": len(dataset_database),
             "metrics": metrics,
+            "score_matrix_policy": metrics.get("score_matrix_policy"),
             "timings": timings,
             "visualizations": visuals,
+            "cache_fingerprints": list(cache.used_keys),
+            "vismatch_checkpoint": method_artifacts.get("vismatch_checkpoint"),
+            "calibration": method_artifacts.get("wildfusion_calibration", method_artifacts.get("local_calibration")),
             "status": "completed",
         },
         status="completed",
@@ -1752,7 +1834,7 @@ def _run_probe(cfg: DictConfig, context: Any) -> None:
 
     print("Metrics:")
     for metric_name, metric_value in metrics.items():
-        print(f"  {metric_name}: {metric_value:.6f}")
+        print(f"  {metric_name}: {_format_metric_value(metric_value)}")
     print(f"Saved JSON: {output_json}")
     print(f"Appended CSV row: {cfg.output.csv_path}")
     if visuals:

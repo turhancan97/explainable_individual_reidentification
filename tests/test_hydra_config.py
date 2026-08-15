@@ -24,8 +24,12 @@ class HydraConfigurationTests(unittest.TestCase):
         finetune = compose_config("finetune")
 
         self.assertEqual(probe.model.type, "megadescriptor-l")
-        self.assertEqual(probe.benchmark.method, "wildfusion")
+        self.assertEqual(probe.benchmark.method, "vismatch")
         self.assertEqual(probe.benchmark.methods.vismatch.matcher, "rdd-lightglue")
+        self.assertEqual(probe.benchmark.methods.wildfusion.B, 100)
+        self.assertEqual(probe.benchmark.methods.vismatch.candidate_k, 100)
+        self.assertEqual(probe.benchmark.methods.vismatch.checkpoint_source, "default")
+        self.assertEqual(probe.benchmark.methods.vismatch.checkpoint_components, "auto")
         self.assertEqual(probe.dataset.image_variant, "no_background")
         self.assertEqual(finetune.model.type, "megadescriptor-l")
         self.assertEqual(finetune.dataset.image_variant, "background")

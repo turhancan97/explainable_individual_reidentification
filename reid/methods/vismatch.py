@@ -19,6 +19,13 @@ from PIL import Image
 from pycocotools import mask as mask_utils
 from tqdm import tqdm
 
+from reid.evaluation.candidate_scoring import (
+    build_shortlist_score_matrix,
+    candidate_recall_metrics,
+    normalize_shortlist_score,
+    shortlist_pair_counts,
+)
+from reid.evaluation.ranking import stable_rank_1d
 from reid.methods.vismatch_profiles import (
     FEATURE_SCHEMA_VERSION,
     SUPPORTED_VISMATCH_MATCHERS,
@@ -35,7 +42,13 @@ from reid.methods.vismatch_batching import (
     grouped_pair_batches,
     run_with_batch_backoff,
 )
+from reid.methods.vismatch_checkpoints import (
+    VismatchCheckpointResolution,
+    apply_vismatch_checkpoint,
+    resolve_vismatch_checkpoint,
+)
 from reid.utils.cache_identity import build_dataset_cache_identity
+from reid.utils.fingerprints import hash_mapping, model_fingerprint, sha256_file
 from reid.utils.io import ensure_file
 
 
@@ -99,7 +112,18 @@ def _batch_item(value: Any, index: int, batch_size: int) -> Any:
 class VismatchMatcherBackend:
     """Feature-level Vismatch adapter with explicit pairwise diagnostics."""
 
-    def __init__(self, matcher: str, device: torch.device, top_k: int, threshold: float, feature_matching_mode: str = "feature_level") -> None:
+    def __init__(
+        self,
+        matcher: str,
+        device: torch.device,
+        top_k: int,
+        threshold: float,
+        feature_matching_mode: str = "feature_level",
+        checkpoint_source: str = "default",
+        checkpoint_path: Optional[str | Path] = None,
+        checkpoint_components: str = "auto",
+        loma_arch: str = "LoMa-B",
+    ) -> None:
         matcher = validate_matcher_name(matcher)
         try:
             from vismatch import get_matcher
@@ -117,6 +141,13 @@ class VismatchMatcherBackend:
         if self.feature_matching_mode == "pairwise":
             raise ValueError("pairwise Vismatch mode is diagnostics-only; use match_images() explicitly")
         self.profile = build_matcher_profile(matcher, top_k, threshold, self.feature_matching_mode)
+        self.checkpoint_resolution: VismatchCheckpointResolution = resolve_vismatch_checkpoint(
+            matcher=matcher,
+            source=checkpoint_source,
+            path=checkpoint_path,
+            component_mode=checkpoint_components,
+            loma_arch=loma_arch,
+        )
         self.last_diagnostics: Dict[str, Any] = {}
         self.batch_diagnostics: Dict[str, Any] = {
             "extract_batches": 0,
@@ -126,7 +157,23 @@ class VismatchMatcherBackend:
             "effective_extract_batch_size": None,
             "effective_match_batch_size": None,
         }
-        self.model = get_matcher(matcher, device=str(device), max_num_keypoints=self.top_k)
+        matcher_kwargs: Dict[str, Any] = {}
+        if matcher == "loma":
+            matcher_kwargs["arch"] = str(loma_arch)
+        self.model = get_matcher(matcher, device=str(device), max_num_keypoints=self.top_k, **matcher_kwargs)
+        apply_vismatch_checkpoint(self.model, self.checkpoint_resolution)
+        try:
+            model_state_fingerprint = model_fingerprint(self.model, revision=f"{VISMATCH_COMMIT}:{matcher}:{loma_arch}")
+            self.weight_fingerprint = hash_mapping({
+                "model": model_state_fingerprint,
+                "checkpoint": self.checkpoint_resolution.fingerprint,
+            })
+        except (AttributeError, TypeError, ValueError):
+            self.weight_fingerprint = hash_mapping({
+                "revision": f"{VISMATCH_COMMIT}:{matcher}:{loma_arch}",
+                "checkpoint": self.checkpoint_resolution.fingerprint,
+                "model_class": type(self.model).__name__,
+            })
 
         if matcher == "rdd-lightglue":
             required = ("matcher", "lightglue")
@@ -622,12 +669,13 @@ def _to_uint8_rgb(
 
 def _cache_key(
     image_path: str,
+    image_content_hash: str,
     split_name: str,
     resize_max: int,
     top_k: int,
     cfg_tag: str,
 ) -> str:
-    payload = f"{split_name}|{image_path}|resize_max={resize_max}|top_k={top_k}|{cfg_tag}"
+    payload = f"{split_name}|{image_path}|content={image_content_hash}|resize_max={resize_max}|top_k={top_k}|{cfg_tag}"
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
@@ -785,7 +833,7 @@ def _draw_matches_save(
     title: str,
 ) -> str:
     if len(conf) > int(max_matches):
-        order = np.argsort(-conf)[: int(max_matches)]
+        order = stable_rank_1d(conf)[: int(max_matches)]
         mkpts0 = mkpts0[order]
         mkpts1 = mkpts1[order]
         conf = conf[order]
@@ -931,7 +979,9 @@ def _extract_split_features(
     iterator = tqdm(range(len(dataset)), desc=f"[vismatch][extract:{split_name}]", mininterval=1, ncols=120)
     for idx in iterator:
         image_path = str(dataset.df.iloc[idx][path_col])
-        key = _cache_key(image_path=image_path, split_name=split_name, resize_max=resize_max, top_k=top_k, cfg_tag=cfg_tag)
+        resolved_path = Path(image_path)
+        if not resolved_path.is_absolute(): resolved_path = dataset_root / resolved_path
+        key = _cache_key(image_path=image_path, image_content_hash=sha256_file(resolved_path), split_name=split_name, resize_max=resize_max, top_k=top_k, cfg_tag=cfg_tag)
         cache_path = _cache_path(cache_dir, key)
         if cache_path.is_file():
             try:
@@ -977,10 +1027,17 @@ def run_vismatch_benchmark(
     mean: Optional[Tuple[float, ...]] = None,
     std: Optional[Tuple[float, ...]] = None,
     candidate_indices: Optional[np.ndarray] = None,
+    stage_similarity: Optional[np.ndarray] = None,
     method_artifacts: Optional[Dict[str, Any]] = None,
 ) -> Tuple[np.ndarray, Dict[str, float], Dict[str, float]]:
     settings = cfg.benchmark.methods.vismatch
     matcher_name = validate_matcher_name(str(settings.matcher))
+    checkpoint_source = str(getattr(settings, "checkpoint_source", "default")).lower()
+    requested_checkpoint_path = getattr(settings, "checkpoint_path", None)
+    checkpoint_components = str(getattr(settings, "checkpoint_components", "auto")).lower()
+    loma_arch = str(getattr(settings, "loma_arch", "LoMa-B"))
+    if requested_checkpoint_path in (None, ""):
+        requested_checkpoint_path = None
     device = _choose_vismatch_device(str(settings.device))
     top_k = int(settings.top_k)
     resize_max = int(settings.resize_max)
@@ -1002,8 +1059,7 @@ def run_vismatch_benchmark(
     if checkpoint_path is not None:
         checkpoint_tag = str(checkpoint_path)
         if checkpoint_path.is_file():
-            stat = checkpoint_path.stat()
-            checkpoint_tag = f"{checkpoint_path}|{stat.st_size}|{int(stat.st_mtime)}"
+            checkpoint_tag = f"{checkpoint_path}|{sha256_file(checkpoint_path)}"
     stage_a_method = str(settings.stage_a_method) if "stage_a_method" in settings else "none"
     feature_matching_mode = str(getattr(settings, "feature_matching_mode", "feature_level"))
     batch_mode = str(getattr(settings, "batch_mode", "batched")).lower()
@@ -1019,6 +1075,8 @@ def run_vismatch_benchmark(
         (
             f"matcher={matcher_name}|vismatch_commit={VISMATCH_COMMIT}|stage_a={stage_a_method}|"
             f"model_type={cfg.model.type}|model_mode={cfg.model.mode}|checkpoint={checkpoint_tag}|"
+            f"checkpoint_source={checkpoint_source}|checkpoint_path={requested_checkpoint_path}|"
+            f"checkpoint_components={checkpoint_components}|loma_arch={loma_arch}|"
             f"top_k={top_k}|resize_max={resize_max}|threshold={threshold}|no_bg={no_background}|"
             f"dataset_identity={json.dumps(dataset_identity, sort_keys=True)}|"
             f"path_col={path_col}|mask_col={mask_col}|feature_matching_mode={feature_matching_mode}|schema={FEATURE_SCHEMA_VERSION}"
@@ -1032,7 +1090,22 @@ def run_vismatch_benchmark(
     )
 
     t_build = time.perf_counter()
-    backend = VismatchMatcherBackend(matcher_name, device, top_k, threshold, feature_matching_mode)
+    backend = VismatchMatcherBackend(
+        matcher_name,
+        device,
+        top_k,
+        threshold,
+        feature_matching_mode,
+        checkpoint_source=checkpoint_source,
+        checkpoint_path=requested_checkpoint_path,
+        checkpoint_components=checkpoint_components,
+        loma_arch=loma_arch,
+    )
+    cfg_tag = hashlib.sha256(
+        f"{cfg_tag}|matcher_weights={backend.weight_fingerprint}|checkpoint_resolution={backend.checkpoint_resolution.fingerprint}".encode("utf-8")
+    ).hexdigest()
+    if method_artifacts is not None:
+        method_artifacts["vismatch_checkpoint"] = backend.checkpoint_resolution.as_dict()
     backend.batch_diagnostics["configured_extract_batch_size"] = extract_batch_size
     backend.batch_diagnostics["configured_match_batch_size"] = match_batch_size
     model_build_sec = time.perf_counter() - t_build
@@ -1049,7 +1122,11 @@ def run_vismatch_benchmark(
     extract_sec = time.perf_counter() - t_extract
 
     t_sim = time.perf_counter()
-    similarity = np.full((len(query_feats), len(db_feats)), fill_value=-1e9, dtype=np.float32)
+    similarity = (
+        build_shortlist_score_matrix(stage_similarity, candidate_indices)
+        if stage_similarity is not None
+        else np.full((len(query_feats), len(db_feats)), -np.inf, dtype=np.float32)
+    )
     match_counts: List[int] = []
     if batch_mode == "serial":
         total_pairs = candidate_pair_count(len(query_feats), len(db_feats), candidate_indices)
@@ -1065,7 +1142,7 @@ def run_vismatch_benchmark(
                 db_candidates = list(range(len(db_feats))) if candidate_indices is None else [int(index) for index in candidate_indices[qi].tolist()]
                 for di in db_candidates:
                     score, nm = _score_pair(backend, query_feats[qi], db_feats[di])
-                    similarity[qi, di] = float(score)
+                    similarity[qi, di] = normalize_shortlist_score(score)
                     match_counts.append(int(nm))
                     backend.batch_diagnostics["match_batches"] += 1
                     backend.batch_diagnostics["effective_match_batch_size"] = 1
@@ -1106,7 +1183,7 @@ def run_vismatch_benchmark(
                         effective_size if current_effective is None else min(int(current_effective), int(effective_size))
                     )
                     for (query_index, database_index), result in zip(processed_pairs, results):
-                        similarity[query_index, database_index] = float(result.score)
+                        similarity[query_index, database_index] = normalize_shortlist_score(result.score)
                         match_counts.append(int(result.match_count))
                     match_progress.update(len(processed_pairs))
                     match_progress.set_postfix(batch=effective_size, refresh=False)
@@ -1123,7 +1200,7 @@ def run_vismatch_benchmark(
         match_paths: List[str] = []
         for q_idx in sampled_indices:
             q_idx_int = int(q_idx)
-            db_idx = int(np.argmax(similarity[q_idx_int]))
+            db_idx = int(stable_rank_1d(similarity[q_idx_int])[0])
             q_row = dataset_query.df.iloc[q_idx_int]
             db_row = dataset_database.df.iloc[db_idx]
             q_img = _load_raw_rgb_image(q_row, q_idx_int, dataset_root, path_col, no_background, mask_col)
@@ -1152,5 +1229,11 @@ def run_vismatch_benchmark(
     }
     method_metrics = {
         "vismatch_avg_matches": float(np.mean(match_counts)) if match_counts else 0.0,
+        "score_matrix_policy": "shortlist_only_neg_inf",
     }
+    method_metrics.update(shortlist_pair_counts(len(query_feats), len(db_feats), candidate_indices))
+    query_labels = dataset_query.df[cfg.dataset.label_col].to_numpy()
+    database_labels = dataset_database.df[cfg.dataset.label_col].to_numpy()
+    method_metrics.update(candidate_recall_metrics(query_labels, database_labels, candidate_indices))
+    method_metrics["vismatch_cache_fingerprint"] = cfg_tag
     return similarity, timings, method_metrics

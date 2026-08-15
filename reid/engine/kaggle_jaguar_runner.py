@@ -28,9 +28,11 @@ from wildlife_tools.similarity.pairwise.lightglue import MatchLightGlue
 from wildlife_tools.similarity.wildfusion import SimilarityPipeline, WildFusion
 
 from models.model import get_model
+from reid.evaluation.ranking import stable_rank_indices
 from reid.engine.finetune_runner import run_finetune
 from reid.features.containers import FeatureContainer, get_labels_string
 from reid.methods.vismatch import run_vismatch_benchmark
+from reid.methods.wildfusion_calibration import fit_pipeline_calibration, fit_wildfusion_calibration
 from reid.methods.vismatch_profiles import default_matcher_threshold
 from reid.training.checkpointing import resolve_model_checkpoint
 
@@ -392,7 +394,7 @@ def _build_candidate_indices(scores: np.ndarray, candidate_k: int) -> np.ndarray
     n = scores.shape[0]
     kk = min(max(1, int(candidate_k)), max(1, n - 1))
     candidates = np.empty((n, kk), dtype=np.int64)
-    ranked = np.argsort(scores, axis=1)[:, ::-1]
+    ranked = stable_rank_indices(scores)
     for i in range(n):
         row = ranked[i]
         row = row[row != i]
@@ -470,7 +472,7 @@ def _identity_balanced_map_all_vs_all(scores: np.ndarray, labels: Sequence[str])
     if n == 0:
         return float("nan")
 
-    ranked = np.argsort(scores, axis=1)[:, ::-1]
+    ranked = stable_rank_indices(scores)
     ap_by_identity: Dict[str, List[float]] = {}
 
     for i in range(n):
@@ -665,6 +667,7 @@ def run_kaggle_jaguar(cfg: DictConfig) -> None:
 
     t_stage_a = time.perf_counter()
     wildfusion_matcher = None
+    calibration_info: Optional[Dict[str, Any]] = None
     if stage_a_method == "cosine":
         test_embeddings = _extract_embeddings_with_cache(
             model=model,
@@ -717,7 +720,7 @@ def run_kaggle_jaguar(cfg: DictConfig) -> None:
             calibrated_pipelines=[matcher_aliked, matcher_mega],
             priority_pipeline=matcher_mega,
         )
-        wildfusion_matcher.fit_calibration(dataset_calibration, dataset_calibration)
+        calibration_info = fit_wildfusion_calibration(wildfusion_matcher, dataset_calibration, dataset_calibration, exclude_self_pairs=bool(getattr(getattr(cfg, "calibration", {}), "exclude_self_pairs", True)), official_same_set=bool(getattr(getattr(cfg, "calibration", {}), "official_same_set", False)))
         stage_a_scores = np.asarray(
             _call_similarity(
                 wildfusion_matcher,
@@ -796,6 +799,7 @@ def run_kaggle_jaguar(cfg: DictConfig) -> None:
             mean=mean,
             std=std,
             candidate_indices=candidate_indices,
+            stage_similarity=stage_a_scores,
             method_artifacts={},
         )
         timings.update({k: float(v) for k, v in vismatch_timings.items()})
@@ -876,6 +880,7 @@ def run_kaggle_jaguar(cfg: DictConfig) -> None:
                 mean=mean,
                 std=std,
                 candidate_indices=val_candidates,
+                stage_similarity=val_stage,
                 method_artifacts={},
             )
             val_final = _fuse_stage_a_and_vismatch(
@@ -946,6 +951,7 @@ def run_kaggle_jaguar(cfg: DictConfig) -> None:
         "vismatch_min_stage_score": float(vismatch_fusion_min_stage),
         "vismatch_fusion_symmetrize": bool(vismatch_fusion_sym),
         "timings": {k: float(v) for k, v in timings.items()},
+        "wildfusion_calibration": calibration_info,
         "git_commit": _git_commit_hash(),
         "env": {
             "python": platform.python_version(),

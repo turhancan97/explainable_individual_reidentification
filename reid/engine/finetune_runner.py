@@ -20,11 +20,15 @@ from wildlife_tools.train.trainer import set_seed
 from models.model import get_model
 from models.objective import ArcFaceLoss
 from reid.data.safety_checks import run_split_safety_checks
+from reid.training.results import build_final_training_metrics
 from reid.data.dataset_view import BenchmarkDatasetView
 from reid.evaluation.metrics import compute_metrics
 from reid.features.containers import FeatureContainer, get_labels_string, normalize_features
 from reid.training.checkpointing import load_full_checkpoint, save_full_checkpoint
-from reid.training.accumulation import should_step_accumulated_gradients
+from reid.training.accumulation import (
+    accumulation_group_size,
+    should_step_accumulated_gradients,
+)
 from reid.reporting.artifacts import build_run_context, run_index_row, upsert_run_index
 from reid.utils.cache_identity import build_dataset_cache_identity
 from reid.utils.io import append_csv_row, ensure_dir, ensure_file, update_csv_rows
@@ -70,11 +74,16 @@ def train_one_epoch(
             with torch.amp.autocast(device_type=device.type):
                 out = model(x)
                 loss = objective(out, y)
-            scaler.scale(loss).backward()
         else:
             out = model(x)
             loss = objective(out, y)
-            loss.backward()
+
+        group_size = accumulation_group_size(i, total_batches, accumulation_steps)
+        scaled_loss = loss / float(group_size)
+        if amp_enabled:
+            scaler.scale(scaled_loss).backward()
+        else:
+            scaled_loss.backward()
 
         if should_step_accumulated_gradients(i, total_batches, accumulation_steps):
             if amp_enabled:
@@ -287,6 +296,9 @@ def _run_finetune(cfg: DictConfig, context: Any) -> None:
 
     best_metric_name = str(cfg.output.best_metric)
     best_metric_value = -float("inf")
+    best_epoch = 0
+    best_metrics: Dict[str, float] = {}
+    final_epoch_metrics: Dict[str, float] = {}
 
     train_loader = DataLoader(
         dataset_train,
@@ -321,10 +333,13 @@ def _run_finetune(cfg: DictConfig, context: Any) -> None:
         )
         model.to(device)
         objective.to(device)
+        final_epoch_metrics = dict(metrics)
 
         metric_value = float(metrics.get(best_metric_name, -float("inf")))
         if metric_value > best_metric_value and bool(cfg.output.save_best):
             best_metric_value = metric_value
+            best_epoch = epoch + 1
+            best_metrics = dict(metrics)
             torch.save(model.state_dict(), output_folder / "checkpoint-best.pth")
             torch.save(model.state_dict(), output_folder / f"checkpoint-best_{dataset_tag}.pth")
             save_full_checkpoint(
@@ -433,17 +448,30 @@ def _run_finetune(cfg: DictConfig, context: Any) -> None:
         int(cfg.train.epochs),
     )
 
+    selected_checkpoint = output_folder / "checkpoint-best.pth"
+    if not selected_checkpoint.is_file():
+        selected_checkpoint = output_folder / "checkpoint-final.pth"
+    selected_metrics = dict(metrics)
+    if selected_checkpoint.is_file():
+        selected_state = torch.load(selected_checkpoint, map_location="cpu")
+        model.load_state_dict(selected_state)
+        selected_metrics = evaluate(
+            model=model,
+            device=device,
+            dataset_query=dataset_val,
+            dataset_database=dataset_train,
+            batch_size=int(cfg.benchmark.val_batch_size),
+            num_workers=int(cfg.benchmark.val_num_workers),
+            top_k=[int(k) for k in cfg.benchmark.top_k],
+            compute_map=bool(cfg.benchmark.compute_map),
+        )
+        model.to(device)
+
     elapsed_sec = time.perf_counter() - run_t0
     if context is not None:
-        final_metrics = dict(metrics)
-        final_metrics.update(
-            {
-                "best_metric": best_metric_name,
-                "best_metric_value": best_metric_value,
-                "total_run_sec": float(elapsed_sec),
-                "total_run_min": float(elapsed_sec / 60.0),
-            }
-        )
+        final_metrics = build_final_training_metrics(selected_metrics, final_epoch_metrics, best_epoch=best_epoch, best_metric=best_metric_name, selected_checkpoint=str(selected_checkpoint))
+        final_metrics["total_run_sec"] = float(elapsed_sec)
+        final_metrics["total_run_min"] = float(elapsed_sec / 60.0)
         context.write_metrics(final_metrics)
         context.write_timings(
             {
@@ -486,7 +514,10 @@ def _run_finetune(cfg: DictConfig, context: Any) -> None:
                     "variant": "default",
                     "num_query": len(dataset_val),
                     "num_database": len(dataset_train),
-                    **metrics,
+                    **selected_metrics,
+                    "best_epoch": float(best_epoch),
+                    "best_metric": best_metric_name,
+                    "selected_checkpoint": str(selected_checkpoint),
                     "total_runtime_sec": float(elapsed_sec),
                 },
             ),

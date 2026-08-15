@@ -64,6 +64,8 @@ class VismatchBatchingTests(unittest.TestCase):
 
         backend = FakeBackend()
         with TemporaryDirectory() as temp_dir:
+            (Path(temp_dir) / "one.jpg").write_bytes(b"one")
+            (Path(temp_dir) / "two.jpg").write_bytes(b"two")
             with mock.patch.object(
                 vismatch_module,
                 "_load_raw_rgb_image",
@@ -120,14 +122,14 @@ class VismatchBatchingTests(unittest.TestCase):
         query = [_feature(3), _feature(3)]
         database = [_feature(5), _feature(5), _feature(5)]
         pairs = [(0, 2), (0, 0), (1, 1)]
-        matrix = np.full((2, 3), -1e9, dtype=np.float32)
+        matrix = np.full((2, 3), -np.inf, dtype=np.float32)
 
         for batch in grouped_pair_batches(pairs, query, database, batch_size=2):
             results = [float(q * 10 + d) for q, d in batch]
             for (q, d), score in zip(batch, results):
                 matrix[q, d] = score
 
-        np.testing.assert_array_equal(matrix, np.asarray([[0.0, -1e9, 2.0], [-1e9, 11.0, -1e9]]))
+        np.testing.assert_array_equal(matrix, np.asarray([[0.0, -np.inf, 2.0], [-np.inf, 11.0, -np.inf]]))
 
     def test_fake_serial_and_batched_backend_scores_are_identical(self):
         query = [_feature(3), _feature(3)]

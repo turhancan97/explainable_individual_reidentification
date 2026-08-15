@@ -33,15 +33,14 @@ def _is_full_checkpoint_name(filename: str) -> bool:
 
 
 def resolve_model_checkpoint(results_dir: Path, filename: str = "checkpoint-final.pth") -> Path:
-    """Find the newest model-only checkpoint, including legacy tagged names."""
+    """Find a model-only checkpoint, preferring completed modern runs.
+
+    Modern experiment runs may be nested several levels below the search root;
+    legacy one-level result directories remain supported.
+    """
     results_dir = Path(results_dir)
     if not results_dir.is_dir():
         raise FileNotFoundError(f"Results directory not found: {results_dir}")
-
-    run_dirs = [candidate for candidate in results_dir.iterdir() if candidate.is_dir()]
-    if not run_dirs:
-        raise FileNotFoundError(f"No run directories found in {results_dir}")
-    run_dirs.sort(key=lambda candidate: candidate.stat().st_mtime, reverse=True)
 
     if _is_full_checkpoint_name(str(filename)):
         raise ValueError(
@@ -52,21 +51,44 @@ def resolve_model_checkpoint(results_dir: Path, filename: str = "checkpoint-fina
     if str(filename) != "checkpoint-final.pth":
         candidate_names.append("checkpoint-final.pth")
 
-    for run_dir in run_dirs:
-        for candidate_name in candidate_names:
-            candidate = run_dir / candidate_name
-            if candidate.is_file():
-                return candidate
+    candidates = []
+    for candidate in results_dir.rglob("checkpoint*.pth"):
+        if not candidate.is_file() or _is_full_checkpoint_name(candidate.name):
+            continue
+        canonical_rank = 0 if candidate.name in candidate_names else 1
+        if canonical_rank == 1 and not candidate.name.startswith("checkpoint-final_"):
+            continue
+        manifest = candidate.parent / "run_manifest.json"
+        completed = False
+        if manifest.is_file():
+            try:
+                import json
 
-        tagged = sorted(run_dir.glob("checkpoint-final_*.pth"))
-        if tagged:
-            return tagged[-1]
+                completed = json.loads(manifest.read_text()).get("status") == "completed"
+            except (OSError, ValueError, TypeError):
+                completed = False
+            if not completed:
+                continue
+        elif candidate.parent.parent == results_dir:
+            # Historical result directories have no manifest and are still valid.
+            completed = True
+        candidates.append(
+            (
+                0 if completed else 1,
+                canonical_rank,
+                -candidate.stat().st_mtime,
+                str(candidate),
+                candidate,
+            )
+        )
+    if candidates:
+        candidates.sort(key=lambda item: item[:4])
+        return candidates[0][4]
 
     searched = ", ".join(candidate_names + ["checkpoint-final_<dataset_tag>.pth"])
     raise FileNotFoundError(
         f"No model-only checkpoint found under {results_dir}. Searched: {searched}"
     )
-
 
 def save_full_checkpoint(
     path: Path,

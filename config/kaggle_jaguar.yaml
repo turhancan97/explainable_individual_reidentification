@@ -49,6 +49,10 @@ validation:
   val_ratio: 0.25
   min_val_per_identity: 2
 
+calibration:
+  exclude_self_pairs: true
+  official_same_set: false
+
 stage_a:
   method: "cosine"           # cosine | wildfusion
   batch_size: 64

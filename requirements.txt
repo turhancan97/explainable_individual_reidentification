@@ -22,6 +22,7 @@ vismatch @ git+https://github.com/gmberton/vismatch.git@4a743b75749a3770af59d275
 tqdm
 wandb
 accelerate
+safetensors>=0.4.0
 poselib
 opencv_python_headless==4.7.0.68
 geopandas == 0.14.4

@@ -26,9 +26,13 @@ model:
     filename: "checkpoint-final.pth"
 
 benchmark:
-  method: "wildfusion"  # cosine | wildfusion | local_lightglue | linear_probe | efficient_probe | vismatch
+  method: "vismatch"  # cosine | wildfusion | local_lightglue | linear_probe | efficient_probe | vismatch
   top_k: [1, 5, 10]
   compute_map: true
+  calibration:
+    exclude_self_pairs: true
+    official_same_set: false
+    split_value: null
   seed: 0
   deterministic: false
   cache:
@@ -96,6 +100,10 @@ benchmark:
         dinov3: ["encoder.layer.11", "layernorm"]
     vismatch:
       matcher: "rdd-lightglue"  # rdd-lightglue | aliked-lightglue | superpoint-lightglue | loma
+      checkpoint_source: "default"  # default | custom
+      checkpoint_path: null
+      checkpoint_components: "auto"  # auto | matcher_only | extractor_only | full
+      loma_arch: "LoMa-B" # LoMa-B, LoMa-L, LoMa-G, LoMa-B128, LoMa-R
       device: "auto"            # auto | cpu | cuda
       path_col: "path"
       resize_max: 448

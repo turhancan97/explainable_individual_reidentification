@@ -151,6 +151,13 @@ file to inference code expecting a model-only state dict.
   keep CHANGELOG.MD as the chronological record of changes and decisions.
 - Do not silently change benchmark protocols, score ranges, split semantics, or
   external matcher behavior while fixing infrastructure issues.
+- Probe calibration must use the dataset returned by `load_dataset_splits`; failed-run
+  reporting must preserve the original exception and create missing report parents.
+- Probe finalization must import and use `file_identity` from `reid.reporting.artifacts`;
+  final WildFusion matching must not be considered successful until manifest/report
+  assembly completes.
+- Console metric reporting must handle both numeric metrics and string diagnostic
+  fields such as Vismatch cache fingerprints without changing persisted metric values.
 - Record assumptions, compatibility decisions, and unresolved issues in the handoff.
 
 ## External environment
@@ -168,6 +175,15 @@ Default paths are specific to the original shared compute environment.
 - [x] Migrate probe and finetuning configuration to Hydra with strict dotlist overrides and resolved snapshots.
 - [ ] Replace environment-specific absolute paths with machine-local overrides.
 - [ ] Pin external Git dependencies to reproducible commits.
+- [ ] Implement truly disjoint calibration inputs for WildFusion and local matcher
+  calibration; the current split setting selects one dataset and passes it to both
+  sides of calibration.
+- [ ] Include mask metadata/content fingerprints in standard and Vismatch feature
+  caches so mask edits invalidate features, not only image-file edits.
+- [ ] Route visualization rankings and Vismatch qualitative top-1 selection through
+  the shared stable ranking helper.
+- [ ] Make legacy checkpoint discovery recursive for the existing nested no-manifest
+  `results/<dataset>/<animal>/mask_<...>/run_<...>` layout.
 - [ ] Evaluate masking and Vismatch matcher settings separately for each animal dataset.
 - [x] Fix runtime annotation import validation for the batched Vismatch path.
 - [x] Add an ex-reid-gated runtime smoke test that invokes batched extraction.
@@ -186,6 +202,12 @@ Default paths are specific to the original shared compute environment.
 - [x] Record completed finetuning total runtime in train_metrics.csv.
 - [ ] Reconcile historical experiment metadata and stale generated CSV schemas.
 - [x] Add readable experiment manifests, run indexing, visualization indexes, and summary reports.
+- [ ] Make central run-index updates safe for concurrent jobs and use unique temporary
+  files or locking instead of a shared `reports/runs.csv.tmp` path.
+- [ ] Record SHA-256 checkpoint identities and repository dirty-state/diff identity in
+  manifests so uncommitted experiment code remains reproducible.
+- [x] Repair stale configuration expectations and synthetic-image fixtures so the full
+  ex-reid regression suite is green before relying on it as a release gate.
 
 
 ## Vismatch matcher policy
@@ -197,13 +219,15 @@ LoMa-B wrapper). The production path extracts features once and matches cached f
 is required for production; pairwise Vismatch calls are reserved for explicit diagnostics.
 Old `rdd` method names and direct RDD repository paths are unsupported and receive a migration-specific error.
 The `FrameFeatures` contract and matcher profiles remain dependency-light so unit tests can run without Vismatch, CUDA, downloaded weights, or masking packages. LoMa uses normalized[-1,1] keypoints internally, right/bottom padding to multiples of 14, and a default mutual-match threshold of 0.10; its feature cache records the original and padded image sizes.
-Standard and Vismatch feature-cache fingerprints also include the resolved dataset root, metadata file, and `dataset.image_variant`; normal and pre-masked features must never share a cache identity.
+Standard and Vismatch feature-cache fingerprints also include the resolved dataset root, metadata file, and `dataset.image_variant`; normal and pre-masked features must never share a cache identity. Mask payload/content is not yet hashed and remains future work.
+Deep-feature cache keys must be constructed only after dataset and model-weight fingerprints are resolved; changing model contents must invalidate the key.
 The 2026-08-12 full-split parity run found identical keypoint counts and descriptor
 shapes but non-bit-identical feature tensors; mean absolute per-pair score difference
 was 4.38e-05. The only ranking disagreement was a near-tie, so this result supports
 behavioral equivalence but does not establish strict numerical identity.
 The shipped probe YAML may intentionally select another Stage-A method (currently wildfusion); this does not disable the independently selectable `vismatch` method.
 WildFusion uses `B` for candidate pairs per query, `local_batch_size` for pair-processing batches, and `local_top_k` for the ALIKED local keypoint budget. `local_top_k` defaults to 512 with `force_num_keypoints=True`; it is included in WildFusion cache/experiment identity so changing it does not reuse a different local-feature configuration.
+Custom Vismatch checkpoints are selected with `benchmark.methods.vismatch.checkpoint_source`, `checkpoint_path`, and `checkpoint_components`. `default` preserves Vismatch-managed weights; `custom` accepts an exact model file or epoch directory. Component discovery uses tensor schemas and optional `checkpoint_manifest.json`, never filename ordering. RDD-LightGlue can load custom `rdd_extractor` and/or `lightglue` components, falling back to the default component in `auto` mode when one is absent. LoMa requires a validated LoMa-compatible checkpoint and explicit `loma_arch`; generic RDD/LightGlue files are rejected. Optimizer, scheduler, and random-state files are never loaded for probing. Component SHA-256 identities are part of Vismatch feature-cache keys and run manifests.
 The production batching defaults are `batch_mode: batched`, `match_batch_size: 16`,
 Matching displays a pair-counted tqdm progress bar with percentage, throughput, and ETA; progress advances only after successful batches, including after OOM retries.
 and `extract_batch_size: 8`; `batch_mode: serial` remains the diagnostic/reference
@@ -214,11 +238,54 @@ groups. LoMa is never
 naively padded because padding would change assignment-softmax normalization. When
 CUDA runs out of memory and `oom_backoff: true`, the current batch is retried at half
 size, temporary CUDA memory is cleared, and effective batch sizes are recorded in
-Vismatch timing metadata. Stage-A candidates, `candidate_k`, matrix placement, and
-score normalization are unchanged; the 1e-4 score/top-1 parity gate remains required
-before interpreting performance results.
+Vismatch timing metadata. Stage-A candidates and `candidate_k` remain unchanged. Vismatch
+and WildFusion are shortlist-constrained: Vismatch initializes unscored positions to
+`-inf`, matching WildFusion's sparse matrix behavior. The policy is recorded as
+`score_matrix_policy=shortlist_only_neg_inf` with candidate/unscored pair counts and
+candidate fraction. The 1e-4 score/top-1 parity gate remains required before interpreting
+performance results.
 The explicit `dataset.image_variant` field must be `background` or `no_background`.
 Use `background` for normal `images/` inputs and `no_background` for pre-masked
 `masked_images/` inputs or dynamically masked images. This field is provenance,
 separate from `dataset.no_background`, which controls whether an RLE mask is
 applied at load time.
+
+## Research-validity reporting policy
+
+- Primary retrieval metrics use deterministic descending scores with original database
+  index as the tie-breaker. This rule is shared by evaluation, shortlisting, Jaguar,
+  and classifier probes; visualization ranking still requires migration to the helper.
+- Primary `mAP` includes every query; a query with no relevant gallery identity contributes
+  AP=0. `mAP_eligible` is the legacy eligible-query-only diagnostic, and coverage fields
+  report how many queries had a gallery match.
+- Linear and efficient probes report identity-level metrics as primary. Their existing
+  image-level matrix and metrics remain under `image_*` diagnostic fields.
+- Vismatch and WildFusion use shortlist-constrained ranking. Vismatch overwrites only
+  shortlisted candidates in a matrix initialized to `-inf`; invalid candidate scores
+  also become `-inf`. It reports candidate hit/recall and scored/unscored pair counts.
+  The previous finite Stage-A fallback mixed incompatible cosine and matcher score
+  scales and is not a supported production policy.
+- Split safety preserves path-overlap checks and additionally hashes resolved files with
+  SHA-256. Duplicate content across protected splits fails closed and is summarized with
+  sample paths and unreadable-file counts.
+- Standard and Vismatch feature caches include image-content SHA-256, preprocessing,
+  metadata, image variant, model/checkpoint identity, and matcher profile/weight identity,
+  but do not yet include mask metadata/content hashes. Image contents at a fixed path
+  invalidate caches; mask edits require the future cache-fingerprint fix.
+- Automatic inference checkpoint discovery searches recursively under modern finetune
+  experiments, ignores failed/incomplete manifests and `*-full.pth`, prefers completed
+  canonical model-only files, then tagged legacy files, and preserves explicit-path priority.
+  Existing nested legacy runs without manifests are not yet discovered when searching
+  from the repository-level `results/` root.
+- Finetune reports select and reload the best model-only checkpoint for primary metrics;
+  final-epoch metrics remain nested as `final_epoch_metrics`. The current test/validation
+  split remains the selection split and is a documented limitation.
+- Accumulation divides each raw loss by the actual microbatch count in its group, including
+  a partial final group; optimizer-step boundaries and scheduler behavior are unchanged.
+- WildFusion calibration excludes same-image diagonal pairs by default and warns on the
+  database-derived fallback. The configured split currently produces one calibration
+  dataset used on both sides, so a truly disjoint calibration protocol remains future work.
+  `official_same_set: true` enables exact all-pairs compatibility calibration for parity.
+
+These validity changes are forward-only. Historical generated artifacts, aggregate CSVs,
+and old caches are not rewritten automatically; rerun affected experiments before using

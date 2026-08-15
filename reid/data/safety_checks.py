@@ -3,11 +3,13 @@ from __future__ import annotations
 import json
 import math
 from pathlib import Path
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
+
+from reid.utils.fingerprints import HASH_ALGORITHM, sha256_file
 
 
 def _detect_path_col(df: pd.DataFrame, preferred: Optional[str] = None) -> str:
@@ -78,6 +80,7 @@ def run_split_safety_checks(
     fail_on_overlap: bool = True,
     require_b_labels_in_a: bool = False,
     warn_only_unseen: bool = False,
+    check_content_hashes: bool = True,
 ) -> Dict[str, Any]:
     if label_col not in df_a.columns:
         raise KeyError(f"label_col '{label_col}' not found in {split_a_name} split")
@@ -91,6 +94,32 @@ def run_split_safety_checks(
     normalized_a = _normalize_paths(df_a, root=root, path_col=path_col)
     normalized_b = _normalize_paths(df_b, root=root, path_col=path_col)
     overlap = sorted(set(normalized_a.tolist()).intersection(set(normalized_b.tolist())))
+
+    hashes_a: Dict[str, List[str]] = {}
+    hashes_b: Dict[str, List[str]] = {}
+    missing_files: List[str] = []
+    if check_content_hashes:
+        for path in list(dict.fromkeys(normalized_a.tolist())):
+            resolved = Path(path)
+            if not resolved.is_file():
+                missing_files.append(resolved.as_posix())
+                continue
+            hashes_a.setdefault(sha256_file(resolved), []).append(resolved.as_posix())
+        for path in list(dict.fromkeys(normalized_b.tolist())):
+            resolved = Path(path)
+            if not resolved.is_file():
+                missing_files.append(resolved.as_posix())
+                continue
+            hashes_b.setdefault(sha256_file(resolved), []).append(resolved.as_posix())
+    duplicate_hashes = sorted(set(hashes_a).intersection(hashes_b))
+    duplicate_content = [
+        {
+            "sha256": digest,
+            "split_a_paths": hashes_a[digest][:10],
+            "split_b_paths": hashes_b[digest][:10],
+        }
+        for digest in duplicate_hashes[:20]
+    ]
 
     labels_a = set(df_a[label_col].astype(str).tolist())
     labels_b = set(df_b[label_col].astype(str).tolist())
@@ -130,6 +159,11 @@ def run_split_safety_checks(
         "num_unseen_labels_b_in_a": int(len(unseen_b)),
         "num_overlapping_files": int(len(overlap)),
         "sample_overlapping_files": overlap[:20],
+        "content_hash_algorithm": HASH_ALGORITHM if check_content_hashes else None,
+        "num_duplicate_content_hashes": int(len(duplicate_hashes)),
+        "sample_duplicate_content": duplicate_content,
+        "num_missing_or_unreadable_files": int(len(set(missing_files))),
+        "sample_missing_or_unreadable_files": sorted(set(missing_files))[:20],
         "sample_unseen_labels_b_in_a": unseen_b[:20],
     }
     with (checks_dir / "summary.json").open("w", encoding="utf-8") as f:
@@ -149,11 +183,23 @@ def run_split_safety_checks(
     print(f"[safety] overlapping files between {split_a_name}/{split_b_name}: {len(overlap)}")
     if overlap:
         print(f"[safety] overlap sample: {overlap[:5]}")
+    print(
+        f"[safety] duplicate content hashes between {split_a_name}/{split_b_name}: "
+        f"{len(duplicate_hashes)}"
+    )
+    if missing_files:
+        print(f"[safety][warning] missing/unreadable files: {len(set(missing_files))}")
     print(f"[safety] saved artifacts under: {checks_dir}")
 
     if fail_on_overlap and overlap:
         raise ValueError(
             f"Safety check failed: {len(overlap)} overlapping files between "
+            f"{split_a_name} and {split_b_name}. See {checks_dir / 'summary.json'}"
+        )
+
+    if check_content_hashes and duplicate_hashes:
+        raise ValueError(
+            f"Safety check failed: {len(duplicate_hashes)} duplicate image content hashes between "
             f"{split_a_name} and {split_b_name}. See {checks_dir / 'summary.json'}"
         )
 

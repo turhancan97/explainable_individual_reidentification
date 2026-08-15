@@ -16,4 +16,8 @@ conda init bash
 source /shared/results/common/kargin/tck_miniconda3/etc/profile.d/conda.sh
 conda activate ex-reid
 
-python train/probe.py
+python train/probe.py \
+        benchmark.method=vismatch \
+        benchmark.methods.vismatch.matcher=rdd-lightglue \
+        benchmark.methods.vismatch.checkpoint_source=custom \
+        benchmark.methods.vismatch.checkpoint_path=/shared/sets/datasets/confidential/lynx/checkpoints/contrastive-finetuning/matches-lg-wandb/epoch_30
