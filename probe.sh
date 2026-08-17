@@ -3,7 +3,7 @@
 #SBATCH --gpus=1
 #SBATCH --qos=batch
 #SBATCH --cpus-per-task=10
-#SBATCH --mem=64G
+#SBATCH --mem=256G
 #SBATCH --ntasks=1
 #SBATCH --exclude=c22
 #SBATCH --job-name=probe_reid
@@ -18,6 +18,7 @@ conda activate ex-reid
 
 python train/probe.py \
         benchmark.method=vismatch \
-        benchmark.methods.vismatch.matcher=rdd-lightglue \
+        benchmark.methods.vismatch.matcher=loma \
         benchmark.methods.vismatch.checkpoint_source=custom \
-        benchmark.methods.vismatch.checkpoint_path=/shared/sets/datasets/confidential/lynx/checkpoints/contrastive-finetuning/matches-lg-wandb/epoch_30
+        benchmark.methods.vismatch.checkpoint_path=/shared/sets/datasets/confidential/lynx/checkpoints/contrastive-finetuning/loma-b-wandb/epoch_110/model.safetensors \
+        benchmark.methods.vismatch.checkpoint_components=matcher_only

@@ -29,6 +29,10 @@ benchmark:
   method: "vismatch"  # cosine | wildfusion | local_lightglue | linear_probe | efficient_probe | vismatch
   top_k: [1, 5, 10]
   compute_map: true
+  # Evaluation cutoff for mAP_at_k / rerank_mAP_at_k / recall_at_k. Must not exceed
+  # the Vismatch shortlist (methods.vismatch.candidate_k); keep it equal to the
+  # shipped shortlist size so shortlist and full-matrix methods stay comparable.
+  map_at_k: 100
   calibration:
     exclude_self_pairs: true
     official_same_set: false
@@ -106,7 +110,7 @@ benchmark:
       loma_arch: "LoMa-B" # LoMa-B, LoMa-L, LoMa-G, LoMa-B128, LoMa-R
       device: "auto"            # auto | cpu | cuda
       path_col: "path"
-      resize_max: 448
+      resize_max: 512
       top_k: 512
       matcher_threshold: null  # profile default: 0.01 for RDD/LightGlue, 0.10 for LoMa
       feature_matching_mode: "feature_level"  # feature_level | pairwise (diagnostics only)

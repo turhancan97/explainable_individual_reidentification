@@ -112,6 +112,27 @@ def save_full_checkpoint(
     torch.save(state, path)
 
 
+def validate_resume_epochs(start_epoch: int, total_epochs: int, resume_path: Any) -> None:
+    """Reject a resume that has no epochs left to run.
+
+    A full checkpoint resumes at the epoch after the one it stored, so a checkpoint
+    from a finished run leaves the training range empty. Training then silently
+    produces no epochs while still writing final checkpoints and a completed manifest,
+    which is almost always an unraised `train.epochs`. Failing here keeps that
+    mistake visible instead of emitting a zero-epoch run.
+    """
+    start_epoch = int(start_epoch)
+    total_epochs = int(total_epochs)
+    if start_epoch < total_epochs:
+        return
+    raise ValueError(
+        f"Resume checkpoint '{resume_path}' already completed {start_epoch} epochs, but "
+        f"train.epochs is {total_epochs}, so there is nothing left to train. Set "
+        f"train.epochs above {start_epoch} to continue training, or run train/probe.py "
+        "to evaluate the checkpoint."
+    )
+
+
 def load_full_checkpoint(
     path: Path,
     model: Any,
