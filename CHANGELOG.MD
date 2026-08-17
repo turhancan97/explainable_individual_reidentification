@@ -209,6 +209,25 @@ kept under Unreleased until a project version is assigned.
 
 ### Known Issues
 
+- Decided on 2026-08-17 to record the results of a second audit pass as known issues and
+  defer the fixes. Full symptoms, reproductions, and measured impact are under
+  "Known issues (open)" in AGENTS.md; the actionable items are also on the future-work
+  checklist. Summary of what is open:
+  - `scripts/summarize_runs.py --sort-by` raises `TypeError` on the shipped
+    `reports/runs.csv`, because `sort_run_rows` mixes float and string sort keys and 11 of
+    23 rows have an empty `top_1`. The command documented in README fails today.
+  - The same sorter leaves rows unordered when a value is `NaN` and reports no error, which
+    became reachable once `mAP` started reporting `nan` for shortlist-constrained methods.
+  - Both probes allocate an unused `11924 x 27836` similarity matrix each epoch, and
+    recompute full image-level retrieval metrics each epoch: about 1 minute and 2.7 GB of
+    transient allocation per epoch, roughly 50 minutes at the shipped `epochs: 50`. This
+    was previously unreachable because the probes crashed at epoch 1.
+  - Probe per-epoch validation runs on the query/test split. Reported metrics are
+    unaffected because they come from the post-loop final-epoch evaluation with no
+    best-epoch selection, but per-epoch test curves invite selection on test.
+  - Vismatch qualitative top-1 selection lacks an all-unscored guard;
+    `_predict_class_probabilities` runs under grad during probe training; and
+    `_to_hwc_uint8` would blacken float images if a transform ever preceded the dataset view.
 - New visualization contact sheets require Pillow-readable image files and are omitted when no images are available.
 - Historical `results/`, `benchmark_runs/`, and top-level visualization artifacts are intentionally not migrated.
 - Probe and finetune no longer accept the legacy argparse flags or `--config`; existing scripts must use Hydra dotlist overrides.

@@ -168,6 +168,59 @@ in requirements.txt. Backbone weights may require network access on first use.
 Hydra is pinned to `hydra-core==1.3.2`; Vismatch is pinned to commit 4a743b75749a3770af59d275483ed341dea51ff0 and downloads matcher weights on first use. The shared ex-reid environment must have an importable, non-broken Vismatch installation; it must not depend on a missing editable checkout.
 Default paths are specific to the original shared compute environment.
 
+## Known issues (open)
+
+Audited on 2026-08-17 and deliberately deferred. Each entry records the symptom, a
+reproduction, and the measured impact so it can be picked up without re-investigation.
+
+- **`sort_run_rows` raises `TypeError` on the shipped run index.**
+  `reid/reporting/summary.py:86` returns a float when a cell parses and a string when it
+  does not, so a column that is numeric in some rows and empty in others cannot be sorted.
+  `reports/runs.csv` currently has 23 rows, 11 with an empty `top_1` from failed runs.
+  Reproduce with the documented command
+  `python scripts/summarize_runs.py --sort-by top_1 --format markdown`, which fails today.
+  Fix by coercing unparseable cells to a sentinel that orders consistently.
+
+- **`sort_run_rows` silently mis-sorts when a value is `NaN`.**
+  Same function. NaN comparisons are all false, so the sort leaves rows in place and
+  returns output that looks sorted but is not: `[0.5, nan, 0.9, 0.1]` comes back
+  unchanged. This became reachable when `mAP` started reporting `nan` for
+  shortlist-constrained methods, so sorting runs by `mAP` now yields a meaningless order
+  with no error. Sort NaN to the end explicitly.
+
+- **Dead 1.33 GB allocation per probe epoch.**
+  `reid/engine/probe_runner.py:913` and `:1129` assign `similarity_epoch` and never read
+  it. At CzechLynx scale that is an `11924 x 27836` float32 matrix built and discarded
+  every epoch in both `linear_probe` and `efficient_probe`. Delete the statement.
+
+- **Per-epoch image-level metrics dominate probe runtime.**
+  `_probe_retrieval_metrics` rebuilds the same `11924 x 27836` matrix and ranks it in full
+  every epoch: measured about 1 minute and 2.7 GB of transient allocation per epoch, so
+  roughly 50 minutes at the shipped `epochs: 50`. Previously invisible because both probes
+  crashed at epoch 1. Restrict the per-epoch call to identity-level metrics and compute the
+  `image_*` diagnostics once after training.
+
+- **Probe per-epoch validation uses the query/test split.**
+  `run_linear_probe` and `run_efficient_probe` build their `[*][val]` loader from
+  `dataset_query`, logging test loss and test metrics every epoch. Reported metrics are not
+  affected: they come from the post-loop evaluation of the final-epoch model, and no
+  best-epoch selection occurs. The hazard is downstream, since per-epoch test curves in
+  W&B invite epoch or hyperparameter selection on the test split. Same class of limitation
+  as the finetune selection split.
+
+- **Vismatch qualitative top-1 can point at an unscored pair.**
+  When a query row is entirely `-inf`, `stable_rank_1d(...)[0]` returns database index 0
+  and a meaningless match image is drawn instead of the query being skipped.
+
+- **`_predict_class_probabilities` runs under grad during probe training.**
+  `reid/engine/probe_runner.py:875` builds a graph for the softmax and then detaches it.
+  Wasteful, not incorrect.
+
+- **`_to_hwc_uint8` would destroy float images.**
+  `reid/data/dataset_view.py:86` clips non-uint8 input to `{0, 1}` before masking. Not
+  triggered today because the base dataset yields PIL images, but it would silently blacken
+  inputs if a transform were ever applied before the view.
+
 ## Future-work checklist
 
 - [ ] Add optional integration tests with a fake/local backbone and synthetic images.
@@ -180,8 +233,15 @@ Default paths are specific to the original shared compute environment.
   sides of calibration.
 - [ ] Include mask metadata/content fingerprints in standard and Vismatch feature
   caches so mask edits invalidate features, not only image-file edits.
-- [ ] Route visualization rankings and Vismatch qualitative top-1 selection through
-  the shared stable ranking helper.
+- [x] Route visualization index rankings through the shared stable ranking helper;
+  `visualizations/index.csv` now uses `stable_rank_1d`. Vismatch qualitative top-1
+  selection still needs an all-unscored guard, tracked under Known issues.
+- [ ] Make `sort_run_rows` total: coerce unparseable cells and order `NaN` last, so
+  `scripts/summarize_runs.py --sort-by` works on mixed and gated metric columns.
+- [ ] Reduce probe per-epoch metric cost: drop the unused `similarity_epoch` allocation
+  and compute `image_*` diagnostics once after training rather than every epoch.
+- [ ] Give the probes a validation split distinct from the query/test split, or stop
+  logging per-epoch test metrics, so epoch and hyperparameter choices cannot use it.
 - [ ] Make legacy checkpoint discovery recursive for the existing nested no-manifest
   `results/<dataset>/<animal>/mask_<...>/run_<...>` layout.
 - [ ] Evaluate masking and Vismatch matcher settings separately for each animal dataset.
