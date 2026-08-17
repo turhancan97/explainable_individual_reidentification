@@ -14,7 +14,6 @@ import matplotlib.cm as cm
 import matplotlib.pyplot as plt
 import numpy as np
 import torch
-import torch.nn.functional as F
 from PIL import Image
 from pycocotools import mask as mask_utils
 from tqdm import tqdm
@@ -35,7 +34,13 @@ from reid.methods.vismatch_profiles import (
     build_matcher_profile,
     default_matcher_threshold,
     normalize_match_confidences,
+    profile_fingerprint,
     validate_matcher_name,
+)
+from reid.methods.vismatch_preprocessing import (
+    preprocess_vismatch_image,
+    to_rgb_float_tensor,
+    to_uint8_vismatch_image,
 )
 from reid.methods.vismatch_batching import (
     candidate_pair_count,
@@ -54,6 +59,21 @@ from reid.utils.io import ensure_file
 
 # Compatibility name for internal callers and saved feature semantics.
 FrameFeat = FrameFeatures
+
+
+@dataclass
+class PreparedImage:
+    """One image after Vismatch preprocessing.
+
+    Extraction previously preprocessed each image twice: once to learn its
+    matcher-native spatial shape for batch bucketing, and again inside extraction.
+    Carrying the prepared tensor keeps the resize to a single pass and lets pending
+    batch buckets hold the resized tensor instead of the full-resolution source.
+    """
+
+    tensor: torch.Tensor
+    source_size: Tuple[int, int]
+    processed_size: Tuple[int, int]
 
 
 @dataclass
@@ -123,6 +143,7 @@ class VismatchMatcherBackend:
         checkpoint_path: Optional[str | Path] = None,
         checkpoint_components: str = "auto",
         loma_arch: str = "LoMa-B",
+        resize_max: int = 512,
     ) -> None:
         matcher = validate_matcher_name(matcher)
         try:
@@ -137,6 +158,10 @@ class VismatchMatcherBackend:
         self.device = device
         self.top_k = int(top_k)
         self.threshold = float(threshold)
+        self.resize_max = int(resize_max)
+        if self.resize_max <= 0:
+            raise ValueError("Vismatch resize_max must be a positive target resolution")
+        self.preprocessing_divisor = 14 if matcher == "loma" else 32
         self.feature_matching_mode = str(feature_matching_mode)
         if self.feature_matching_mode == "pairwise":
             raise ValueError("pairwise Vismatch mode is diagnostics-only; use match_images() explicitly")
@@ -212,61 +237,57 @@ class VismatchMatcherBackend:
             self.extractor = self.model.extractor
             self.pair_matcher = self.model.matcher
 
-    @staticmethod
-    def _prepare_rdd(image: torch.Tensor) -> tuple[torch.Tensor, int, int, float, float]:
-        tensor = image[0] if image.ndim == 4 else image
-        height, width = (int(value) for value in tensor.shape[-2:])
-        processed_height = max(32, (height // 32) * 32)
-        processed_width = max(32, (width // 32) * 32)
-        prepared = F.interpolate(
-            tensor.unsqueeze(0),
-            size=(processed_height, processed_width),
-            mode="bilinear",
-            align_corners=False,
-        )
-        return prepared, height, width, height / processed_height, width / processed_width
+    def _prepare_input(self, image: torch.Tensor) -> tuple[torch.Tensor, tuple[int, int], tuple[int, int]]:
+        """Apply the shared Lynx-compatible Vismatch preprocessing exactly once."""
 
-    @staticmethod
-    def _prepare_loma(image: torch.Tensor) -> tuple[torch.Tensor, int, int, int, int]:
         tensor = image[0] if image.ndim == 4 else image
-        height, width = (int(value) for value in tensor.shape[-2:])
-        pad_height = (-height) % 14
-        pad_width = (-width) % 14
-        prepared = F.pad(tensor, (0, pad_width, 0, pad_height)).unsqueeze(0)
-        return prepared, height, width, height + pad_height, width + pad_width
+        processed, source_size, processed_size = preprocess_vismatch_image(
+            tensor,
+            self.resize_max,
+            divisible_by=self.preprocessing_divisor,
+        )
+        return processed.to(self.device).unsqueeze(0), source_size, processed_size
+
+    def prepare_image(self, image: torch.Tensor) -> PreparedImage:
+        """Run the shared preprocessing exactly once and retain its result."""
+
+        tensor, source_size, processed_size = self._prepare_input(image)
+        return PreparedImage(tensor, source_size, processed_size)
 
     def extract_frame(self, image: torch.Tensor) -> FrameFeatures:
-        image = image.to(self.device)
+        return self.extract_prepared(self.prepare_image(image))
+
+    @torch.no_grad()
+    def extract_prepared(self, image: PreparedImage) -> FrameFeatures:
+        prepared = image.tensor
+        source_height, source_width = image.source_size
+        processed_height, processed_width = image.processed_size
         if self.matcher_name == "rdd-lightglue":
-            prepared, height, width, height_scale, width_scale = self._prepare_rdd(image)
             output = self.extractor.extract(prepared)[0]
             keypoints = _drop_batch(output["keypoints"]).astype(np.float32, copy=False)
-            keypoints *= np.asarray([width_scale, height_scale], dtype=np.float32)
             descriptors = _drop_batch(output["descriptors"]).astype(np.float32, copy=False)
             raw_scores = output.get("scores", np.ones(keypoints.shape[0], dtype=np.float32))
             scores = _drop_batch(raw_scores).astype(np.float32, copy=False)
-            image_size = np.asarray([height, width], dtype=np.int32)
+            image_size = np.asarray([processed_height, processed_width], dtype=np.int32)
             coordinate_convention = "pixel"
-            original_image_size = image_size.copy()
+            original_image_size = np.asarray([source_height, source_width], dtype=np.int32)
         elif self.matcher_name == "loma":
-            prepared, height, width, padded_height, padded_width = self._prepare_loma(image)
             output = self.extractor.detect_and_describe(prepared, self.top_k)
             keypoints = _drop_batch(output[0]).astype(np.float32, copy=False)
             descriptors = _drop_batch(output[1]).astype(np.float32, copy=False)
             scores = np.ones(keypoints.shape[0], dtype=np.float32)
-            image_size = np.asarray([padded_height, padded_width], dtype=np.int32)
+            image_size = np.asarray([processed_height, processed_width], dtype=np.int32)
             coordinate_convention = "normalized[-1,1]"
-            original_image_size = np.asarray([height, width], dtype=np.int32)
+            original_image_size = np.asarray([source_height, source_width], dtype=np.int32)
         else:
-            tensor = image[0] if image.ndim == 4 else image
-            output = self.extractor.extract(tensor.unsqueeze(0))
+            output = self.extractor.extract(prepared)
             keypoints = _drop_batch(output["keypoints"]).astype(np.float32, copy=False)
             descriptors = _drop_batch(output["descriptors"]).astype(np.float32, copy=False)
             raw_scores = output.get("scores", output.get("keypoint_scores", np.ones(keypoints.shape[0])))
             scores = _drop_batch(raw_scores).astype(np.float32, copy=False)
-            image_size = np.asarray(tensor.shape[-2:], dtype=np.int32)
+            image_size = np.asarray([processed_height, processed_width], dtype=np.int32)
             coordinate_convention = "pixel"
-            original_image_size = image_size.copy()
+            original_image_size = np.asarray([source_height, source_width], dtype=np.int32)
         return FrameFeatures(
             keypoints=keypoints,
             descriptors=descriptors,
@@ -278,45 +299,27 @@ class VismatchMatcherBackend:
             original_image_size=original_image_size,
         )
 
-    def prepared_shape(self, image: torch.Tensor) -> tuple[int, int]:
-        """Return the matcher-native spatial shape used for safe extraction batches."""
-
-        if self.matcher_name == "rdd-lightglue":
-            return tuple(int(value) for value in self._prepare_rdd(image)[0].shape[-2:])
-        if self.matcher_name == "loma":
-            return tuple(int(value) for value in self._prepare_loma(image)[0].shape[-2:])
-        tensor = image[0] if image.ndim == 4 else image
-        return tuple(int(value) for value in tensor.shape[-2:])
-
     @torch.no_grad()
     def extract_frames_batch(self, images: List[torch.Tensor]) -> List[FrameFeatures]:
         """Extract a batch whose images share a matcher-native spatial shape."""
 
+        return self.extract_prepared_batch([self.prepare_image(image) for image in images])
+
+    @torch.no_grad()
+    def extract_prepared_batch(self, images: List[PreparedImage]) -> List[FrameFeatures]:
+        """Extract already-prepared images sharing a matcher-native spatial shape."""
+
         if not images:
             return []
         if len(images) == 1:
-            return [self.extract_frame(images[0])]
+            return [self.extract_prepared(images[0])]
+        if len({item.processed_size for item in images}) != 1:
+            return [self.extract_prepared(item) for item in images]
 
-        tensors = [image.to(self.device) for image in images]
-        prepared: List[torch.Tensor] = []
-        metadata: List[tuple[int, int, int, int]] = []
-        for tensor in tensors:
-            if self.matcher_name == "rdd-lightglue":
-                item, height, width, _height_scale, _width_scale = self._prepare_rdd(tensor)
-                prepared.append(item)
-                metadata.append((height, width, int(item.shape[-2]), int(item.shape[-1])))
-            elif self.matcher_name == "loma":
-                item, height, width, padded_height, padded_width = self._prepare_loma(tensor)
-                prepared.append(item)
-                metadata.append((height, width, padded_height, padded_width))
-            else:
-                item = tensor[0] if tensor.ndim == 4 else tensor
-                prepared.append(item.unsqueeze(0))
-                metadata.append((int(item.shape[-2]), int(item.shape[-1]), int(item.shape[-2]), int(item.shape[-1])))
-
-        if len({tuple(int(value) for value in item.shape[-2:]) for item in prepared}) != 1:
-            return [self.extract_frame(image) for image in images]
-        prepared_batch = torch.cat(prepared, dim=0)
+        metadata: List[tuple[int, int, int, int]] = [
+            (*item.source_size, *item.processed_size) for item in images
+        ]
+        prepared_batch = torch.cat([item.tensor for item in images], dim=0)
         batch_size = len(images)
         features: List[FrameFeatures] = []
 
@@ -324,23 +327,23 @@ class VismatchMatcherBackend:
             keypoints_batch, descriptors_batch, _height, _width = self.extractor.detect_and_describe(
                 prepared_batch, self.top_k
             )
-            for index, (height, width, padded_height, padded_width) in enumerate(metadata):
+            for index, (source_height, source_width, processed_height, processed_width) in enumerate(metadata):
                 keypoints = _as_numpy(_batch_item(keypoints_batch, index, batch_size)).astype(np.float32, copy=False)
                 descriptors = _as_numpy(_batch_item(descriptors_batch, index, batch_size)).astype(np.float32, copy=False)
                 features.append(FrameFeatures(
                     keypoints=keypoints,
                     descriptors=descriptors,
                     scores=np.ones(keypoints.shape[0], dtype=np.float32),
-                    image_size=np.asarray([padded_height, padded_width], dtype=np.int32),
+                    image_size=np.asarray([processed_height, processed_width], dtype=np.int32),
                     schema_version=FEATURE_SCHEMA_VERSION,
                     coordinate_convention="normalized[-1,1]",
                     image_size_convention="hw",
-                    original_image_size=np.asarray([height, width], dtype=np.int32),
+                    original_image_size=np.asarray([source_height, source_width], dtype=np.int32),
                 ))
             return features
 
         outputs = self.extractor.extract(prepared_batch)
-        for index, (height, width, _prepared_height, _prepared_width) in enumerate(metadata):
+        for index, (source_height, source_width, processed_height, processed_width) in enumerate(metadata):
             if isinstance(outputs, (list, tuple)):
                 output = outputs[index]
             else:
@@ -349,10 +352,7 @@ class VismatchMatcherBackend:
             descriptors = _as_numpy(output["descriptors"]).astype(np.float32, copy=False)
             raw_scores = output.get("scores", output.get("keypoint_scores", np.ones(keypoints.shape[0])))
             scores = _as_numpy(raw_scores).astype(np.float32, copy=False)
-            if self.matcher_name == "rdd-lightglue":
-                _prepared, _h, _w, height_scale, width_scale = self._prepare_rdd(tensors[index])
-                keypoints = keypoints * np.asarray([width_scale, height_scale], dtype=np.float32)
-            image_size = np.asarray([height, width], dtype=np.int32)
+            image_size = np.asarray([processed_height, processed_width], dtype=np.int32)
             features.append(FrameFeatures(
                 keypoints=keypoints,
                 descriptors=descriptors,
@@ -361,7 +361,7 @@ class VismatchMatcherBackend:
                 schema_version=FEATURE_SCHEMA_VERSION,
                 coordinate_convention="pixel",
                 image_size_convention="hw",
-                original_image_size=image_size.copy(),
+                original_image_size=np.asarray([source_height, source_width], dtype=np.int32),
             ))
         return features
 
@@ -598,28 +598,10 @@ class VismatchMatcherBackend:
         result = self.match_features(left, right)
         return result.score, result.match_count
 
-def _to_image_tensor(image: Any, resize_max: int) -> torch.Tensor:
-    if isinstance(image, Image.Image):
-        img = image.convert("RGB")
-    elif torch.is_tensor(image):
-        arr = image.detach().cpu().numpy()
-        if arr.ndim == 3 and arr.shape[0] in (1, 3, 4):
-            arr = np.transpose(arr, (1, 2, 0))
-        arr = np.clip(arr, 0, 255).astype(np.uint8)
-        img = Image.fromarray(arr).convert("RGB")
-    else:
-        arr = np.asarray(image)
-        arr = np.clip(arr, 0, 255).astype(np.uint8)
-        img = Image.fromarray(arr).convert("RGB")
+def _to_image_tensor(image: Any) -> torch.Tensor:
+    """Convert one raw image to an RGB float tensor; resizing happens in the backend."""
 
-    if resize_max and resize_max > 0:
-        w, h = img.size
-        scale = float(resize_max) / float(max(w, h))
-        if scale < 1.0:
-            img = img.resize((int(w * scale), int(h * scale)), Image.BILINEAR)
-
-    arr = np.asarray(img).astype(np.float32) / 255.0
-    return torch.from_numpy(arr).permute(2, 0, 1).unsqueeze(0)
+    return to_rgb_float_tensor(image)
 
 
 def _to_uint8_rgb(
@@ -627,44 +609,10 @@ def _to_uint8_rgb(
     resize_max: int,
     mean: Optional[Tuple[float, ...]] = None,
     std: Optional[Tuple[float, ...]] = None,
+    divisible_by: int = 32,
 ) -> np.ndarray:
-    if isinstance(image, Image.Image):
-        img = image.convert("RGB")
-    elif torch.is_tensor(image):
-        arr = image.detach().cpu().numpy()
-        if arr.ndim == 3 and arr.shape[0] in (1, 3, 4):
-            arr = np.transpose(arr, (1, 2, 0))
-        if np.issubdtype(arr.dtype, np.floating):
-            if arr.min() >= 0.0 and arr.max() <= 1.0:
-                arr = arr * 255.0
-            elif mean is not None and std is not None and arr.ndim == 3 and arr.shape[2] >= 3:
-                mean_np = np.asarray(mean, dtype=np.float32).reshape(1, 1, -1)
-                std_np = np.asarray(std, dtype=np.float32).reshape(1, 1, -1)
-                arr = arr[..., :3] * std_np + mean_np
-                arr = np.clip(arr, 0.0, 1.0) * 255.0
-            elif arr.max() <= 5.0 and arr.min() >= -5.0:
-                # Fallback for normalized tensors when explicit stats are unavailable.
-                arr_min = float(arr.min())
-                arr_max = float(arr.max())
-                if arr_max > arr_min:
-                    arr = (arr - arr_min) / (arr_max - arr_min) * 255.0
-                else:
-                    arr = np.zeros_like(arr)
-        arr = np.clip(arr, 0, 255).astype(np.uint8)
-        img = Image.fromarray(arr).convert("RGB")
-    else:
-        arr = np.asarray(image)
-        if np.issubdtype(arr.dtype, np.floating) and arr.min() >= 0.0 and arr.max() <= 1.0:
-            arr = arr * 255.0
-        arr = np.clip(arr, 0, 255).astype(np.uint8)
-        img = Image.fromarray(arr).convert("RGB")
-
-    if resize_max and resize_max > 0:
-        w, h = img.size
-        scale = float(resize_max) / float(max(w, h))
-        if scale < 1.0:
-            img = img.resize((int(w * scale), int(h * scale)), Image.BILINEAR)
-    return np.asarray(img)
+    del mean, std
+    return to_uint8_vismatch_image(image, resize_max, divisible_by=divisible_by)
 
 
 def _cache_key(
@@ -797,17 +745,22 @@ def _score_pair(backend: VismatchMatcherBackend, fa: FrameFeatures, fb: FrameFea
 
 
 @torch.no_grad()
-def _loma_points_to_pixel(points: np.ndarray, feat: FrameFeatures) -> np.ndarray:
+def _loma_points_to_processed_pixel(points: np.ndarray, feat: FrameFeatures) -> np.ndarray:
+    """Convert LoMa normalized points to the displayed processed-image space.
+
+    LoMa returns normalized coordinates. Match visualizations display the same
+    matcher-preprocessed images used for extraction, so points must remain in
+    ``feat.image_size`` coordinates rather than being scaled back to the raw
+    source image dimensions. LoMa follows the COLMAP pixel-center convention;
+    the Vismatch wrapper subtracts this half-pixel offset after conversion.
+    """
+
     if points.size == 0:
         return np.empty((0, 2), dtype=np.float32)
     processed_height, processed_width = (float(value) for value in feat.image_size)
-    original_size = feat.original_image_size if feat.original_image_size is not None else feat.image_size
-    original_height, original_width = (float(value) for value in original_size)
     pixel = points.astype(np.float32, copy=True)
-    pixel[:, 0] = processed_width * (pixel[:, 0] + 1.0) / 2.0
-    pixel[:, 1] = processed_height * (pixel[:, 1] + 1.0) / 2.0
-    pixel[:, 0] *= original_width / processed_width
-    pixel[:, 1] *= original_height / processed_height
+    pixel[:, 0] = processed_width * (pixel[:, 0] + 1.0) / 2.0 - 0.5
+    pixel[:, 1] = processed_height * (pixel[:, 1] + 1.0) / 2.0 - 0.5
     return pixel
 
 
@@ -816,8 +769,8 @@ def _match_frames(backend: VismatchMatcherBackend, fa: FrameFeatures, fb: FrameF
     mkpts0 = result.matched_kpts0 if result.matched_kpts0 is not None else np.empty((0, 2), dtype=np.float32)
     mkpts1 = result.matched_kpts1 if result.matched_kpts1 is not None else np.empty((0, 2), dtype=np.float32)
     if backend.matcher_name == "loma":
-        mkpts0 = _loma_points_to_pixel(mkpts0, fa)
-        mkpts1 = _loma_points_to_pixel(mkpts1, fb)
+        mkpts0 = _loma_points_to_processed_pixel(mkpts0, fa)
+        mkpts1 = _loma_points_to_processed_pixel(mkpts1, fb)
     confidence = result.confidences if result.confidences is not None else np.asarray([], dtype=np.float32)
     return mkpts0, mkpts1, confidence
 
@@ -936,11 +889,11 @@ def _extract_split_features(
         raise ValueError("vismatch extract_batch_size must be > 0")
 
     features: List[Optional[FrameFeat]] = [None] * len(dataset)
-    pending: Dict[tuple[int, int], List[Tuple[int, torch.Tensor, Path]]] = {}
+    pending: Dict[tuple[int, int], List[Tuple[int, PreparedImage, Path]]] = {}
     backend.batch_diagnostics["configured_extract_batch_size"] = int(extract_batch_size)
 
     def store_batch(
-        entries: Sequence[Tuple[int, torch.Tensor, Path]],
+        entries: Sequence[Tuple[int, PreparedImage, Path]],
         extracted: Sequence[FrameFeat],
         effective_size: int,
     ) -> None:
@@ -955,17 +908,17 @@ def _extract_split_features(
             features[index] = feature
             _save_cached_feat(cache_path, feature)
 
-    def process_entries(entries: Sequence[Tuple[int, torch.Tensor, Path]]) -> None:
+    def process_entries(entries: Sequence[Tuple[int, PreparedImage, Path]]) -> None:
         if not entries:
             return
         if batch_mode == "serial":
             for entry in entries:
-                store_batch([entry], [backend.extract_frame(entry[1])], 1)
+                store_batch([entry], [backend.extract_prepared(entry[1])], 1)
             return
 
-        def process_batch(current: Sequence[Tuple[int, torch.Tensor, Path]]) -> Tuple[List[Tuple[int, torch.Tensor, Path]], List[FrameFeat]]:
+        def process_batch(current: Sequence[Tuple[int, PreparedImage, Path]]) -> Tuple[List[Tuple[int, PreparedImage, Path]], List[FrameFeat]]:
             current_list = list(current)
-            return current_list, backend.extract_frames_batch([item[1] for item in current_list])
+            return current_list, backend.extract_prepared_batch([item[1] for item in current_list])
 
         for (processed_entries, extracted), effective_size in run_with_batch_backoff(
             list(entries),
@@ -1000,13 +953,16 @@ def _extract_split_features(
             no_background=no_background,
             mask_col=mask_col,
         )
-        image_tensor = _to_image_tensor(image=image, resize_max=resize_max)
+        image_tensor = _to_image_tensor(image=image)
+        # Preprocess once here: the prepared tensor supplies the bucketing shape and is
+        # reused by extraction, and buckets then retain the resized tensor rather than
+        # the full-resolution source.
+        prepared_image = backend.prepare_image(image_tensor)
         if batch_mode == "serial":
-            process_entries([(idx, image_tensor, cache_path)])
+            process_entries([(idx, prepared_image, cache_path)])
             continue
-        shape_key = backend.prepared_shape(image_tensor)
-        bucket = pending.setdefault(shape_key, [])
-        bucket.append((idx, image_tensor, cache_path))
+        bucket = pending.setdefault(prepared_image.processed_size, [])
+        bucket.append((idx, prepared_image, cache_path))
         if len(bucket) >= extract_batch_size:
             process_entries(bucket[:extract_batch_size])
             del bucket[:extract_batch_size]
@@ -1041,6 +997,8 @@ def run_vismatch_benchmark(
     device = _choose_vismatch_device(str(settings.device))
     top_k = int(settings.top_k)
     resize_max = int(settings.resize_max)
+    if resize_max <= 0:
+        raise ValueError("benchmark.methods.vismatch.resize_max must be a positive target resolution")
     configured_threshold = getattr(settings, "matcher_threshold", None)
     threshold = (
         default_matcher_threshold(matcher_name)
@@ -1078,6 +1036,7 @@ def run_vismatch_benchmark(
             f"checkpoint_source={checkpoint_source}|checkpoint_path={requested_checkpoint_path}|"
             f"checkpoint_components={checkpoint_components}|loma_arch={loma_arch}|"
             f"top_k={top_k}|resize_max={resize_max}|threshold={threshold}|no_bg={no_background}|"
+            f"preprocessing={profile.preprocessing_version}|profile={profile_fingerprint(profile)}|"
             f"dataset_identity={json.dumps(dataset_identity, sort_keys=True)}|"
             f"path_col={path_col}|mask_col={mask_col}|feature_matching_mode={feature_matching_mode}|schema={FEATURE_SCHEMA_VERSION}"
         ).encode("utf-8")
@@ -1100,6 +1059,7 @@ def run_vismatch_benchmark(
         checkpoint_path=requested_checkpoint_path,
         checkpoint_components=checkpoint_components,
         loma_arch=loma_arch,
+        resize_max=resize_max,
     )
     cfg_tag = hashlib.sha256(
         f"{cfg_tag}|matcher_weights={backend.weight_fingerprint}|checkpoint_resolution={backend.checkpoint_resolution.fingerprint}".encode("utf-8")
@@ -1205,8 +1165,14 @@ def run_vismatch_benchmark(
             db_row = dataset_database.df.iloc[db_idx]
             q_img = _load_raw_rgb_image(q_row, q_idx_int, dataset_root, path_col, no_background, mask_col)
             db_img = _load_raw_rgb_image(db_row, db_idx, dataset_root, path_col, no_background, mask_col)
-            q_vis = _to_uint8_rgb(q_img, resize_max=resize_max, mean=mean, std=std)
-            db_vis = _to_uint8_rgb(db_img, resize_max=resize_max, mean=mean, std=std)
+            q_vis = _to_uint8_rgb(
+                q_img, resize_max=resize_max, mean=mean, std=std,
+                divisible_by=backend.preprocessing_divisor,
+            )
+            db_vis = _to_uint8_rgb(
+                db_img, resize_max=resize_max, mean=mean, std=std,
+                divisible_by=backend.preprocessing_divisor,
+            )
             mkpts0, mkpts1, conf = _match_frames(backend, query_feats[q_idx_int], db_feats[db_idx])
             q_label = str(dataset_query.df.iloc[q_idx_int][cfg.dataset.label_col])
             db_label = str(dataset_database.df.iloc[db_idx][cfg.dataset.label_col])
@@ -1236,4 +1202,5 @@ def run_vismatch_benchmark(
     database_labels = dataset_database.df[cfg.dataset.label_col].to_numpy()
     method_metrics.update(candidate_recall_metrics(query_labels, database_labels, candidate_indices))
     method_metrics["vismatch_cache_fingerprint"] = cfg_tag
+    method_metrics["vismatch_preprocessing_version"] = profile.preprocessing_version
     return similarity, timings, method_metrics

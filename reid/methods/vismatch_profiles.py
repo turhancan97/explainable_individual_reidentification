@@ -8,7 +8,9 @@ import numpy as np
 from typing import Iterable
 
 VISMATCH_COMMIT = "4a743b75749a3770af59d275483ed341dea51ff0"
-FEATURE_SCHEMA_VERSION = 2
+VISMATCH_PREPROCESSING_VERSION = "lynx_finetuning_v1"
+LOMA_PREPROCESSING_VERSION = "lynx_loma_finetuning_v1"
+FEATURE_SCHEMA_VERSION = 3
 SUPPORTED_VISMATCH_MATCHERS = (
     "rdd-lightglue",
     "aliked-lightglue",
@@ -69,6 +71,7 @@ class MatcherProfile:
     score_mode: str
     feature_matching_mode: str = "feature_level"
     feature_schema_version: int = FEATURE_SCHEMA_VERSION
+    preprocessing_version: str = VISMATCH_PREPROCESSING_VERSION
 
 
 def validate_matcher_name(matcher: str) -> str:
@@ -88,12 +91,19 @@ def build_matcher_profile(matcher: str, top_k: int, threshold: float, feature_ma
     matcher = validate_matcher_name(matcher)
     if feature_matching_mode not in {"feature_level", "pairwise"}:
         raise ValueError("feature_matching_mode must be 'feature_level' or 'pairwise'")
-    preprocessing = "RGB float32 [0,1]; longest-side resize"
+    preprocessing = (
+        "RGB float32 [0,1]; Lynx fine-tuning tensor resize; target long side; "
+        "floor each spatial dimension to a multiple of 32; bilinear align_corners=False"
+    )
+    preprocessing_version = VISMATCH_PREPROCESSING_VERSION
     score_mode = "matched_confidence_sum_over_min_keypoints"
-    if matcher == "rdd-lightglue":
-        preprocessing += "; floor each spatial dimension to a multiple of 32; rescale keypoints"
-    elif matcher == "loma":
-        preprocessing += "; right/bottom pad each spatial dimension to a multiple of 14"
+    if matcher == "loma":
+        preprocessing = (
+            "RGB float32 [0,1]; LoMa fine-tuning tensor resize; target long side; "
+            "floor each spatial dimension to a multiple of 14 for DINOv2-L/14; "
+            "bilinear align_corners=False"
+        )
+        preprocessing_version = LOMA_PREPROCESSING_VERSION
         score_mode = "mutual_confidence_sum_over_min_keypoints"
     return MatcherProfile(
         matcher=matcher,
@@ -104,6 +114,7 @@ def build_matcher_profile(matcher: str, top_k: int, threshold: float, feature_ma
         threshold=float(threshold),
         score_mode=score_mode,
         feature_matching_mode=feature_matching_mode,
+        preprocessing_version=preprocessing_version,
     )
 
 

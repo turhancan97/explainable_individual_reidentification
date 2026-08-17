@@ -44,8 +44,11 @@ class VismatchBatchingTests(unittest.TestCase):
                 }
 
             @staticmethod
-            def prepared_shape(image):
-                return tuple(image.shape[-2:])
+            def prepare_image(image):
+                shape = tuple(int(value) for value in image.shape[-2:])
+                return vismatch_module.PreparedImage(
+                    tensor=image.unsqueeze(0), source_size=shape, processed_size=shape
+                )
 
             @staticmethod
             def _feature():
@@ -56,10 +59,10 @@ class VismatchBatchingTests(unittest.TestCase):
                     image_size=np.asarray([16, 16], dtype=np.int32),
                 )
 
-            def extract_frames_batch(self, images):
+            def extract_prepared_batch(self, images):
                 return [self._feature() for _image in images]
 
-            def extract_frame(self, image):
+            def extract_prepared(self, image):
                 return self._feature()
 
         backend = FakeBackend()

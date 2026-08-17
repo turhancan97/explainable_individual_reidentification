@@ -280,6 +280,7 @@ class VismatchProfileTests(unittest.TestCase):
         self.assertNotEqual(profile_fingerprint(rdd), profile_fingerprint(aliked))
         self.assertNotEqual(profile_fingerprint(rdd), profile_fingerprint(loma))
         self.assertIn("multiple of 14", loma.preprocessing)
+        self.assertEqual(loma.preprocessing_version, "lynx_loma_finetuning_v1")
         self.assertEqual(loma.score_mode, "mutual_confidence_sum_over_min_keypoints")
         self.assertNotEqual(
             profile_fingerprint(rdd),
