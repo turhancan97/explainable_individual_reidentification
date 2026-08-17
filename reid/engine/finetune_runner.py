@@ -24,13 +24,18 @@ from reid.training.results import build_final_training_metrics
 from reid.data.dataset_view import BenchmarkDatasetView
 from reid.evaluation.metrics import compute_metrics
 from reid.features.containers import FeatureContainer, get_labels_string, normalize_features
-from reid.training.checkpointing import load_full_checkpoint, save_full_checkpoint
+from reid.training.checkpointing import (
+    load_full_checkpoint,
+    save_full_checkpoint,
+    validate_resume_epochs,
+)
 from reid.training.accumulation import (
     accumulation_group_size,
     should_step_accumulated_gradients,
 )
 from reid.reporting.artifacts import build_run_context, run_index_row, upsert_run_index
 from reid.utils.cache_identity import build_dataset_cache_identity
+from reid.utils.fingerprints import file_digest_cache
 from reid.utils.io import append_csv_row, ensure_dir, ensure_file, update_csv_rows
 from reid.utils.repro import set_reproducible
 
@@ -127,7 +132,9 @@ def evaluate(
 def run_finetune(cfg: DictConfig) -> None:
     reporting_enabled = bool(getattr(cfg, "reporting", {}).get("enabled", False))
     if not reporting_enabled:
-        return _run_finetune(cfg, None)
+        # The dataset is read-only for the duration of a run, so hash each file once.
+        with file_digest_cache():
+            return _run_finetune(cfg, None)
 
     context = build_run_context(cfg, "finetune", run_started=datetime.utcnow())
     context.write_config(cfg)
@@ -144,7 +151,8 @@ def run_finetune(cfg: DictConfig) -> None:
         status="running",
     )
     try:
-        return _run_finetune(cfg, context)
+        with file_digest_cache():
+            return _run_finetune(cfg, context)
     except Exception as exc:
         context.write_manifest(
             {
@@ -218,7 +226,6 @@ def _run_finetune(cfg: DictConfig, context: Any) -> None:
             run_dir=output_folder,
             fail_on_overlap=True,
             require_b_labels_in_a=False,
-            warn_only_unseen=True,
         )
 
     model, embedding_size, mean, std, img_size, arch, patch_size, number_of_patches = get_model(cfg.model.type)
@@ -293,12 +300,14 @@ def _run_finetune(cfg: DictConfig, context: Any) -> None:
         resume_path = Path(cfg.train.resume_checkpoint)
         ensure_file(resume_path, "Resume checkpoint")
         start_epoch = load_full_checkpoint(resume_path, model, objective, optimizer, scheduler, scaler)
+        validate_resume_epochs(start_epoch, int(cfg.train.epochs), resume_path)
 
     best_metric_name = str(cfg.output.best_metric)
     best_metric_value = -float("inf")
     best_epoch = 0
     best_metrics: Dict[str, float] = {}
     final_epoch_metrics: Dict[str, float] = {}
+    metrics: Dict[str, float] = {}
 
     train_loader = DataLoader(
         dataset_train,

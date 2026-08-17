@@ -30,8 +30,8 @@ from models.model import get_model
 from models.objective import SoftmaxLoss, SoftmaxLossEP
 from reid.data.safety_checks import run_split_safety_checks
 from reid.data.dataset_view import BenchmarkDatasetView
-from reid.evaluation.candidate_scoring import candidate_recall_metrics
-from reid.evaluation.metrics import compute_identity_metrics, compute_metrics
+from reid.evaluation.candidate_scoring import candidate_recall_metrics, save_score_matrix
+from reid.evaluation.metrics import DEFAULT_MAP_AT_K, compute_identity_metrics, compute_metrics
 from reid.evaluation.ranking import stable_rank_indices
 from reid.features.containers import FeatureContainer, get_labels_string
 from reid.methods.vismatch import run_vismatch_benchmark
@@ -41,7 +41,7 @@ from reid.reporting.visualizations import finalize_visualizations
 from reid.training.accumulation import accumulation_group_size, should_step_accumulated_gradients
 from reid.training.checkpointing import resolve_configured_model_checkpoint, resolve_model_checkpoint
 from reid.utils.cache_identity import build_dataset_cache_identity
-from reid.utils.fingerprints import model_fingerprint, sha256_file
+from reid.utils.fingerprints import file_digest_cache, model_fingerprint, sha256_file
 from reid.utils.io import append_csv_row, ensure_dir, ensure_file
 from reid.utils.repro import set_reproducible
 
@@ -494,16 +494,27 @@ def _probe_retrieval_metrics(
     query_labels_idx: np.ndarray,
 ) -> Dict[str, float]:
     """Return identity-level metrics plus image-level diagnostic metrics."""
+    # `probs_query` has one column per identity, so an identity's score is already a
+    # single value: every database image of that identity maps to the same column.
+    # Selecting the identity columns directly is what the previous per-image maximum
+    # was reaching for, and it avoids indexing a 319-wide class axis with an
+    # image-length mask.
     identity_labels = np.unique(db_labels_idx)
-    identity_similarity = np.column_stack(
-        [np.max(probs_query[:, db_labels_idx == identity], axis=1) for identity in identity_labels]
-    )
+    if probs_query.ndim != 2:
+        raise ValueError(f"probs_query must be a two-dimensional array, got shape {probs_query.shape}")
+    if identity_labels.size and int(identity_labels.max()) >= probs_query.shape[1]:
+        raise ValueError(
+            f"Database identity index {int(identity_labels.max())} is outside the classifier's "
+            f"{probs_query.shape[1]} output classes; the label mapping and the head disagree."
+        )
+    identity_similarity = probs_query[:, identity_labels]
     primary = compute_identity_metrics(
         query_labels=query_labels_idx,
         identity_labels=identity_labels,
         similarity=identity_similarity,
         top_k_values=[int(k) for k in cfg.benchmark.top_k],
         compute_map=bool(cfg.benchmark.compute_map),
+        map_at_k=resolve_map_at_k(cfg),
     )
     diagnostic = compute_metrics(
         dataset_query=dataset_query,
@@ -511,6 +522,7 @@ def _probe_retrieval_metrics(
         similarity=_similarity_from_class_probs(probs_query, db_labels_idx),
         top_k_values=[int(k) for k in cfg.benchmark.top_k],
         compute_map=bool(cfg.benchmark.compute_map),
+        map_at_k=resolve_map_at_k(cfg),
     )
     return {**primary, **{f"image_{key}": value for key, value in diagnostic.items()}}
 
@@ -653,6 +665,36 @@ def _save_attention_overlay_grid(
     plt.savefig(out_path, dpi=150, bbox_inches="tight")
     plt.close()
     return str(out_path)
+
+
+def resolve_map_at_k(cfg: DictConfig) -> int:
+    """Return the evaluation cutoff shared by every retrieval metric."""
+    map_at_k = int(getattr(cfg.benchmark, "map_at_k", DEFAULT_MAP_AT_K))
+    if map_at_k <= 0:
+        raise ValueError("benchmark.map_at_k must be > 0")
+    return map_at_k
+
+
+def validate_evaluation_cutoffs(cfg: DictConfig, method: str) -> None:
+    """Fail fast when a metric cutoff would read unscored score-matrix positions.
+
+    Shortlist methods only score ``candidate_k`` database entries per query; every
+    other position stays ``-inf`` and is ordered by original database index. Any
+    cutoff beyond the shortlist would silently grade that tail, so the requested
+    ``top_k`` and ``map_at_k`` must both fit inside it.
+    """
+    if method != "vismatch":
+        return
+    candidate_k = int(cfg.benchmark.methods.vismatch.candidate_k)
+    cutoffs = {f"benchmark.top_k={int(k)}": int(k) for k in cfg.benchmark.top_k}
+    cutoffs[f"benchmark.map_at_k={resolve_map_at_k(cfg)}"] = resolve_map_at_k(cfg)
+    offending = sorted(name for name, value in cutoffs.items() if value > candidate_k)
+    if offending:
+        raise ValueError(
+            f"Evaluation cutoffs exceed the Vismatch shortlist (candidate_k={candidate_k}): "
+            f"{', '.join(offending)}. Metrics beyond the shortlist would rank unscored "
+            "database entries by original index. Raise candidate_k or lower the cutoffs."
+        )
 
 
 def make_cache_key(cfg: DictConfig, method: str, split_name: str, dataset_sig: str, checkpoint_path: Optional[Path], model_weight_fingerprint: Optional[str] = None) -> str:
@@ -1320,6 +1362,13 @@ def run_method(
         t_sim = time.perf_counter()
         similarity = _call_similarity(wildfusion, dataset_query, dataset_database, settings.B)
         timings["similarity_sec"] = time.perf_counter() - t_sim
+        # WildFusion refines only its top-B pairs with the local pipeline and keeps
+        # priority-pipeline scores elsewhere. Record the shortlist size so the
+        # refinement budget is auditable next to Vismatch's candidate_k.
+        method_metrics["wildfusion_B"] = float(settings.B)
+        method_metrics["wildfusion_refined_fraction"] = (
+            float(int(settings.B) / len(dataset_database)) if len(dataset_database) else float("nan")
+        )
 
     elif method == "local_lightglue":
         settings = cfg.benchmark.methods.local_lightglue
@@ -1382,7 +1431,7 @@ def run_method(
         candidate_k = min(candidate_k, len(dataset_database))
 
         t_stage_a = time.perf_counter()
-        stage_similarity, stage_timings, _ = run_method(
+        stage_similarity, stage_timings, stage_metrics = run_method(
             cfg=cfg,
             method=stage_a_method,
             model=model,
@@ -1425,6 +1474,12 @@ def run_method(
             method_artifacts=method_artifacts,
         )
         timings.update(vismatch_timings)
+        # `run_vismatch_benchmark` returns a fresh metrics dict, so Stage-A metrics are
+        # merged after it. Prefixing mirrors the Stage-A timing keys above and keeps the
+        # shortlist provenance of the Stage-A method, such as `wildfusion_B`, on the run.
+        # Values are not coerced: some metrics are string diagnostics.
+        for key, value in stage_metrics.items():
+            method_metrics[f"stage_a_{stage_a_method}_{key}"] = value
 
     else:
         raise ValueError(
@@ -1501,7 +1556,10 @@ def run_probe(cfg: DictConfig) -> None:
         status="running",
     )
     try:
-        return _run_probe(cfg, context)
+        # Safety checks, dataset digests, and Vismatch cache keys each hash every image.
+        # The dataset is read-only for the duration of a run, so hash each file once.
+        with file_digest_cache():
+            return _run_probe(cfg, context)
     except Exception as exc:
         context.write_manifest(
             {
@@ -1541,6 +1599,7 @@ def _run_probe(cfg: DictConfig, context: Any) -> None:
     run_id = context.run_id
     run_dir = context.run_dir
     run_dir.mkdir(parents=True, exist_ok=True)
+    validate_evaluation_cutoffs(cfg, method)
 
     dataset, dataset_database_raw, dataset_query_raw = load_dataset_splits(cfg)
     if bool(getattr(cfg, "safety_checks", {}).get("enabled", True)):
@@ -1559,7 +1618,6 @@ def _run_probe(cfg: DictConfig, context: Any) -> None:
             run_dir=run_dir,
             fail_on_overlap=True,
             require_b_labels_in_a=require_closed_set,
-            warn_only_unseen=not require_closed_set,
         )
 
     use_backbone = method != "vismatch"
@@ -1670,8 +1728,14 @@ def _run_probe(cfg: DictConfig, context: Any) -> None:
         similarity=similarity,
         top_k_values=top_k_values,
         compute_map=bool(cfg.benchmark.compute_map),
+        map_at_k=resolve_map_at_k(cfg),
     )
     metrics.update(method_metrics)
+    scores_path = save_score_matrix(run_dir / "scores.npz", similarity)
+    if scores_path is None:
+        print("[probe] score matrix too dense to persist; metrics cannot be recomputed offline")
+    else:
+        print(f"[probe] saved sparse score matrix: {scores_path}")
     elapsed_sec = time.perf_counter() - run_t0
     timings["total_run_sec"] = float(elapsed_sec)
     timings["total_run_min"] = float(elapsed_sec / 60.0)

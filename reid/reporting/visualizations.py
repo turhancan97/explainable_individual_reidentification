@@ -7,6 +7,7 @@ import re
 from pathlib import Path
 from typing import Any, Iterable, List, Mapping, Optional, Sequence, Tuple
 
+from reid.evaluation.ranking import stable_rank_1d
 from reid.reporting.artifacts import RunContext
 
 
@@ -48,7 +49,12 @@ def prediction_index_rows(
         query_index = _query_index_from_path(path)
         if query_index is None or query_index >= len(similarity):
             continue
-        ranked = similarity[query_index].argsort()[::-1][: int(top_k)]
+        # Must match the ranking used to draw the prediction grid and to compute the
+        # metrics. `argsort()[::-1]` reverses a stable ascending sort, which breaks ties
+        # in descending index order -- the opposite of the project-wide policy. On a
+        # shortlist matrix nearly every entry is a `-inf` tie, so the index would have
+        # described a different set of images than the grid it annotates.
+        ranked = stable_rank_1d(similarity[query_index])[: int(top_k)]
         query_label = _label(dataset_query, query_index, label_col)
         top1_correct = False
         for rank, database_index in enumerate(ranked, start=1):

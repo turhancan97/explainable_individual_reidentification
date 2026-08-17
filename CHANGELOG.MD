@@ -7,6 +7,19 @@ kept under Unreleased until a project version is assigned.
 
 ### Added
 
+- Added shortlist-safe retrieval metrics `mAP_at_k`, `rerank_mAP_at_k`, `recall_at_k`,
+  `num_queries_with_relevant_in_top_k`, and `score_coverage`, computed identically for
+  full-matrix and shortlist-constrained methods so matchers stay comparable.
+- Added `benchmark.map_at_k` (default `100`) as the shared evaluation cutoff, and a
+  startup validator that rejects any `top_k`/`map_at_k` larger than the Vismatch
+  `candidate_k` shortlist.
+- Added sparse score-matrix persistence (`scores.npz`, COO of finite entries) plus
+  `save_score_matrix`/`load_score_matrix`, so run metrics can be recomputed without
+  repeating a matcher run.
+- Added `wildfusion_B` and `wildfusion_refined_fraction` so the WildFusion refinement
+  budget is auditable next to Vismatch's `candidate_k`.
+- Added regression coverage for full-matrix mAP suppression, unscored-tail credit,
+  shortlist-reach versus ordering separation, and score-matrix round-tripping.
 - Added self-contained `experiments/` artifacts for new probe and finetune runs, including manifests, metrics, timings, training history, and a central `reports/runs.csv` index.
 - Added run-local visualization indexes, top-1/failure contact sheets, and `scripts/summarize_runs.py` for filtered Markdown/CSV reporting.
 - Added Hydra 1.3 configuration entrypoints and dependency-light composition tests for probe and finetuning.
@@ -35,6 +48,40 @@ kept under Unreleased until a project version is assigned.
 
 ### Changed
 
+- Changed Vismatch extraction to preprocess each image once. Batch bucketing called
+  `prepared_shape()`, which ran the full resize only to read the output shape, and
+  extraction then repeated it, costing a measured 8.6 minutes per 39,760-image run.
+  `prepare_image()` now returns a `PreparedImage` carrying the tensor and both sizes;
+  pending buckets hold that resized tensor instead of the full-resolution source, cutting
+  a sampled image from 18.0 MB to 3.2 MB. `prepared_shape` was removed, `extract_frame`
+  and `extract_frames_batch` remain as wrappers, and `extract_prepared` now runs under
+  `torch.no_grad()` to match the batched path. Features are bit-identical: verified
+  against the pre-refactor call sequence for single, same-shape batched, and mixed-shape
+  fallback extraction, so existing feature caches remain valid.
+- Changed probe and finetune runs to hash each file once instead of three times. Split
+  safety checks, `dataset_digest`, and the Vismatch `_cache_key` each read every image, so
+  a 39,760-image probe run performed three full SHA-256 passes. `file_digest_cache()` is an
+  explicit context manager wrapping a run, keyed on device/inode/size/mtime so the three
+  call sites share entries despite building paths differently. Digests are unchanged and
+  all cache identities are byte-identical; measured 20x on repeated hashing, saving roughly
+  7 minutes per run warm and around 16 minutes cold.
+- Decided against memoizing `sha256_file` process-wide: tmpfs reuses a single `st_mtime_ns`
+  across rapid same-size rewrites, so an implicit global cache could return a stale digest
+  and defeat the content-addressing these hashes exist to provide. Caching is therefore
+  opt-in and run-scoped, and unscoped calls re-read the file exactly as before.
+- Changed `mAP` and `mAP_eligible` to report `nan` unless every score-matrix position
+  carries a real score. On a shortlist matrix the `-inf` tail is ~99.6% of the row and is
+  ordered by original database index, so the previous value largely measured metadata row
+  adjacency: across Vismatch runs whose `top_1` spanned 0.360-0.412, `mAP` stayed inside
+  0.0463-0.0469, versus 0.0168 for a random ranking. Use `mAP_at_k` for those methods.
+- Decided that all retrieval metrics are truncated at a single shared cutoff rather than
+  ranking the full gallery. `top_k` already behaved this way, which is why it stayed
+  trustworthy while `mAP` did not; `mAP_at_k` makes the rest of the metric set consistent.
+  `mAP_at_k` divides by `min(relevant, k)` and remains end-to-end, while `rerank_mAP_at_k`
+  divides by the hits inside the scored top-k to isolate ordering from shortlist reach.
+- Recorded that historical `mAP` values in `reports/runs.csv` and existing run manifests
+  predate this gate and are not comparable across methods. They are not rewritten, and
+  they cannot be recomputed because those runs did not persist their score matrices.
 - Preserved historical generated artifacts and aggregate CSVs while routing future probe and finetune runs through the readable experiment layout.
 - Updated automatic checkpoint discovery to search modern finetune experiments before legacy results, without changing explicit-path priority or model-only safety.
 - Moved probe and finetune defaults to `conf/probe.yaml` and `conf/finetune.yaml`, making Hydra the primary single-run configuration interface.
@@ -53,8 +100,53 @@ kept under Unreleased until a project version is assigned.
   make identity-level metrics primary and retain image-level diagnostics.
 - Documented deterministic original-index tie-breaking, candidate recall, and
   content-hash cache/split identities.
+- Migrated RDD-family Vismatch matcher profiles to the Lynx-compatible float-tensor
+  preprocessing protocol with a 512-pixel target long side and `/32` spatial rounding.
+- Kept LoMa on its matcher-specific Lynx fine-tuning protocol: the same float-tensor
+  interpolation, but `/14` spatial rounding for its DINOv2-L/14 descriptor.
+- Preserved the existing square-resize protocols for cosine, WildFusion, local
+  LightGlue, linear probe, and efficient probe.
 
 ### Fixed
+- Fixed Vismatch discarding its Stage-A method metrics. `run_vismatch_benchmark` returns a
+  fresh metrics dict, so Stage-A results are now merged after it under a
+  `stage_a_<method>_` prefix, mirroring the existing Stage-A timing keys. Values are not
+  coerced to float because some metrics are string diagnostics. This keeps Stage-A
+  shortlist provenance such as `wildfusion_B` on the run instead of dropping it.
+- Fixed the unreachable `warn_only_unseen` branch in split safety checks. It was only ever
+  passed as `not require_closed_set`, so it was `True` exactly when the guarded block was
+  skipped. Unseen identities are now always reported, with `require_b_labels_in_a` choosing
+  the response: closed-set classification fails, open-set retrieval warns and continues.
+  The dead parameter was removed from the signature and both call sites.
+- Fixed a `NameError` when a finetune resumed from a checkpoint with no epochs left to run.
+  `range(start_epoch, train.epochs)` was empty, so the post-loop code read the unbound epoch
+  variable `metrics`. `validate_resume_epochs` now rejects that configuration up front with
+  an actionable message, before any training setup or checkpoint writing, and the epoch
+  metrics variable is pre-initialized alongside its neighbours. Decided to fail rather than
+  train zero epochs and still emit final checkpoints and a completed manifest, which would
+  hide an unraised `train.epochs`.
+- Fixed run-local `visualizations/index.csv` ranking with `argsort()[::-1]`, which reverses
+  a stable ascending sort and therefore resolved ties in descending database-index order,
+  the opposite of the documented policy used by the prediction grid and the metrics. The
+  index now uses `stable_rank_1d`. Shipped runs used `visualization.top_k: 3` with distinct
+  top-3 scores, so existing artifacts are unaffected and are not regenerated; the defect
+  would have surfaced on tied scores, such as a matcher returning 0.0 when no confidence
+  clears its threshold, or a cutoff reaching past the scored shortlist.
+- Fixed identity-level probe metrics indexing the classifier's per-identity output axis
+  with a per-database-image boolean mask. `linear_probe` and `efficient_probe` raised
+  `IndexError` at the end of every epoch whenever the gallery held more images than
+  identities, so neither method could complete a run; `reports/runs.csv` contains no probe
+  rows as a result. Identity columns are now selected directly, which is what the previous
+  per-image maximum was reaching for: a classifier emits one probability per identity, so
+  every image of that identity carried the same value and the maximum was a no-op. Added a
+  guard rejecting database label indices outside the classifier head, and regression
+  coverage for the image-count/class-count mismatch that triggered the crash.
+- Fixed two Vismatch preprocessing test stubs that bypass `__init__` and had not been given
+  the new `preprocessing_divisor` attribute, and corrected their `FakeExtractor` to return
+  one dict per batch item as native `RDD.extract` does rather than a dict of stacked
+  tensors. The serial/batched parity stub now derives values from image content so an
+  item/feature misalignment fails the test instead of being hidden by identical
+  placeholders. Production Vismatch code was correct and is unchanged.
 - Fixed probe final metric printing so string diagnostic fields such as
   `vismatch_cache_fingerprint` no longer fail a completed run during finalization.
 - Added regression coverage for mixed numeric and string metric reporting.
@@ -97,6 +189,17 @@ kept under Unreleased until a project version is assigned.
   reporting for fair baseline comparisons.
 - Added regression coverage for invalid matcher scores, full/partial shortlist matrices,
   deterministic `-inf` ties, and content-hash-compatible batching fixtures.
+- Invalidated the previous Vismatch PIL-resize and LoMa `/14` feature semantics by
+  bumping the feature schema and including `lynx_finetuning_v1` in matcher profiles
+  and cache fingerprints.
+- Corrected Vismatch feature metadata so keypoints and LightGlue image sizes use
+  processed `/32` coordinates while source dimensions remain available for provenance.
+- Corrected LoMa feature extraction to use processed `/14` coordinates and matcher-specific
+  cache/profile identity, preventing the LoMa DINOv2 patch-divisibility assertion seen when
+  generic `/32` preprocessing produced a 512-pixel dimension.
+- Corrected LoMa match visualizations to plot normalized keypoints in the displayed processed
+  image coordinates, including the Vismatch half-pixel convention; raw source dimensions are
+  no longer used unless raw images are displayed.
 - Aligned the Hydra default-composition regression test with the shipped `vismatch`
   public method and `rdd-lightglue` matcher defaults, while preserving `wildfusion`
   and LoMa as independently selectable methods.
@@ -121,6 +224,9 @@ kept under Unreleased until a project version is assigned.
   animal/dataset.
 - Integration coverage for real backbones, CUDA, Vismatch weights, and private Lynx
   parity is intentionally outside the lightweight unit-test suite.
+- The full RDD/LightGlue checkpoint and retrieval parity gate against the external
+  Lynx fine-tuning implementation remains environment-gated and requires rerunning
+  both default and custom checkpoints at `resize_max=512`.
 - Finetuning still uses the current `test`/validation selection behavior; this
   implementation records the limitation rather than changing the protocol.
 - Same-set WildFusion calibration excludes diagonal self-pairs by default and
@@ -150,9 +256,10 @@ kept under Unreleased until a project version is assigned.
   migration error for the removed public `rdd` probe method.
 - Kept the feature contract and profile registry dependency-light so base-environment
   tests do not import masking, CUDA, or downloaded matcher dependencies.
-- Added Vismatch LoMa-B as the `loma` matcher profile, including its 14-pixel
-  divisibility preprocessing, normalized-coordinate cache fields, mutual-match
-  filtering, and profile-specific threshold default.
+- Added Vismatch LoMa-B as the `loma` matcher profile, including its original
+  14-pixel divisibility preprocessing, normalized-coordinate cache fields,
+  mutual-match filtering, and profile-specific threshold default; the later
+  Lynx-parity migration standardizes current Vismatch inputs on `/32` dimensions.
 
 ### Changed
 

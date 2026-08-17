@@ -79,9 +79,15 @@ def run_split_safety_checks(
     preferred_path_col: Optional[str] = None,
     fail_on_overlap: bool = True,
     require_b_labels_in_a: bool = False,
-    warn_only_unseen: bool = False,
     check_content_hashes: bool = True,
 ) -> Dict[str, Any]:
+    """Validate two splits and report identity coverage.
+
+    ``require_b_labels_in_a`` selects how unseen identities are treated: closed-set
+    classification fails on them, while open-set retrieval warns and continues. The
+    former ``warn_only_unseen`` flag was unreachable, because it was only ever passed
+    together with ``require_b_labels_in_a=False``, which skipped the check entirely.
+    """
     if label_col not in df_a.columns:
         raise KeyError(f"label_col '{label_col}' not found in {split_a_name} split")
     if label_col not in df_b.columns:
@@ -203,14 +209,14 @@ def run_split_safety_checks(
             f"{split_a_name} and {split_b_name}. See {checks_dir / 'summary.json'}"
         )
 
-    if require_b_labels_in_a and unseen_b:
-        msg = (
-            f"Safety check failed: {len(unseen_b)} identities in {split_b_name} are not present in {split_a_name}. "
-            f"This violates closed-set classification assumptions."
+    if unseen_b:
+        detail = (
+            f"{len(unseen_b)} identities in {split_b_name} are not present in {split_a_name}."
         )
-        if warn_only_unseen:
-            print(f"[safety][warning] {msg}")
-        else:
-            raise ValueError(msg)
+        if require_b_labels_in_a:
+            raise ValueError(
+                f"Safety check failed: {detail} This violates closed-set classification assumptions."
+            )
+        print(f"[safety][warning] {detail} Open-set retrieval is expected to rank these as misses.")
 
     return summary

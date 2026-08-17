@@ -211,6 +211,9 @@ Key blocks:
 - `dataset`: root/splits + mask options and explicit `image_variant` (`background` or `no_background`)
 - `model`: type/mode/checkpoint behavior
 - `benchmark`: method (`cosine`, `wildfusion`, `local_lightglue`, `linear_probe`, `efficient_probe`, `vismatch`), metrics, cache
+- `benchmark.map_at_k`: shared evaluation cutoff for `mAP_at_k`, `rerank_mAP_at_k`, and
+  `recall_at_k` (default `100`). It must not exceed `methods.vismatch.candidate_k`, and runs
+  using different values are not comparable.
 - WildFusion settings: `B` controls candidate pairs per query, `local_batch_size` controls pair-processing batches, and `local_top_k` controls ALIKED keypoints (default `512`).
 - `visualization`: optional qualitative retrieval plots
 - `output`: experiment root, legacy run folder, and aggregate CSV
@@ -321,7 +324,17 @@ Core options:
 - `device`: `auto` | `cpu` | `cuda`
 - `path_col`: metadata image path column
 - `resize_max`, `top_k`, `matcher_threshold` (`null` selects the profile default: `0.01` for
-  RDD/LightGlue and `0.10` for LoMa)
+  RDD/LightGlue and `0.10` for LoMa). For Vismatch, `resize_max` is the target long-side
+  resolution; the shipped parity default is `512`.
+- Vismatch preprocessing converts images to RGB float32 tensors in `[0, 1]` and resizes
+  directly with bilinear `F.interpolate`. RDD-LightGlue, ALIKED-LightGlue, and
+  SuperPoint-LightGlue floor both dimensions to multiples of 32. LoMa floors both
+  dimensions to multiples of 14 because its DINOv2-L/14 descriptor requires patch
+  divisibility. Source image dimensions are retained separately for provenance and
+  visualization. Existing caches from the previous generic `/32` LoMa path are
+  incompatible and will not be reused.
+- Cosine, WildFusion, local LightGlue, linear probe, and efficient probe retain their
+  existing square-resize protocols.
 - `feature_matching_mode`: `feature_level` (production) or `pairwise` (diagnostics only)
 - `batch_mode`: `batched` (production default) or `serial` (parity/debug reference)
 - `match_batch_size`: candidate-pair batch size (default `16`)
@@ -364,10 +377,10 @@ benchmark:
       matcher_threshold: null
 ```
 
-LoMa follows the Lynx reference protocol: Vismatch's LoMa-B model, right/bottom
-padding to multiples of 14, normalized[-1,1] cached keypoints, mutual matching,
-and confidence-sum normalization by the smaller keypoint count. Its weights are
-managed and downloaded by Vismatch on first use.
+LoMa follows the Lynx reference protocol: Vismatch's LoMa-B model, target long-side
+resize with dimensions floored to multiples of 14, normalized[-1,1] cached keypoints,
+mutual matching, and confidence-sum normalization by the smaller keypoint count. Its
+weights are managed and downloaded by Vismatch on first use.
 
 Vismatch is pinned to commit
 `4a743b75749a3770af59d275483ed341dea51ff0` in `requirements.txt`. Its matcher
@@ -513,11 +526,35 @@ The reported retrieval metrics now follow a documented primary/diagnostic split:
   AP=0; `mAP_eligible` retains the eligible-query-only diagnostic, while
   `mAP_query_coverage`, `num_queries_with_gallery_match`, and
   `num_queries_without_gallery_match` expose coverage.
+- `mAP` and `mAP_eligible` are reported only when `score_coverage` is `1.0`. A
+  shortlist method scores `candidate_k` of the gallery and leaves the rest at `-inf`,
+  ordered by original database index; grading that tail measures metadata row order
+  rather than the matcher, so both fields become `nan` there. Use `mAP_at_k`.
+- `mAP_at_k` is the primary retrieval metric for shortlist methods and is computed the
+  same way for full-matrix methods, keeping `cosine`, `wildfusion`, and `vismatch`
+  comparable. It truncates at `benchmark.map_at_k`, gives no credit to unscored
+  positions, and divides by `min(relevant, k)` so a query whose identity never reached
+  the shortlist scores 0.
+- The retrieval result splits into three readable parts: `recall_at_k` (did the
+  shortlist contain the identity at all), `rerank_mAP_at_k` (given that it did, how well
+  was it ordered), and `mAP_at_k` (end-to-end). Matcher ablations should compare
+  `rerank_mAP_at_k`, which does not charge every matcher for the same Stage-A misses.
+- Cutoffs are validated before model loading: `top_k` and `map_at_k` must both fit inside
+  `candidate_k`. Never compare `mAP_at_k` across runs with different `map_at_k`.
+- Each probe run writes `scores.npz`, a sparse COO record of the scored matrix entries,
+  so metrics can be recomputed without repeating a matcher run.
+- Historical `mAP` values in `reports/runs.csv` predate this gate, are not comparable
+  across methods, and cannot be recomputed because those runs did not persist scores.
 - Linear and efficient probes report identity-level retrieval as primary. Their
   image-level metrics remain available as `image_top_1`, `image_top_5`, `image_top_10`,
-  and `image_mAP` diagnostics.
+  and `image_mAP` diagnostics. Identity scores are read directly from the classifier's
+  per-identity output columns, so a gallery holding many images per identity no longer
+  fails metric computation. Both probes stay closed-set and are not directly comparable
+  to the retrieval methods.
 - All ranking and visualization paths use deterministic descending score order with
-  original database index as the tie-breaker.
+  original database index as the tie-breaker, including the run-local
+  `visualizations/index.csv`, so the index resolves ties identically to the prediction
+  grid it annotates and to the reported metrics.
 - Vismatch and WildFusion use shortlist-constrained ranking. Vismatch scores only
   Stage-A candidates; unscored positions are `-inf` and are excluded from the final
   ranking. Vismatch reports `candidate_hit_rate`/`candidate_recall_at_k` plus

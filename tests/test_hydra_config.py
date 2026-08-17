@@ -28,6 +28,11 @@ class HydraConfigurationTests(unittest.TestCase):
         self.assertEqual(probe.benchmark.methods.vismatch.matcher, "rdd-lightglue")
         self.assertEqual(probe.benchmark.methods.wildfusion.B, 100)
         self.assertEqual(probe.benchmark.methods.vismatch.candidate_k, 100)
+        # The shipped evaluation cutoff must fit inside the shortlist, otherwise
+        # metrics would rank unscored database entries by original index.
+        self.assertEqual(probe.benchmark.map_at_k, 100)
+        self.assertLessEqual(probe.benchmark.map_at_k, probe.benchmark.methods.vismatch.candidate_k)
+        self.assertLessEqual(max(probe.benchmark.top_k), probe.benchmark.methods.vismatch.candidate_k)
         self.assertEqual(probe.benchmark.methods.vismatch.checkpoint_source, "default")
         self.assertEqual(probe.benchmark.methods.vismatch.checkpoint_components, "auto")
         self.assertEqual(probe.dataset.image_variant, "no_background")

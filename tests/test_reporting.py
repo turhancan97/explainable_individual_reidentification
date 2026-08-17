@@ -120,6 +120,41 @@ class ReportingArtifactTests(unittest.TestCase):
             self.assertEqual(rows[0]["query_index"], "0")
             self.assertEqual(rows[0]["rank"], "1")
 
+    def test_visualization_index_ranking_matches_the_drawn_grid(self):
+        # The index annotates the prediction grid, so it must resolve ties exactly as
+        # `stable_rank_indices` does. A shortlist matrix is almost entirely `-inf` ties,
+        # where a reversed argsort would order them backwards and describe other images.
+        from reid.evaluation.ranking import stable_rank_indices
+        from reid.reporting.visualizations import prediction_index_rows
+
+        class Dataset:
+            df = __import__("pandas").DataFrame(
+                {
+                    "identity": [f"lynx-{i}" for i in range(5)],
+                    "path": [f"db_{i}.jpg" for i in range(5)],
+                }
+            )
+
+        # One scored candidate; the remaining four are unscored shortlist positions.
+        similarity = np.asarray([[-np.inf, -np.inf, 0.7, -np.inf, -np.inf]], dtype=np.float32)
+        grid_order = stable_rank_indices(similarity)[0, :4].tolist()
+
+        with TemporaryDirectory() as temp_dir:
+            prediction = Path(temp_dir) / "query_000000.png"
+            prediction.write_bytes(b"")
+            rows, _failures = prediction_index_rows(
+                prediction_paths=[str(prediction)],
+                similarity=similarity,
+                dataset_query=Dataset(),
+                dataset_database=Dataset(),
+                label_col="identity",
+                top_k=4,
+            )
+
+        self.assertEqual([row["database_index"] for row in rows], grid_order)
+        self.assertEqual(grid_order, [2, 0, 1, 3])
+        self.assertEqual([row["rank"] for row in rows], [1, 2, 3, 4])
+
     def test_summary_filter_sort_and_formats(self):
         rows = [
             {"run_id": "a", "dataset": "lynx", "workflow": "probe", "method": "vismatch", "variant": "loma", "top_1": "0.7"},

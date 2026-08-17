@@ -218,7 +218,7 @@ under `benchmark.methods.vismatch.matcher`. Supported initial profiles are
 LoMa-B wrapper). The production path extracts features once and matches cached features. `feature_matching_mode: feature_level`
 is required for production; pairwise Vismatch calls are reserved for explicit diagnostics.
 Old `rdd` method names and direct RDD repository paths are unsupported and receive a migration-specific error.
-The `FrameFeatures` contract and matcher profiles remain dependency-light so unit tests can run without Vismatch, CUDA, downloaded weights, or masking packages. LoMa uses normalized[-1,1] keypoints internally, right/bottom padding to multiples of 14, and a default mutual-match threshold of 0.10; its feature cache records the original and padded image sizes.
+The `FrameFeatures` contract and matcher profiles remain dependency-light so unit tests can run without Vismatch, CUDA, downloaded weights, or masking packages. RDD-LightGlue, ALIKED-LightGlue, and SuperPoint-LightGlue use the pinned Lynx-compatible preprocessing: RGB float32 tensors in `[0,1]`, direct bilinear tensor resize to the configured target long side, and floor of each dimension to a multiple of 32. LoMa uses the LoMa fine-tuning protocol with the same tensor interpolation but floors dimensions to a multiple of 14 for its DINOv2-L/14 descriptor. LoMa uses normalized[-1,1] keypoints and a default mutual-match threshold of 0.10; its feature cache records processed and original image sizes.
 Standard and Vismatch feature-cache fingerprints also include the resolved dataset root, metadata file, and `dataset.image_variant`; normal and pre-masked features must never share a cache identity. Mask payload/content is not yet hashed and remains future work.
 Deep-feature cache keys must be constructed only after dataset and model-weight fingerprints are resolved; changing model contents must invalidate the key.
 The 2026-08-12 full-split parity run found identical keypoint counts and descriptor
@@ -228,14 +228,16 @@ behavioral equivalence but does not establish strict numerical identity.
 The shipped probe YAML may intentionally select another Stage-A method (currently wildfusion); this does not disable the independently selectable `vismatch` method.
 WildFusion uses `B` for candidate pairs per query, `local_batch_size` for pair-processing batches, and `local_top_k` for the ALIKED local keypoint budget. `local_top_k` defaults to 512 with `force_num_keypoints=True`; it is included in WildFusion cache/experiment identity so changing it does not reuse a different local-feature configuration.
 Custom Vismatch checkpoints are selected with `benchmark.methods.vismatch.checkpoint_source`, `checkpoint_path`, and `checkpoint_components`. `default` preserves Vismatch-managed weights; `custom` accepts an exact model file or epoch directory. Component discovery uses tensor schemas and optional `checkpoint_manifest.json`, never filename ordering. RDD-LightGlue can load custom `rdd_extractor` and/or `lightglue` components, falling back to the default component in `auto` mode when one is absent. LoMa requires a validated LoMa-compatible checkpoint and explicit `loma_arch`; generic RDD/LightGlue files are rejected. Optimizer, scheduler, and random-state files are never loaded for probing. Component SHA-256 identities are part of Vismatch feature-cache keys and run manifests.
+The Vismatch `resize_max` field is the target long-side resolution, not a downscaling-only cap; the shipped default is 512. RDD-family Vismatch profiles use preprocessing identity `lynx_finetuning_v1` and `/32` dimensions. LoMa uses `lynx_loma_finetuning_v1` and `/14` dimensions. Changing the preprocessing identity or target resolution invalidates Vismatch feature caches. Cosine, WildFusion, local LightGlue, linear probe, and efficient probe retain their existing square-resize protocols.
+LoMa match visualizations must use the processed-image coordinate space shown on the canvas: convert normalized keypoints to `FrameFeatures.image_size` coordinates and apply the Vismatch/LoMa half-pixel convention, without scaling points back to `original_image_size` unless the visualization also displays raw images.
 The production batching defaults are `batch_mode: batched`, `match_batch_size: 16`,
 Matching displays a pair-counted tqdm progress bar with percentage, throughput, and ETA; progress advances only after successful batches, including after OOM retries.
 and `extract_batch_size: 8`; `batch_mode: serial` remains the diagnostic/reference
 workflow for parity checks. Extraction buckets images by matcher-native spatial shape.
 Feature matching buckets candidate pairs across queries by exact left/right keypoint
 cardinality and falls back to serial for empty, singleton, or otherwise incompatible
-groups. LoMa is never
-naively padded because padding would change assignment-softmax normalization. When
+groups. No matcher input is padded to a common keypoint count; LoMa is therefore not
+subjected to padding that would change assignment-softmax normalization. When
 CUDA runs out of memory and `oom_backoff: true`, the current batch is retried at half
 size, temporary CUDA memory is cleared, and effective batch sizes are recorded in
 Vismatch timing metadata. Stage-A candidates and `candidate_k` remain unchanged. Vismatch
@@ -254,17 +256,66 @@ applied at load time.
 
 - Primary retrieval metrics use deterministic descending scores with original database
   index as the tie-breaker. This rule is shared by evaluation, shortlisting, Jaguar,
-  and classifier probes; visualization ranking still requires migration to the helper.
+  and classifier probes. Visualization ranking is now migrated: the run-local
+  `visualizations/index.csv` uses `stable_rank_1d`, so it resolves ties identically to the
+  prediction grid it annotates and to the metrics. No ranking path may use
+  `argsort()[::-1]`, which reverses a stable ascending sort and orders ties backwards.
 - Primary `mAP` includes every query; a query with no relevant gallery identity contributes
   AP=0. `mAP_eligible` is the legacy eligible-query-only diagnostic, and coverage fields
   report how many queries had a gallery match.
+- `mAP` and `mAP_eligible` are emitted only when `score_coverage == 1.0`, that is when every
+  matrix position carries a real score. A shortlist matrix leaves ~99.6% of each row at
+  `-inf` ordered by original database index, so a full-matrix mAP there measures metadata
+  row adjacency rather than the method: Vismatch runs spanning `top_1` 0.360-0.412 all
+  produced `mAP` in 0.0463-0.0469, against 0.0168 for a random ranking. Both fields become
+  `nan` instead, and no un-gated variant is persisted, so the number cannot re-enter a
+  comparison by accident.
+- `mAP_at_k` is the primary metric for shortlist methods and is computed identically for
+  full-matrix methods, so cosine, WildFusion, and Vismatch stay comparable. It truncates at
+  `benchmark.map_at_k`, grants no credit to positions the method never scored, and divides
+  by `min(relevant, k)` so a shortlist miss scores 0. `rerank_mAP_at_k` divides instead by
+  the hits present in the scored top-k and isolates Stage-B ordering from Stage-A reach;
+  read it together with `recall_at_k` and `candidate_recall_at_k`.
+- Evaluation cutoffs are validated before model loading: every `benchmark.top_k` entry and
+  `benchmark.map_at_k` must be <= `methods.vismatch.candidate_k`. Keep `map_at_k` equal to
+  the shortlist size, and never compare `mAP_at_k` values computed at different `k`.
+- Probe runs persist finite score-matrix entries to run-local `scores.npz` in sparse COO
+  form. Metric definitions can then be revised without repeating a matcher run. Dense
+  matrices above the entry budget are skipped rather than written.
 - Linear and efficient probes report identity-level metrics as primary. Their existing
   image-level matrix and metrics remain under `image_*` diagnostic fields.
+- Identity-level probe scores come from the classifier's per-identity output columns, not
+  from a per-database-image maximum. The head emits one probability per identity, so all
+  images of an identity share it and any maximum over them is a no-op; masking the class
+  axis with an image-length mask raised `IndexError` and blocked both probes entirely.
+  Database label indices outside the classifier head are rejected rather than silently
+  reindexed. Probe classification results remain closed-set and are not directly
+  comparable to the retrieval methods.
 - Vismatch and WildFusion use shortlist-constrained ranking. Vismatch overwrites only
   shortlisted candidates in a matrix initialized to `-inf`; invalid candidate scores
   also become `-inf`. It reports candidate hit/recall and scored/unscored pair counts.
   The previous finite Stage-A fallback mixed incompatible cosine and matcher score
   scales and is not a supported production policy.
+- File digests are memoized only inside an explicit `file_digest_cache()` block, which
+  `run_probe` and `run_finetune` wrap around a whole run. The block asserts that the files
+  being hashed are stable for its duration. Never make this memoization process-wide: tmpfs
+  reuses one `st_mtime_ns` for rapid same-size rewrites, so a global cache could serve a
+  stale digest and silently break content-addressed cache identities. Entries are keyed on
+  device/inode/size/mtime so the safety-check, dataset-digest, and Vismatch cache-key paths
+  share them despite constructing paths differently.
+- Unseen query identities are always reported by split safety checks. `require_b_labels_in_a`
+  selects the response: closed-set classifier probes fail, open-set retrieval warns and
+  continues. There is no warn-while-required mode; the old `warn_only_unseen` flag was
+  unreachable and has been removed.
+- Vismatch preprocessing runs exactly once per image. `prepare_image()` returns a
+  `PreparedImage` (tensor plus source and processed sizes) that supplies the batch-bucketing
+  shape and is consumed directly by `extract_prepared`/`extract_prepared_batch`. Do not
+  reintroduce a shape probe that re-runs the resize, and keep buckets holding prepared
+  tensors rather than full-resolution sources. Any change here must keep extracted features
+  bit-identical, since feature-cache identities do not cover this code path.
+- Vismatch merges its Stage-A metrics under a `stage_a_<method>_` prefix after
+  `run_vismatch_benchmark` returns, since that call replaces the metrics dict. Do not coerce
+  merged metric values to float: some are string diagnostics.
 - Split safety preserves path-overlap checks and additionally hashes resolved files with
   SHA-256. Duplicate content across protected splits fails closed and is summarized with
   sample paths and unreadable-file counts.
@@ -277,6 +328,10 @@ applied at load time.
   canonical model-only files, then tagged legacy files, and preserves explicit-path priority.
   Existing nested legacy runs without manifests are not yet discovered when searching
   from the repository-level `results/` root.
+- Finetune resume fails closed when the checkpoint leaves no epochs to run
+  (`start_epoch >= train.epochs`). A zero-epoch run would still write final checkpoints and
+  a completed manifest, hiding an unraised `train.epochs`; the guard runs before training
+  setup so nothing is written.
 - Finetune reports select and reload the best model-only checkpoint for primary metrics;
   final-epoch metrics remain nested as `final_epoch_metrics`. The current test/validation
   split remains the selection split and is a documented limitation.

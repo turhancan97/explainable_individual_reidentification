@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any, Dict, Optional
 
 import numpy as np
+
+DEFAULT_MAX_PERSISTED_SCORES = 5_000_000
 
 
 def build_shortlist_score_matrix(
@@ -61,6 +64,45 @@ def normalize_shortlist_score(value: Any) -> float:
     """Convert invalid matcher output into the shortlist exclusion score."""
     score = float(value)
     return score if np.isfinite(score) else -np.inf
+
+
+def save_score_matrix(
+    path: Any,
+    similarity: Any,
+    max_entries: int = DEFAULT_MAX_PERSISTED_SCORES,
+) -> Optional[Path]:
+    """Persist the scored entries of a score matrix in sparse COO form.
+
+    Only finite entries are stored, so a shortlist matrix costs about one row per
+    scored pair instead of the full dense grid. This lets metrics be recomputed
+    later without repeating a matcher run. Dense matrices above ``max_entries``
+    are skipped and return ``None`` rather than writing a multi-gigabyte file.
+    """
+    scores = np.asarray(similarity)
+    if scores.ndim != 2:
+        raise ValueError(f"similarity must be a two-dimensional array, got shape {scores.shape}")
+    rows, cols = np.nonzero(np.isfinite(scores))
+    if rows.size > int(max_entries):
+        return None
+    destination = Path(path)
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    np.savez_compressed(
+        destination,
+        shape=np.asarray(scores.shape, dtype=np.int64),
+        rows=rows.astype(np.int64),
+        cols=cols.astype(np.int64),
+        values=scores[rows, cols].astype(np.float32),
+    )
+    return destination
+
+
+def load_score_matrix(path: Any) -> np.ndarray:
+    """Rebuild a dense score matrix written by :func:`save_score_matrix`."""
+    with np.load(Path(path)) as data:
+        shape = tuple(int(value) for value in data["shape"])
+        scores = np.full(shape, -np.inf, dtype=np.float32)
+        scores[data["rows"], data["cols"]] = data["values"]
+    return scores
 
 
 def candidate_recall_metrics(
