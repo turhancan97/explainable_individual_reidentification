@@ -5,17 +5,17 @@
 #SBATCH --cpus-per-task=10
 #SBATCH --mem=256G
 #SBATCH --ntasks=1
-#SBATCH --exclude=c22,c11,c15
+#SBATCH --exclude=c22,c11,c15,dgx1
 #SBATCH --job-name=probe_parallel
 #SBATCH --time=24:00:00
-#SBATCH --output=logs/%x_%A_%a.out
-#SBATCH --error=logs/%x_%A_%a.err
+#SBATCH --output=logs/parallel_run/%x_%A_%a.out
+#SBATCH --error=logs/parallel_run/%x_%A_%a.err
 #SBATCH --export=ALL
 
 set -euo pipefail
 
 # Edit these values to change the experiment grid or Slurm throttle.
-MAX_CONCURRENT_JOBS="${MAX_CONCURRENT_JOBS:-4}"
+MAX_CONCURRENT_JOBS="${MAX_CONCURRENT_JOBS:-12}"
 CANDIDATE_K_VALUES=(10 50 100 250 500 1000)
 
 LOMA_CUSTOM_CHECKPOINT_PATH="${LOMA_CUSTOM_CHECKPOINT_PATH:-/shared/sets/datasets/vision/czechlynx/checkpoints/czechlynx-time-closed/loma-b-finetuned-trainval-4gpu/epoch_299/model.safetensors}"
@@ -23,15 +23,16 @@ RDD_CUSTOM_CHECKPOINT_PATH="${RDD_CUSTOM_CHECKPOINT_PATH:-/shared/sets/datasets/
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 cd "${SCRIPT_DIR}"
+mkdir -p logs/parallel_run
 
 # Format: method|matcher|checkpoint_label|checkpoint_path
 # Keep this table explicit so the scientific comparison grid is auditable.
 VARIANTS=(
     "cosine|-|default|-"
     "wildfusion|-|default|-"
-    "local_lightglue|-|default|-"
-    "linear_probe|-|default|-"
-    "efficient_probe|-|default|-"
+    # "local_lightglue|-|default|-"
+    # "linear_probe|-|default|-"
+    # "efficient_probe|-|default|-"
     "vismatch|loma|default|-"
     "vismatch|loma|custom|${LOMA_CUSTOM_CHECKPOINT_PATH}"
     "vismatch|rdd-lightglue|default|-"

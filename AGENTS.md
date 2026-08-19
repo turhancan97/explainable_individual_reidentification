@@ -75,6 +75,8 @@ non-executing inspection modes. The custom checkpoint variables are defined near
 the top of the launcher, and custom Vismatch tasks explicitly use
 `checkpoint_components=matcher_only`. The launcher validates both custom paths
 before submission and prints the complete Hydra command in each task log.
+Array stdout and stderr belong under `logs/parallel_run/`; keep that directory
+separate from single-run probe logs.
 
 ## Experiment artifacts
 

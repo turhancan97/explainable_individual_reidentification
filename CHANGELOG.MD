@@ -49,6 +49,8 @@ kept under Unreleased until a project version is assigned.
   method/checkpoint/`candidate_k` comparisons. It preserves `probe.sh`, validates
   custom LoMa and RDD-LightGlue checkpoint paths, supports task listing and dry-run
   inspection, and records the resolved task command in each array log.
+- Added a dedicated `logs/parallel_run/` destination for parallel-array stdout and
+  stderr so those logs are separate from ordinary probe logs.
 
 ### Changed
 
