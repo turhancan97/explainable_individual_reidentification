@@ -35,7 +35,7 @@ class HydraConfigurationTests(unittest.TestCase):
         self.assertNotIn("map_at_k", probe.benchmark)
         self.assertNotIn("B", probe.benchmark.methods.wildfusion)
         self.assertNotIn("candidate_k", probe.benchmark.methods.vismatch)
-        self.assertEqual(probe.benchmark.methods.local_lightglue.B, 10)
+        self.assertNotIn("B", probe.benchmark.methods.local_lightglue)
         self.assertLessEqual(max(probe.benchmark.top_k), probe.benchmark.candidate_k)
         self.assertEqual(probe.benchmark.methods.vismatch.checkpoint_source, "default")
         self.assertEqual(probe.benchmark.methods.vismatch.checkpoint_components, "auto")
@@ -86,6 +86,7 @@ class HydraConfigurationTests(unittest.TestCase):
             "benchmark.map_at_k=50",
             "benchmark.methods.vismatch.candidate_k=50",
             "benchmark.methods.wildfusion.B=50",
+            "benchmark.methods.local_lightglue.B=50",
         ):
             with self.subTest(override=override), self.assertRaises(ConfigCompositionException):
                 compose_config("probe", [override])

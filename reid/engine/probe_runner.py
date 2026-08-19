@@ -1409,8 +1409,11 @@ def run_method(
         if method_artifacts is not None: method_artifacts["local_calibration"] = calibration_info
         timings["feature_extraction_sec"] = time.perf_counter() - t_extract
         t_sim = time.perf_counter()
-        similarity = _call_similarity(matcher_local, dataset_query, dataset_database, settings.B)
+        candidate_k = resolve_candidate_k(cfg, len(dataset_database))
+        similarity = _call_similarity(matcher_local, dataset_query, dataset_database, candidate_k)
         timings["similarity_sec"] = time.perf_counter() - t_sim
+        timings["benchmark_candidate_k"] = float(candidate_k)
+        method_metrics["local_lightglue_B"] = float(candidate_k)
 
     elif method == "linear_probe":
         similarity, lp_timings, method_metrics = run_linear_probe(

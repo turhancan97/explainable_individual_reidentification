@@ -50,7 +50,6 @@ benchmark:
       local_batch_size: 16
       local_top_k: 512
     local_lightglue:
-      B: 10
       local_batch_size: 16
     linear_probe:
       train_mode: "classifier"  # all | partial | classifier (frozen backbone)

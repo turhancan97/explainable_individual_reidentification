@@ -11,6 +11,7 @@ if str(ROOT_DIR) not in sys.path:
 
 _REMOVED_PROBE_BUDGET_KEYS = {
     "benchmark.map_at_k",
+    "benchmark.methods.local_lightglue.B",
     "benchmark.methods.vismatch.candidate_k",
     "benchmark.methods.wildfusion.B",
 }

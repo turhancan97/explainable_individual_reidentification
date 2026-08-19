@@ -38,6 +38,7 @@ python train/finetune.py
 python train/finetune.py train.epochs=10
 python train/probe.py
 python train/probe.py benchmark.method=vismatch benchmark.methods.vismatch.matcher=loma
+bash probe-parallel.sh --list-tasks
 python scripts/kaggle_jaguar_submit.py --config config/kaggle_jaguar.yaml --data-dir /path/to/jaguar-re-id
 python scripts/summarize_runs.py --format markdown
 python -m unittest discover -s tests -p 'test_*.py'
@@ -62,6 +63,18 @@ reporting-managed `experiments/` layout while legacy aggregate CSVs remain under
 the current experiment contract. Jaguar remains on its
 existing argparse and `config/kaggle_jaguar.yaml` workflow; its internal finetune
 template points to `conf/finetune.yaml`.
+
+`probe-parallel.sh` is a separate self-submitting Slurm launcher and must not
+modify or replace `probe.sh`. It builds an explicit 54-task grid: nine method or
+checkpoint variants (cosine, WildFusion, local LightGlue, linear probe, efficient
+probe, default/custom LoMa, and default/custom RDD-LightGlue) crossed with
+`candidate_k` values `10, 50, 100, 250, 500, 1000`. Run it with
+`bash probe-parallel.sh`; `MAX_CONCURRENT_JOBS` defaults to `4` and becomes the
+Slurm array `%` throttle. `--list-tasks` and `PROBE_PARALLEL_DRY_RUN=1` are safe
+non-executing inspection modes. The custom checkpoint variables are defined near
+the top of the launcher, and custom Vismatch tasks explicitly use
+`checkpoint_components=matcher_only`. The launcher validates both custom paths
+before submission and prints the complete Hydra command in each task log.
 
 ## Experiment artifacts
 
@@ -286,7 +299,7 @@ shapes but non-bit-identical feature tensors; mean absolute per-pair score diffe
 was 4.38e-05. The only ranking disagreement was a near-tie, so this result supports
 behavioral equivalence but does not establish strict numerical identity.
 The shipped probe YAML may intentionally select another Stage-A method (currently wildfusion); this does not disable the independently selectable `vismatch` method.
-WildFusion derives its refinement `B` from `benchmark.candidate_k`; `local_batch_size` controls pair-processing batches, and `local_top_k` controls the ALIKED local keypoint budget. `local_top_k` defaults to 512 with `force_num_keypoints=True`; it is included in WildFusion cache/experiment identity so changing it does not reuse a different local-feature configuration.
+WildFusion and Local LightGlue derive their refinement `B` from `benchmark.candidate_k`; `local_batch_size` controls pair-processing batches, and `local_top_k` controls the ALIKED local keypoint budget. `local_top_k` defaults to 512 with `force_num_keypoints=True`; it is included in WildFusion cache/experiment identity so changing it does not reuse a different local-feature configuration.
 Custom Vismatch checkpoints are selected with `benchmark.methods.vismatch.checkpoint_source`, `checkpoint_path`, and `checkpoint_components`. `default` preserves Vismatch-managed weights; `custom` accepts an exact model file or epoch directory. Component discovery uses tensor schemas and optional `checkpoint_manifest.json`, never filename ordering. RDD-LightGlue can load custom `rdd_extractor` and/or `lightglue` components, falling back to the default component in `auto` mode when one is absent. LoMa requires a validated LoMa-compatible checkpoint and explicit `loma_arch`; generic RDD/LightGlue files are rejected. Optimizer, scheduler, and random-state files are never loaded for probing. Component SHA-256 identities are part of Vismatch feature-cache keys and run manifests.
 The Vismatch `resize_max` field is the target long-side resolution, not a downscaling-only cap; the shipped default is 512. RDD-family Vismatch profiles use preprocessing identity `lynx_finetuning_v1` and `/32` dimensions. LoMa uses `lynx_loma_finetuning_v1` and `/14` dimensions. Changing the preprocessing identity or target resolution invalidates Vismatch feature caches. Cosine, WildFusion, local LightGlue, linear probe, and efficient probe retain their existing square-resize protocols.
 LoMa match visualizations must use the processed-image coordinate space shown on the canvas: convert normalized keypoints to `FrameFeatures.image_size` coordinates and apply the Vismatch/LoMa half-pixel convention, without scaling points back to `original_image_size` unless the visualization also displays raw images.
@@ -339,7 +352,7 @@ applied at load time.
 - Evaluation cutoffs are validated before model loading: every `benchmark.top_k` entry and
   `benchmark.candidate_k` must fit inside the Vismatch shortlist. Vismatch candidate
   selection, WildFusion refinement (`B`), and the mAP@k cutoff all derive from this one
-  setting. The old independent budget overrides are rejected; use `benchmark.candidate_k`.
+  setting. The old independent budget overrides, including Local LightGlue `B`, are rejected; use `benchmark.candidate_k`.
 - Probe runs persist finite score-matrix entries to run-local `scores.npz` in sparse COO
   form. Metric definitions can then be revised without repeating a matcher run. Dense
   matrices above the entry budget are skipped rather than written.

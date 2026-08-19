@@ -122,6 +122,28 @@ python train/probe.py benchmark.method=efficient_probe
 python train/probe.py benchmark.method=vismatch benchmark.methods.vismatch.matcher=loma
 ```
 
+For the reproducible Slurm ablation grid, use the separate launcher:
+
+```bash
+# Submit 54 tasks with the default maximum of four concurrent jobs.
+bash probe-parallel.sh
+
+# Inspect the complete task table without submitting jobs.
+bash probe-parallel.sh --list-tasks
+
+# Print the array submission command without submitting it.
+PROBE_PARALLEL_DRY_RUN=1 bash probe-parallel.sh
+```
+
+`probe-parallel.sh` leaves `probe.sh` unchanged and evaluates cosine, WildFusion,
+local LightGlue, linear probe, efficient probe, and default/fine-tuned LoMa and
+RDD-LightGlue across `candidate_k` values `10, 50, 100, 250, 500, 1000`.
+The concurrency cap is `MAX_CONCURRENT_JOBS=4` near the top of the file. The two
+custom Vismatch checkpoint paths are also editable there; custom variants use
+`checkpoint_components=matcher_only`, while default variants use Vismatch-managed
+weights. The launcher fails before submission if either custom checkpoint path is
+missing. Use `MAX_CONCURRENT_JOBS=2 bash probe-parallel.sh` to change the throttle.
+
 ### Kaggle Jaguar Re-ID (new standalone pipeline)
 
 This repository now includes a dedicated competition pipeline that keeps existing `train/probe` behavior unchanged:
@@ -217,6 +239,8 @@ Key blocks:
 - WildFusion settings: `local_batch_size` controls pair-processing batches and
   `local_top_k` controls ALIKED keypoints (default `512`). Its refinement `B` is derived
   from `benchmark.candidate_k`.
+- Local LightGlue also receives its refinement budget from `benchmark.candidate_k`; its
+  old method-specific `B` override is no longer supported.
 - `visualization`: optional qualitative retrieval plots
 - `output`: experiment root, legacy run folder, and aggregate CSV
 - `reporting`: central run-index path
@@ -344,7 +368,7 @@ Core options:
 - `oom_backoff`: halve and retry the active CUDA batch on OOM (default `true`)
 - Batched and serial matching show a pair-counted progress bar with throughput and ETA; OOM retries advance it only after successful completion.
 - `stage_a_method`: `cosine` | `wildfusion` | `local_lightglue` | `linear_probe` | `efficient_probe`
-- `candidate_k`: shared benchmark budget and shortlist size from Stage A reranked by Vismatch
+- `candidate_k`: shared benchmark budget for Vismatch shortlists, WildFusion `B`, Local LightGlue `B`, and evaluation cutoffs
 
 Vismatch probe scoring is shortlist-constrained, matching the WildFusion baseline:
 only the `candidate_k` pairs are scored by Vismatch; all unscored matrix positions

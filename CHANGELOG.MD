@@ -45,6 +45,10 @@ kept under Unreleased until a project version is assigned.
 - Added SHA-256 fingerprint helpers and explicit WildFusion calibration diagnostics.
 - Added dependency-light Vismatch checkpoint discovery for exact files and epoch directories, including RDD extractor, LightGlue, and LoMa component schemas.
 - Added an optional ex-reid-gated smoke test for constructing RDD-LightGlue with a custom checkpoint and aligned Hydra regression coverage with the preserved LoMa default.
+- Added `probe-parallel.sh`, a self-submitting capped Slurm array for 54 explicit
+  method/checkpoint/`candidate_k` comparisons. It preserves `probe.sh`, validates
+  custom LoMa and RDD-LightGlue checkpoint paths, supports task listing and dry-run
+  inspection, and records the resolved task command in each array log.
 
 ### Changed
 
@@ -80,10 +84,10 @@ kept under Unreleased until a project version is assigned.
   `mAP_at_k` divides by `min(relevant, k)` and remains end-to-end, while `rerank_mAP_at_k`
   divides by the hits inside the scored top-k to isolate ordering from shortlist reach.
 - Consolidated the Hydra probe comparison budget under `benchmark.candidate_k`
-  (default `100`). Vismatch shortlist selection, WildFusion refinement `B`, and
+  (default `100`). Vismatch shortlist selection, WildFusion refinement `B`, Local
+  LightGlue refinement `B`, and
   `mAP_at_k`/`rerank_mAP_at_k`/`recall_at_k` now derive from this single value.
   The old independent `benchmark.map_at_k`, Vismatch `candidate_k`, and WildFusion
-  `B` overrides are rejected; Local LightGlue `B` and Jaguar settings remain unchanged.
 - Added dependency-light regression coverage for shared-budget resolution, database-size
   capping, invalid values, removed overrides, and preserved metric/provenance fields.
 - Recorded that historical `mAP` values in `reports/runs.csv` and existing run manifests
