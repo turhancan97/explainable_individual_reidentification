@@ -5,6 +5,7 @@
 #SBATCH --cpus-per-task=10
 #SBATCH --mem=64G
 #SBATCH --ntasks=1
+#SBATCH --exclude=c22,c11,c15
 #SBATCH --job-name=finetune_reid
 #SBATCH --time=24:00:00
 #SBATCH --output=logs/%x_%j.log
