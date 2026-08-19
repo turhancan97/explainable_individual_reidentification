@@ -6,6 +6,11 @@ from hydra import compose, initialize_config_dir
 from hydra.errors import ConfigCompositionException
 from omegaconf import OmegaConf
 
+try:
+    from reid.engine.probe_runner import resolve_candidate_k, resolve_map_at_k
+    HAS_PROBE_RUNNER = True
+except ModuleNotFoundError:
+    HAS_PROBE_RUNNER = False
 
 ROOT = Path(__file__).resolve().parents[1]
 CONF_DIR = ROOT / "conf"
@@ -26,13 +31,12 @@ class HydraConfigurationTests(unittest.TestCase):
         self.assertEqual(probe.model.type, "megadescriptor-l")
         self.assertEqual(probe.benchmark.method, "vismatch")
         self.assertEqual(probe.benchmark.methods.vismatch.matcher, "rdd-lightglue")
-        self.assertEqual(probe.benchmark.methods.wildfusion.B, 100)
-        self.assertEqual(probe.benchmark.methods.vismatch.candidate_k, 100)
-        # The shipped evaluation cutoff must fit inside the shortlist, otherwise
-        # metrics would rank unscored database entries by original index.
-        self.assertEqual(probe.benchmark.map_at_k, 100)
-        self.assertLessEqual(probe.benchmark.map_at_k, probe.benchmark.methods.vismatch.candidate_k)
-        self.assertLessEqual(max(probe.benchmark.top_k), probe.benchmark.methods.vismatch.candidate_k)
+        self.assertEqual(probe.benchmark.candidate_k, 100)
+        self.assertNotIn("map_at_k", probe.benchmark)
+        self.assertNotIn("B", probe.benchmark.methods.wildfusion)
+        self.assertNotIn("candidate_k", probe.benchmark.methods.vismatch)
+        self.assertEqual(probe.benchmark.methods.local_lightglue.B, 10)
+        self.assertLessEqual(max(probe.benchmark.top_k), probe.benchmark.candidate_k)
         self.assertEqual(probe.benchmark.methods.vismatch.checkpoint_source, "default")
         self.assertEqual(probe.benchmark.methods.vismatch.checkpoint_components, "auto")
         self.assertEqual(probe.dataset.image_variant, "no_background")
@@ -76,6 +80,36 @@ class HydraConfigurationTests(unittest.TestCase):
         self.assertTrue(finetune.reporting.enabled)
         self.assertNotIn("${", str(probe.dataset.root))
         self.assertNotIn("${", str(finetune.output.csv_path))
+
+    def test_removed_budget_overrides_are_rejected(self):
+        for override in (
+            "benchmark.map_at_k=50",
+            "benchmark.methods.vismatch.candidate_k=50",
+            "benchmark.methods.wildfusion.B=50",
+        ):
+            with self.subTest(override=override), self.assertRaises(ConfigCompositionException):
+                compose_config("probe", [override])
+
+    @unittest.skipUnless(HAS_PROBE_RUNNER, "probe runtime dependencies not available")
+    def test_shared_budget_drives_candidate_and_map_cutoffs(self):
+        cfg = compose_config("probe", ["benchmark.candidate_k=200"])
+        self.assertEqual(resolve_candidate_k(cfg), 200)
+        self.assertEqual(resolve_candidate_k(cfg, database_size=75), 75)
+        self.assertEqual(resolve_map_at_k(cfg), 200)
+
+    @unittest.skipUnless(HAS_PROBE_RUNNER, "probe runtime dependencies not available")
+    def test_shared_budget_rejects_non_positive_values(self):
+        for value in (0, -1):
+            with self.subTest(value=value):
+                cfg = compose_config("probe", [f"benchmark.candidate_k={value}"])
+                with self.assertRaisesRegex(ValueError, "benchmark.candidate_k must be > 0"):
+                    resolve_candidate_k(cfg)
+
+    def test_legacy_cli_budget_override_has_migration_error(self):
+        from train.probe import reject_removed_probe_budget_overrides
+
+        with self.assertRaisesRegex(ValueError, "benchmark.candidate_k"):
+            reject_removed_probe_budget_overrides(["benchmark.map_at_k=50"])
 
     def test_resolved_snapshot_contains_overrides(self):
         cfg = compose_config(

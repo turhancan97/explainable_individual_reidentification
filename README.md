@@ -211,10 +211,12 @@ Key blocks:
 - `dataset`: root/splits + mask options and explicit `image_variant` (`background` or `no_background`)
 - `model`: type/mode/checkpoint behavior
 - `benchmark`: method (`cosine`, `wildfusion`, `local_lightglue`, `linear_probe`, `efficient_probe`, `vismatch`), metrics, cache
-- `benchmark.map_at_k`: shared evaluation cutoff for `mAP_at_k`, `rerank_mAP_at_k`, and
-  `recall_at_k` (default `100`). It must not exceed `methods.vismatch.candidate_k`, and runs
-  using different values are not comparable.
-- WildFusion settings: `B` controls candidate pairs per query, `local_batch_size` controls pair-processing batches, and `local_top_k` controls ALIKED keypoints (default `512`).
+- `benchmark.candidate_k`: single comparison budget (default `100`) used for Vismatch
+  candidates, WildFusion refinement, and the `mAP_at_k`, `rerank_mAP_at_k`, and
+  `recall_at_k` evaluation cutoff.
+- WildFusion settings: `local_batch_size` controls pair-processing batches and
+  `local_top_k` controls ALIKED keypoints (default `512`). Its refinement `B` is derived
+  from `benchmark.candidate_k`.
 - `visualization`: optional qualitative retrieval plots
 - `output`: experiment root, legacy run folder, and aggregate CSV
 - `reporting`: central run-index path
@@ -342,16 +344,16 @@ Core options:
 - `oom_backoff`: halve and retry the active CUDA batch on OOM (default `true`)
 - Batched and serial matching show a pair-counted progress bar with throughput and ETA; OOM retries advance it only after successful completion.
 - `stage_a_method`: `cosine` | `wildfusion` | `local_lightglue` | `linear_probe` | `efficient_probe`
-- `candidate_k`: shortlist size from Stage A reranked by Vismatch
+- `candidate_k`: shared benchmark budget and shortlist size from Stage A reranked by Vismatch
 
 Vismatch probe scoring is shortlist-constrained, matching the WildFusion baseline:
 only the `candidate_k` pairs are scored by Vismatch; all unscored matrix positions
 are `-inf`. The primary metrics and visualizations use this same matrix. The run
 records `score_matrix_policy=shortlist_only_neg_inf`, `num_candidate_pairs`,
-`num_unscored_pairs`, and `candidate_fraction`. WildFusion uses its separate `B`
-setting for the same purpose; use `B=100` and `candidate_k=100` for the shipped
-fair-comparison protocol. These are not full-gallery matcher metrics, so always
-interpret them together with candidate recall.
+`num_unscored_pairs`, and `candidate_fraction`. WildFusion derives its refinement
+budget from the same `benchmark.candidate_k`, so comparison runs cannot accidentally
+use different candidate/refinement budgets. These are not full-gallery matcher
+metrics, so always interpret them together with candidate recall.
 
 Checkpoint selection options:
 - `checkpoint_source`: `default` (bundled Vismatch weights) or `custom`.
@@ -532,15 +534,16 @@ The reported retrieval metrics now follow a documented primary/diagnostic split:
   rather than the matcher, so both fields become `nan` there. Use `mAP_at_k`.
 - `mAP_at_k` is the primary retrieval metric for shortlist methods and is computed the
   same way for full-matrix methods, keeping `cosine`, `wildfusion`, and `vismatch`
-  comparable. It truncates at `benchmark.map_at_k`, gives no credit to unscored
+  comparable. It truncates at `benchmark.candidate_k`, gives no credit to unscored
   positions, and divides by `min(relevant, k)` so a query whose identity never reached
   the shortlist scores 0.
 - The retrieval result splits into three readable parts: `recall_at_k` (did the
   shortlist contain the identity at all), `rerank_mAP_at_k` (given that it did, how well
   was it ordered), and `mAP_at_k` (end-to-end). Matcher ablations should compare
   `rerank_mAP_at_k`, which does not charge every matcher for the same Stage-A misses.
-- Cutoffs are validated before model loading: `top_k` and `map_at_k` must both fit inside
-  `candidate_k`. Never compare `mAP_at_k` across runs with different `map_at_k`.
+- Cutoffs are validated before model loading: Vismatch `top_k` values must fit inside
+  `benchmark.candidate_k`. The old independent `benchmark.map_at_k`, Vismatch
+  `candidate_k`, and WildFusion `B` overrides are unsupported; use `benchmark.candidate_k`.
 - Each probe run writes `scores.npz`, a sparse COO record of the scored matrix entries,
   so metrics can be recomputed without repeating a matcher run.
 - Historical `mAP` values in `reports/runs.csv` predate this gate, are not comparable

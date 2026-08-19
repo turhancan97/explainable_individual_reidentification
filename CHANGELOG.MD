@@ -79,6 +79,13 @@ kept under Unreleased until a project version is assigned.
   trustworthy while `mAP` did not; `mAP_at_k` makes the rest of the metric set consistent.
   `mAP_at_k` divides by `min(relevant, k)` and remains end-to-end, while `rerank_mAP_at_k`
   divides by the hits inside the scored top-k to isolate ordering from shortlist reach.
+- Consolidated the Hydra probe comparison budget under `benchmark.candidate_k`
+  (default `100`). Vismatch shortlist selection, WildFusion refinement `B`, and
+  `mAP_at_k`/`rerank_mAP_at_k`/`recall_at_k` now derive from this single value.
+  The old independent `benchmark.map_at_k`, Vismatch `candidate_k`, and WildFusion
+  `B` overrides are rejected; Local LightGlue `B` and Jaguar settings remain unchanged.
+- Added dependency-light regression coverage for shared-budget resolution, database-size
+  capping, invalid values, removed overrides, and preserved metric/provenance fields.
 - Recorded that historical `mAP` values in `reports/runs.csv` and existing run manifests
   predate this gate and are not comparable across methods. They are not rewritten, and
   they cannot be recomputed because those runs did not persist their score matrices.

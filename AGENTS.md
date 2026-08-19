@@ -286,7 +286,7 @@ shapes but non-bit-identical feature tensors; mean absolute per-pair score diffe
 was 4.38e-05. The only ranking disagreement was a near-tie, so this result supports
 behavioral equivalence but does not establish strict numerical identity.
 The shipped probe YAML may intentionally select another Stage-A method (currently wildfusion); this does not disable the independently selectable `vismatch` method.
-WildFusion uses `B` for candidate pairs per query, `local_batch_size` for pair-processing batches, and `local_top_k` for the ALIKED local keypoint budget. `local_top_k` defaults to 512 with `force_num_keypoints=True`; it is included in WildFusion cache/experiment identity so changing it does not reuse a different local-feature configuration.
+WildFusion derives its refinement `B` from `benchmark.candidate_k`; `local_batch_size` controls pair-processing batches, and `local_top_k` controls the ALIKED local keypoint budget. `local_top_k` defaults to 512 with `force_num_keypoints=True`; it is included in WildFusion cache/experiment identity so changing it does not reuse a different local-feature configuration.
 Custom Vismatch checkpoints are selected with `benchmark.methods.vismatch.checkpoint_source`, `checkpoint_path`, and `checkpoint_components`. `default` preserves Vismatch-managed weights; `custom` accepts an exact model file or epoch directory. Component discovery uses tensor schemas and optional `checkpoint_manifest.json`, never filename ordering. RDD-LightGlue can load custom `rdd_extractor` and/or `lightglue` components, falling back to the default component in `auto` mode when one is absent. LoMa requires a validated LoMa-compatible checkpoint and explicit `loma_arch`; generic RDD/LightGlue files are rejected. Optimizer, scheduler, and random-state files are never loaded for probing. Component SHA-256 identities are part of Vismatch feature-cache keys and run manifests.
 The Vismatch `resize_max` field is the target long-side resolution, not a downscaling-only cap; the shipped default is 512. RDD-family Vismatch profiles use preprocessing identity `lynx_finetuning_v1` and `/32` dimensions. LoMa uses `lynx_loma_finetuning_v1` and `/14` dimensions. Changing the preprocessing identity or target resolution invalidates Vismatch feature caches. Cosine, WildFusion, local LightGlue, linear probe, and efficient probe retain their existing square-resize protocols.
 LoMa match visualizations must use the processed-image coordinate space shown on the canvas: convert normalized keypoints to `FrameFeatures.image_size` coordinates and apply the Vismatch/LoMa half-pixel convention, without scaling points back to `original_image_size` unless the visualization also displays raw images.
@@ -332,13 +332,14 @@ applied at load time.
   comparison by accident.
 - `mAP_at_k` is the primary metric for shortlist methods and is computed identically for
   full-matrix methods, so cosine, WildFusion, and Vismatch stay comparable. It truncates at
-  `benchmark.map_at_k`, grants no credit to positions the method never scored, and divides
+  `benchmark.candidate_k`, grants no credit to positions the method never scored, and divides
   by `min(relevant, k)` so a shortlist miss scores 0. `rerank_mAP_at_k` divides instead by
   the hits present in the scored top-k and isolates Stage-B ordering from Stage-A reach;
   read it together with `recall_at_k` and `candidate_recall_at_k`.
 - Evaluation cutoffs are validated before model loading: every `benchmark.top_k` entry and
-  `benchmark.map_at_k` must be <= `methods.vismatch.candidate_k`. Keep `map_at_k` equal to
-  the shortlist size, and never compare `mAP_at_k` values computed at different `k`.
+  `benchmark.candidate_k` must fit inside the Vismatch shortlist. Vismatch candidate
+  selection, WildFusion refinement (`B`), and the mAP@k cutoff all derive from this one
+  setting. The old independent budget overrides are rejected; use `benchmark.candidate_k`.
 - Probe runs persist finite score-matrix entries to run-local `scores.npz` in sparse COO
   form. Metric definitions can then be revised without repeating a matcher run. Dense
   matrices above the entry budget are skipped rather than written.

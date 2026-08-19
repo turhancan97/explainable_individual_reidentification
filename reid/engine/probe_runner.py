@@ -31,7 +31,7 @@ from models.objective import SoftmaxLoss, SoftmaxLossEP
 from reid.data.safety_checks import run_split_safety_checks
 from reid.data.dataset_view import BenchmarkDatasetView
 from reid.evaluation.candidate_scoring import candidate_recall_metrics, save_score_matrix
-from reid.evaluation.metrics import DEFAULT_MAP_AT_K, compute_identity_metrics, compute_metrics
+from reid.evaluation.metrics import compute_identity_metrics, compute_metrics
 from reid.evaluation.ranking import stable_rank_indices
 from reid.features.containers import FeatureContainer, get_labels_string
 from reid.methods.vismatch import run_vismatch_benchmark
@@ -90,6 +90,7 @@ PROBE_CSV_TIMING_COLUMNS = [
     "feature_extraction_sec",
     "similarity_sec",
     "vismatch_stage_a_sec",
+    "benchmark_candidate_k",
     "vismatch_candidate_k",
     "vismatch_model_build_sec",
     "vismatch_feature_extraction_sec",
@@ -514,7 +515,7 @@ def _probe_retrieval_metrics(
         similarity=identity_similarity,
         top_k_values=[int(k) for k in cfg.benchmark.top_k],
         compute_map=bool(cfg.benchmark.compute_map),
-        map_at_k=resolve_map_at_k(cfg),
+        map_at_k=resolve_map_at_k(cfg, len(db_labels_idx)),
     )
     diagnostic = compute_metrics(
         dataset_query=dataset_query,
@@ -522,7 +523,7 @@ def _probe_retrieval_metrics(
         similarity=_similarity_from_class_probs(probs_query, db_labels_idx),
         top_k_values=[int(k) for k in cfg.benchmark.top_k],
         compute_map=bool(cfg.benchmark.compute_map),
-        map_at_k=resolve_map_at_k(cfg),
+        map_at_k=resolve_map_at_k(cfg, len(db_labels_idx)),
     )
     return {**primary, **{f"image_{key}": value for key, value in diagnostic.items()}}
 
@@ -667,12 +668,34 @@ def _save_attention_overlay_grid(
     return str(out_path)
 
 
-def resolve_map_at_k(cfg: DictConfig) -> int:
-    """Return the evaluation cutoff shared by every retrieval metric."""
-    map_at_k = int(getattr(cfg.benchmark, "map_at_k", DEFAULT_MAP_AT_K))
-    if map_at_k <= 0:
-        raise ValueError("benchmark.map_at_k must be > 0")
-    return map_at_k
+def resolve_configured_candidate_k(cfg: DictConfig) -> int:
+    """Return the single public probe comparison budget."""
+    raw_value = getattr(cfg.benchmark, "candidate_k", None)
+    if raw_value is None:
+        raise ValueError("benchmark.candidate_k is required; it controls Vismatch candidates, WildFusion refinement, and mAP@k evaluation.")
+    try:
+        candidate_k = int(raw_value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("benchmark.candidate_k must be an integer") from exc
+    if candidate_k <= 0:
+        raise ValueError("benchmark.candidate_k must be > 0")
+    return candidate_k
+
+
+def resolve_candidate_k(cfg: DictConfig, database_size: Optional[int] = None) -> int:
+    """Return the configured budget, capped to the available database size."""
+    candidate_k = resolve_configured_candidate_k(cfg)
+    if database_size is None:
+        return candidate_k
+    database_size = int(database_size)
+    if database_size < 0:
+        raise ValueError("database_size must be >= 0")
+    return min(candidate_k, database_size)
+
+
+def resolve_map_at_k(cfg: DictConfig, database_size: Optional[int] = None) -> int:
+    """Use the shared candidate budget as the retrieval evaluation cutoff."""
+    return resolve_candidate_k(cfg, database_size=database_size)
 
 
 def validate_evaluation_cutoffs(cfg: DictConfig, method: str) -> None:
@@ -681,13 +704,13 @@ def validate_evaluation_cutoffs(cfg: DictConfig, method: str) -> None:
     Shortlist methods only score ``candidate_k`` database entries per query; every
     other position stays ``-inf`` and is ordered by original database index. Any
     cutoff beyond the shortlist would silently grade that tail, so the requested
-    ``top_k`` and ``map_at_k`` must both fit inside it.
+    ``top_k`` and the derived mAP cutoff must both fit inside it.
     """
+    candidate_k = resolve_configured_candidate_k(cfg)
     if method != "vismatch":
         return
-    candidate_k = int(cfg.benchmark.methods.vismatch.candidate_k)
     cutoffs = {f"benchmark.top_k={int(k)}": int(k) for k in cfg.benchmark.top_k}
-    cutoffs[f"benchmark.map_at_k={resolve_map_at_k(cfg)}"] = resolve_map_at_k(cfg)
+    cutoffs[f"mAP_at_k (benchmark.candidate_k)={resolve_map_at_k(cfg)}"] = resolve_map_at_k(cfg)
     offending = sorted(name for name, value in cutoffs.items() if value > candidate_k)
     if offending:
         raise ValueError(
@@ -1360,14 +1383,16 @@ def run_method(
         if method_artifacts is not None: method_artifacts["wildfusion_calibration"] = calibration_info
         timings["feature_extraction_sec"] = time.perf_counter() - t_extract
         t_sim = time.perf_counter()
-        similarity = _call_similarity(wildfusion, dataset_query, dataset_database, settings.B)
+        candidate_k = resolve_candidate_k(cfg, len(dataset_database))
+        similarity = _call_similarity(wildfusion, dataset_query, dataset_database, candidate_k)
         timings["similarity_sec"] = time.perf_counter() - t_sim
         # WildFusion refines only its top-B pairs with the local pipeline and keeps
-        # priority-pipeline scores elsewhere. Record the shortlist size so the
-        # refinement budget is auditable next to Vismatch's candidate_k.
-        method_metrics["wildfusion_B"] = float(settings.B)
+        # priority-pipeline scores elsewhere. Record the shared budget so the
+        # refinement budget is auditable alongside Vismatch and mAP@k.
+        timings["benchmark_candidate_k"] = float(candidate_k)
+        method_metrics["wildfusion_B"] = float(candidate_k)
         method_metrics["wildfusion_refined_fraction"] = (
-            float(int(settings.B) / len(dataset_database)) if len(dataset_database) else float("nan")
+            float(candidate_k / len(dataset_database)) if len(dataset_database) else float("nan")
         )
 
     elif method == "local_lightglue":
@@ -1425,10 +1450,8 @@ def run_method(
         if stage_a_method == "vismatch":
             raise ValueError("benchmark.methods.vismatch.stage_a_method cannot be 'vismatch'")
 
-        candidate_k = int(vismatch_cfg.candidate_k)
-        if candidate_k <= 0:
-            raise ValueError("benchmark.methods.vismatch.candidate_k must be > 0")
-        candidate_k = min(candidate_k, len(dataset_database))
+        configured_candidate_k = resolve_configured_candidate_k(cfg)
+        candidate_k = resolve_candidate_k(cfg, len(dataset_database))
 
         t_stage_a = time.perf_counter()
         stage_similarity, stage_timings, stage_metrics = run_method(
@@ -1455,6 +1478,7 @@ def run_method(
         stage_a_sec = time.perf_counter() - t_stage_a
         candidate_indices = stable_rank_indices(stage_similarity)[:, :candidate_k]
         timings["vismatch_stage_a_sec"] = float(stage_a_sec)
+        timings["benchmark_candidate_k"] = float(configured_candidate_k)
         timings["vismatch_candidate_k"] = float(candidate_k)
         for k, v in stage_timings.items():
             if k == "total_method_sec":
@@ -1728,7 +1752,7 @@ def _run_probe(cfg: DictConfig, context: Any) -> None:
         similarity=similarity,
         top_k_values=top_k_values,
         compute_map=bool(cfg.benchmark.compute_map),
-        map_at_k=resolve_map_at_k(cfg),
+        map_at_k=resolve_map_at_k(cfg, len(dataset_database)),
     )
     metrics.update(method_metrics)
     scores_path = save_score_matrix(run_dir / "scores.npz", similarity)

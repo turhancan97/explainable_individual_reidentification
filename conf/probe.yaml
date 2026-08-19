@@ -29,10 +29,9 @@ benchmark:
   method: "vismatch"  # cosine | wildfusion | local_lightglue | linear_probe | efficient_probe | vismatch
   top_k: [1, 5, 10]
   compute_map: true
-  # Evaluation cutoff for mAP_at_k / rerank_mAP_at_k / recall_at_k. Must not exceed
-  # the Vismatch shortlist (methods.vismatch.candidate_k); keep it equal to the
-  # shipped shortlist size so shortlist and full-matrix methods stay comparable.
-  map_at_k: 100
+  # Shared comparison budget: Vismatch shortlist, WildFusion refinement, and
+  # mAP_at_k / rerank_mAP_at_k / recall_at_k evaluation cutoff.
+  candidate_k: 100
   calibration:
     exclude_self_pairs: true
     official_same_set: false
@@ -46,7 +45,6 @@ benchmark:
   methods:
     cosine: {}
     wildfusion:
-      B: 100
       deep_batch_size: 16
       deep_num_workers: 4
       local_batch_size: 16
@@ -120,7 +118,6 @@ benchmark:
       oom_backoff: true
       cache_dir: "/shared/results/common/kargin/lynx/results/${dataset.name}/${dataset.animal}/cache/vismatch"
       stage_a_method: "cosine"   # cosine | wildfusion | local_lightglue | linear_probe | efficient_probe
-      candidate_k: 100
 
 visualization:
   enabled: true

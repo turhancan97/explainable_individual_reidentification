@@ -149,7 +149,7 @@ class ResearchValidityTests(unittest.TestCase):
         from reid.engine.probe_runner import _probe_retrieval_metrics
 
         cfg = OmegaConf.create(
-            {"benchmark": {"top_k": [1, 2], "compute_map": True, "map_at_k": 2}}
+            {"benchmark": {"top_k": [1, 2], "compute_map": True, "candidate_k": 2}}
         )
         db_labels_idx = np.array([0, 0, 1, 1, 2])
         query_labels_idx = np.array([1, 2])
@@ -178,7 +178,7 @@ class ResearchValidityTests(unittest.TestCase):
         from reid.engine.probe_runner import _probe_retrieval_metrics
 
         cfg = OmegaConf.create(
-            {"benchmark": {"top_k": [1], "compute_map": True, "map_at_k": 1}}
+            {"benchmark": {"top_k": [1], "compute_map": True, "candidate_k": 1}}
         )
         probs_query = np.array([[0.2, 0.8]])
         sparse = _probe_retrieval_metrics(
@@ -198,7 +198,7 @@ class ResearchValidityTests(unittest.TestCase):
         from reid.engine.probe_runner import _probe_retrieval_metrics
 
         cfg = OmegaConf.create(
-            {"benchmark": {"top_k": [1], "compute_map": True, "map_at_k": 1}}
+            {"benchmark": {"top_k": [1], "compute_map": True, "candidate_k": 1}}
         )
         with self.assertRaises(ValueError) as ctx:
             _probe_retrieval_metrics(
