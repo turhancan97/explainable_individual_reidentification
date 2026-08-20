@@ -121,6 +121,9 @@ kept under Unreleased until a project version is assigned.
   LightGlue, linear probe, and efficient probe.
 
 ### Fixed
+- Fixed parallel Slurm array tasks failing with `Permission denied` when they used
+  the copied spool script's directory. The launcher now prefers `SLURM_SUBMIT_DIR`
+  before creating `logs/parallel_run/`.
 - Fixed Vismatch discarding its Stage-A method metrics. `run_vismatch_benchmark` returns a
   fresh metrics dict, so Stage-A results are now merged after it under a
   `stage_a_<method>_` prefix, mirroring the existing Stage-A timing keys. Values are not

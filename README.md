@@ -142,7 +142,9 @@ The concurrency cap is `MAX_CONCURRENT_JOBS=4` near the top of the file. The two
 custom Vismatch checkpoint paths are also editable there; custom variants use
 `checkpoint_components=matcher_only`, while default variants use Vismatch-managed
 weights. The launcher fails before submission if either custom checkpoint path is
-missing. Array stdout and stderr are written under `logs/parallel_run/`. Use
+missing. Array stdout and stderr are written under `logs/parallel_run/`. The
+launcher uses Slurm's `SLURM_SUBMIT_DIR`, so it remains valid even though Slurm
+executes a copied script from its private spool directory. Use
 `MAX_CONCURRENT_JOBS=2 bash probe-parallel.sh` to change the throttle.
 
 ### Kaggle Jaguar Re-ID (new standalone pipeline)

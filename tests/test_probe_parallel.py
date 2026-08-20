@@ -49,6 +49,13 @@ class ParallelProbeLauncherTests(unittest.TestCase):
         text = SCRIPT.read_text(encoding="utf-8")
         self.assertIn("#SBATCH --output=logs/parallel_run/%x_%A_%a.out", text)
         self.assertIn("#SBATCH --error=logs/parallel_run/%x_%A_%a.err", text)
+        self.assertIn('SCRIPT_DIR="${SLURM_SUBMIT_DIR:-$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)}"', text)
+
+    def test_slurm_submission_directory_is_used(self):
+        with tempfile.TemporaryDirectory() as submit_dir:
+            result = self.run_script("--list-tasks", env={"SLURM_SUBMIT_DIR": submit_dir})
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertTrue((Path(submit_dir) / "logs" / "parallel_run").is_dir())
 
     def test_task_table_has_expected_grid(self):
         result = self.run_script("--list-tasks")

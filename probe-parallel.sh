@@ -21,7 +21,7 @@ CANDIDATE_K_VALUES=(10 50 100 250 500 1000)
 LOMA_CUSTOM_CHECKPOINT_PATH="${LOMA_CUSTOM_CHECKPOINT_PATH:-/shared/sets/datasets/vision/czechlynx/checkpoints/czechlynx-time-closed/loma-b-finetuned-trainval-4gpu/epoch_299/model.safetensors}"
 RDD_CUSTOM_CHECKPOINT_PATH="${RDD_CUSTOM_CHECKPOINT_PATH:-/shared/sets/datasets/confidential/lynx/checkpoints/contrastive-finetuning/matches-lg-wandb/epoch_299/model.safetensors}"
 
-SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+SCRIPT_DIR="${SLURM_SUBMIT_DIR:-$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)}"
 cd "${SCRIPT_DIR}"
 mkdir -p logs/parallel_run
 

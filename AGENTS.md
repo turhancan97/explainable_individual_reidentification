@@ -76,7 +76,9 @@ the top of the launcher, and custom Vismatch tasks explicitly use
 `checkpoint_components=matcher_only`. The launcher validates both custom paths
 before submission and prints the complete Hydra command in each task log.
 Array stdout and stderr belong under `logs/parallel_run/`; keep that directory
-separate from single-run probe logs.
+separate from single-run probe logs. The launcher resolves its repository
+working directory from `SLURM_SUBMIT_DIR` because Slurm runs copied scripts from
+a non-writable spool directory.
 
 ## Experiment artifacts
 
