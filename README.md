@@ -125,7 +125,7 @@ python train/probe.py benchmark.method=vismatch benchmark.methods.vismatch.match
 For the reproducible Slurm ablation grid, use the separate launcher:
 
 ```bash
-# Submit 54 tasks with the default maximum of four concurrent jobs.
+# Submit the active task table with the configured concurrency cap.
 bash probe-parallel.sh
 
 # Inspect the complete task table without submitting jobs.
@@ -135,17 +135,37 @@ bash probe-parallel.sh --list-tasks
 PROBE_PARALLEL_DRY_RUN=1 bash probe-parallel.sh
 ```
 
-`probe-parallel.sh` leaves `probe.sh` unchanged and evaluates cosine, WildFusion,
+`probe-parallel.sh` leaves `probe.sh` unchanged and can evaluate cosine, WildFusion,
 local LightGlue, linear probe, efficient probe, and default/fine-tuned LoMa and
-RDD-LightGlue across `candidate_k` values `10, 50, 100, 250, 500, 1000`.
-The concurrency cap is `MAX_CONCURRENT_JOBS=4` near the top of the file. The two
+RDD-LightGlue. It crosses the active variants with the candidate budgets listed in
+`CANDIDATE_K_VALUES`; the
+active `VARIANTS` table near the top of the launcher is the source of truth for
+which methods run.
+The concurrency cap is controlled by `MAX_CONCURRENT_JOBS` near the top of the file. The two
 custom Vismatch checkpoint paths are also editable there; custom variants use
 `checkpoint_components=matcher_only`, while default variants use Vismatch-managed
 weights. The launcher fails before submission if either custom checkpoint path is
-missing. Array stdout and stderr are written under `logs/parallel_run/`. The
-launcher uses Slurm's `SLURM_SUBMIT_DIR`, so it remains valid even though Slurm
-executes a copied script from its private spool directory. Use
+missing. Slurm's raw stdout and stderr remain under `logs/parallel_run/` for
+compatibility, while each task also creates descriptive copies under
+`logs/parallel_run/<dataset>/<animal>/job-<array_job>/`. Files are named with
+the task index, method, matcher, checkpoint, and candidate budget. Each task writes
+`.out`, `.err`, `.combined.log`, and a JSON metadata record containing
+its command, status, timestamps, error summary, and experiment-run link.
+`logs/index.csv` is updated atomically as tasks start and finish. The launcher uses
+Slurm's `SLURM_SUBMIT_DIR`, so it remains valid even though Slurm executes a copied
+script from its private spool directory. Use
 `MAX_CONCURRENT_JOBS=2 bash probe-parallel.sh` to change the throttle.
+
+To inspect the organized logs:
+
+```bash
+python scripts/summarize_logs.py --format markdown
+python scripts/summarize_logs.py --dataset WildlifeReID-10k --status failed
+python scripts/summarize_logs.py --method vismatch --matcher loma --format csv
+```
+
+Historical log files are not moved or rewritten; the descriptive layout applies to
+future parallel tasks.
 
 ### Kaggle Jaguar Re-ID (new standalone pipeline)
 

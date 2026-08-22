@@ -65,20 +65,26 @@ existing argparse and `config/kaggle_jaguar.yaml` workflow; its internal finetun
 template points to `conf/finetune.yaml`.
 
 `probe-parallel.sh` is a separate self-submitting Slurm launcher and must not
-modify or replace `probe.sh`. It builds an explicit 54-task grid: nine method or
-checkpoint variants (cosine, WildFusion, local LightGlue, linear probe, efficient
-probe, default/custom LoMa, and default/custom RDD-LightGlue) crossed with
-`candidate_k` values `10, 50, 100, 250, 500, 1000`. Run it with
-`bash probe-parallel.sh`; `MAX_CONCURRENT_JOBS` defaults to `4` and becomes the
+modify or replace `probe.sh`. It builds tasks from the explicit `VARIANTS` table
+and crosses them with the `CANDIDATE_K_VALUES` list. The active tables near the top
+of the launcher are the source of truth for the current comparison grid. Run it
+with `bash probe-parallel.sh`; `MAX_CONCURRENT_JOBS` becomes the
 Slurm array `%` throttle. `--list-tasks` and `PROBE_PARALLEL_DRY_RUN=1` are safe
 non-executing inspection modes. The custom checkpoint variables are defined near
 the top of the launcher, and custom Vismatch tasks explicitly use
 `checkpoint_components=matcher_only`. The launcher validates both custom paths
 before submission and prints the complete Hydra command in each task log.
-Array stdout and stderr belong under `logs/parallel_run/`; keep that directory
-separate from single-run probe logs. The launcher resolves its repository
-working directory from `SLURM_SUBMIT_DIR` because Slurm runs copied scripts from
-a non-writable spool directory.
+Slurm's raw array stdout and stderr remain under `logs/parallel_run/`; keep that
+directory separate from single-run probe logs. After a task starts, the launcher
+also mirrors output into
+`logs/parallel_run/<dataset>/<animal>/job-<array_job>/task-<index>__<method>__<checkpoint>__k<candidate>/`.
+Each task-local record contains `.out`, `.err`, `.combined.log`, and JSON metadata
+with the resolved command, status, timestamps, concise failure summary, and the
+experiment run directory when probe finalization prints it. `logs/index.csv` is
+rebuilt atomically from these metadata records and can be filtered with
+`scripts/summarize_logs.py`. Historical logs are not migrated. The launcher
+resolves its repository working directory from `SLURM_SUBMIT_DIR` because Slurm
+runs copied scripts from a non-writable spool directory.
 
 ## Experiment artifacts
 

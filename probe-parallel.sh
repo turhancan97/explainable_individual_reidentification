@@ -18,24 +18,60 @@ set -euo pipefail
 MAX_CONCURRENT_JOBS="${MAX_CONCURRENT_JOBS:-12}"
 CANDIDATE_K_VALUES=(10 50 100 250 500 1000)
 
-LOMA_CUSTOM_CHECKPOINT_PATH="${LOMA_CUSTOM_CHECKPOINT_PATH:-/shared/sets/datasets/vision/czechlynx/checkpoints/czechlynx-time-closed/loma-b-finetuned-trainval-4gpu/epoch_299/model.safetensors}"
-RDD_CUSTOM_CHECKPOINT_PATH="${RDD_CUSTOM_CHECKPOINT_PATH:-/shared/sets/datasets/confidential/lynx/checkpoints/contrastive-finetuning/matches-lg-wandb/epoch_299/model.safetensors}"
+LOMA_CUSTOM_CHECKPOINT_PATH="${LOMA_CUSTOM_CHECKPOINT_PATH:-/shared/sets/datasets/vision/czechlynx/checkpoints/wildlife-reid-10k/WhaleSharkID/loma-finetuned/legacy/epoch_299/model.safetensors}"
+RDD_CUSTOM_CHECKPOINT_PATH="${RDD_CUSTOM_CHECKPOINT_PATH:-/shared/sets/datasets/vision/czechlynx/checkpoints/wildlife-reid-10k/WhaleSharkID/rdd-finetuned/legacy/epoch_299/model.safetensors}"
 
+SCRIPT_SOURCE_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 SCRIPT_DIR="${SLURM_SUBMIT_DIR:-$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)}"
 cd "${SCRIPT_DIR}"
 mkdir -p logs/parallel_run
+CONFIG_FILE="${PROBE_PARALLEL_CONFIG:-${SCRIPT_DIR}/conf/probe.yaml}"
+[[ -f "${CONFIG_FILE}" ]] || CONFIG_FILE="${SCRIPT_SOURCE_DIR}/conf/probe.yaml"
+
+# Slurm opens the directive paths before the shell starts, so the legacy raw
+# files remain at logs/parallel_run/*.out and *.err. Once the task table is
+# known, each task also mirrors its output into a descriptive directory.
+LOG_ROOT="${PROBE_PARALLEL_LOG_ROOT:-${SCRIPT_DIR}/logs/parallel_run}"
+
+read_probe_dataset_value() {
+    local key="${1}"
+    awk -v key="${key}" '
+        /^dataset:/ { inside=1; next }
+        inside && /^[^[:space:]]/ { exit }
+        inside && $0 ~ "^[[:space:]]*" key ":" {
+            sub(/^[^:]*:[[:space:]]*/, "", $0)
+            sub(/[[:space:]]+#.*/, "", $0)
+            gsub(/"/, "", $0)
+            print
+            exit
+        }
+    ' "${CONFIG_FILE}"
+}
+
+sanitize_component() {
+    local value="${1:-unknown}"
+    value="${value//[^a-zA-Z0-9_.-]/_}"
+    [[ -n "${value}" ]] || value="unknown"
+    printf '%s' "${value:0:96}"
+}
+
+LOG_DATASET="${PROBE_PARALLEL_DATASET_LABEL:-$(read_probe_dataset_value name)}"
+LOG_ANIMAL="${PROBE_PARALLEL_ANIMAL_LABEL:-$(read_probe_dataset_value animal)}"
+LOG_DATASET="$(sanitize_component "${LOG_DATASET:-unknown}")"
+LOG_ANIMAL="$(sanitize_component "${LOG_ANIMAL:-unknown}")"
+
 
 # Format: method|matcher|checkpoint_label|checkpoint_path
 # Keep this table explicit so the scientific comparison grid is auditable.
 VARIANTS=(
-    "cosine|-|default|-"
-    "wildfusion|-|default|-"
+    # "cosine|-|default|-"
+    # "wildfusion|-|default|-"
     # "local_lightglue|-|default|-"
     # "linear_probe|-|default|-"
     # "efficient_probe|-|default|-"
-    "vismatch|loma|default|-"
-    "vismatch|loma|custom|${LOMA_CUSTOM_CHECKPOINT_PATH}"
-    "vismatch|rdd-lightglue|default|-"
+    # "vismatch|loma|default|-"
+    # "vismatch|loma|custom|${LOMA_CUSTOM_CHECKPOINT_PATH}"
+    # "vismatch|rdd-lightglue|default|-"
     "vismatch|rdd-lightglue|custom|${RDD_CUSTOM_CHECKPOINT_PATH}"
 )
 
@@ -49,6 +85,13 @@ done
 die() {
     echo "probe-parallel.sh: $*" >&2
     exit 1
+}
+
+
+probe_command_string() {
+    local rendered
+    printf -v rendered '%q ' python train/probe.py "${PROBE_ARGS[@]}"
+    printf '%s' "${rendered% }"
 }
 
 validate_positive_integer() {
@@ -148,7 +191,87 @@ if [[ "${PROBE_PARALLEL_DRY_RUN:-0}" == "1" || "${1:-}" == "--dry-run" ]]; then
     exit 0
 fi
 
+ARRAY_JOB_ID="${SLURM_ARRAY_JOB_ID:-${SLURM_JOB_ID:-local}}"
+TASK_SLUG="${METHOD}"
+[[ "${MATCHER}" != "-" ]] && TASK_SLUG="${TASK_SLUG}-${MATCHER}"
+TASK_SLUG="$(sanitize_component "${TASK_SLUG}")"
+TASK_CHECKPOINT="$(sanitize_component "${CHECKPOINT_LABEL}")"
+TASK_LOG_DIR="${LOG_ROOT}/${LOG_DATASET}/${LOG_ANIMAL}/job-${ARRAY_JOB_ID}"
+TASK_STEM="task-$(printf '%03d' "${TASK_INDEX}")__${TASK_SLUG}__${TASK_CHECKPOINT}__k${CANDIDATE_K}"
+TASK_OUT_PATH="${TASK_LOG_DIR}/${TASK_STEM}.out"
+TASK_ERR_PATH="${TASK_LOG_DIR}/${TASK_STEM}.err"
+TASK_COMBINED_PATH="${TASK_LOG_DIR}/${TASK_STEM}.combined.log"
+TASK_METADATA_PATH="${TASK_LOG_DIR}/${TASK_STEM}.json"
+mkdir -p "${TASK_LOG_DIR}"
+
+# Keep the Slurm streams visible while creating descriptive task-local copies.
+exec > >(tee -a "${TASK_OUT_PATH}" "${TASK_COMBINED_PATH}") \
+     2> >(tee -a "${TASK_ERR_PATH}" "${TASK_COMBINED_PATH}" >&2)
+
 nvidia-smi -L
 source /shared/results/common/kargin/tck_miniconda3/etc/profile.d/conda.sh
 conda activate ex-reid
+
+COMMAND_STRING="$(probe_command_string)"
+STARTED_AT="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+echo "Dataset: ${LOG_DATASET}"
+echo "Animal: ${LOG_ANIMAL}"
+echo "Array job: ${ARRAY_JOB_ID}"
+echo "Array task: ${TASK_INDEX}"
+echo "Method: ${METHOD}"
+echo "Matcher: ${MATCHER}"
+echo "Checkpoint: ${CHECKPOINT_LABEL}"
+echo "Checkpoint path: ${CHECKPOINT_PATH}"
+echo "Candidate K: ${CANDIDATE_K}"
+echo "Task log directory: ${TASK_LOG_DIR}"
+echo "Started: ${STARTED_AT}"
+
+python scripts/probe_log_metadata.py init \
+    --path "${TASK_METADATA_PATH}" \
+    --job-id "${ARRAY_JOB_ID}" \
+    --task-id "${TASK_INDEX}" \
+    --dataset "${LOG_DATASET}" \
+    --animal "${LOG_ANIMAL}" \
+    --method "${METHOD}" \
+    --matcher "${MATCHER}" \
+    --checkpoint "${CHECKPOINT_LABEL}" \
+    --checkpoint-path "${CHECKPOINT_PATH}" \
+    --candidate-k "${CANDIDATE_K}" \
+    --command "${COMMAND_STRING}" \
+    --start-time "${STARTED_AT}" \
+    --stdout-path "${TASK_OUT_PATH}" \
+    --stderr-path "${TASK_ERR_PATH}" \
+    --combined-path "${TASK_COMBINED_PATH}" \
+    --status running
+
+finalize_task() {
+    local exit_code="$?"
+    local status="completed"
+    local run_directory=""
+    [[ "${exit_code}" -eq 0 ]] || status="failed"
+    if [[ -s "${TASK_OUT_PATH}" ]]; then
+        local result_path
+        result_path="$(sed -n 's/^Saved JSON: //p' "${TASK_OUT_PATH}" | tail -n 1)"
+        if [[ -n "${result_path}" && -f "${result_path}" ]]; then
+            run_directory="$(dirname "${result_path}")"
+            if [[ "${run_directory}" == "${SCRIPT_DIR}/"* ]]; then
+                run_directory="${run_directory#"${SCRIPT_DIR}/"}"
+            fi
+        fi
+    fi
+    python scripts/probe_log_metadata.py update \
+        --path "${TASK_METADATA_PATH}" \
+        --status "${status}" \
+        --end-time "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+        --experiment-run-directory "${run_directory}" \
+        --error-file "${TASK_ERR_PATH}" || true
+    python scripts/summarize_logs.py \
+        --logs-root "${LOG_ROOT}" \
+        --write-index \
+        --quiet || true
+    exit "${exit_code}"
+}
+
+trap finalize_task EXIT
+
 python train/probe.py "${PROBE_ARGS[@]}"

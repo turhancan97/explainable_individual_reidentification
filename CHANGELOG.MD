@@ -51,6 +51,10 @@ kept under Unreleased until a project version is assigned.
   inspection, and records the resolved task command in each array log.
 - Added a dedicated `logs/parallel_run/` destination for parallel-array stdout and
   stderr so those logs are separate from ordinary probe logs.
+- Added descriptive per-task parallel log copies, task metadata with lifecycle and
+  failure summaries, an atomic `logs/index.csv`, and `scripts/summarize_logs.py`
+  filters for dataset, animal, method, matcher, checkpoint, and status. Historical
+  logs remain untouched.
 
 ### Changed
 

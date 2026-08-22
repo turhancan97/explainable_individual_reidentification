@@ -70,10 +70,14 @@ class ParallelProbeLauncherTests(unittest.TestCase):
 
         self.assertEqual([int(row["index"]) for row in parsed], list(range(len(parsed))))
         self.assertEqual(sorted({int(row["candidate_k"]) for row in parsed}), [10, 50, 100, 250, 500, 1000])
-        self.assertTrue({"cosine", "wildfusion", "vismatch"}.issubset({row["method"] for row in parsed}))
-        self.assertEqual(sum(row["matcher"] == "loma" for row in parsed), 12)
-        self.assertEqual(sum(row["matcher"] == "rdd-lightglue" for row in parsed), 12)
-        self.assertEqual(len({(row["candidate_k"], row["method"], row["matcher"], row["checkpoint"]) for row in parsed}), len(parsed))
+        methods = {row["method"] for row in parsed}
+        self.assertIn("vismatch", methods)
+        self.assertTrue(methods.issubset({"cosine", "wildfusion", "local_lightglue", "linear_probe", "efficient_probe", "vismatch"}))
+        self.assertTrue(all(row["matcher"] in {"-", "loma", "rdd-lightglue"} for row in parsed))
+        self.assertEqual(
+            len({(row["candidate_k"], row["method"], row["matcher"], row["checkpoint"]) for row in parsed}),
+            len(parsed),
+        )
 
     def test_submission_dry_run_uses_array_range_and_cap(self):
         task_count = len(self.task_rows())
@@ -91,60 +95,62 @@ class ParallelProbeLauncherTests(unittest.TestCase):
 
     def test_default_and_custom_checkpoint_mapping(self):
         rows = self.task_rows()
+        custom_rows = [
+            row for row in rows
+            if row["method"] == "vismatch" and row["checkpoint"] == "custom"
+        ]
+        self.assertTrue(custom_rows)
 
-        def task_index(method, matcher, checkpoint):
-            return next(
-                int(row["index"])
-                for row in rows
-                if row["method"] == method and row["matcher"] == matcher and row["checkpoint"] == checkpoint
-            )
-
-        loma_default_index = task_index("vismatch", "loma", "default")
-        loma_custom_index = task_index("vismatch", "loma", "custom")
-        rdd_custom_index = task_index("vismatch", "rdd-lightglue", "custom")
         with tempfile.NamedTemporaryFile() as loma, tempfile.NamedTemporaryFile() as rdd:
             env = self.checkpoint_env(loma.name, rdd.name)
-            default_result = self.run_script(
-                "--dry-run", env={**env, "SLURM_ARRAY_TASK_ID": str(loma_default_index), "PROBE_PARALLEL_DRY_RUN": "1"}
-            )
-            custom_result = self.run_script(
-                "--dry-run", env={**env, "SLURM_ARRAY_TASK_ID": str(loma_custom_index), "PROBE_PARALLEL_DRY_RUN": "1"}
-            )
-            rdd_result = self.run_script(
-                "--dry-run", env={**env, "SLURM_ARRAY_TASK_ID": str(rdd_custom_index), "PROBE_PARALLEL_DRY_RUN": "1"}
-            )
+            for row in custom_rows:
+                result = self.run_script(
+                    "--dry-run",
+                    env={
+                        **env,
+                        "SLURM_ARRAY_TASK_ID": row["index"],
+                        "PROBE_PARALLEL_DRY_RUN": "1",
+                    },
+                )
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertIn("checkpoint_components=matcher_only", result.stdout)
+                expected_path = loma.name if row["matcher"] == "loma" else rdd.name
+                self.assertIn(expected_path, result.stdout)
 
-        self.assertEqual(default_result.returncode, 0, default_result.stderr)
-        self.assertIn("matcher=loma checkpoint=default", default_result.stdout)
-        self.assertIn("checkpoint_source=default", default_result.stdout)
-        self.assertNotIn("checkpoint_components=matcher_only", default_result.stdout)
-
-        self.assertEqual(custom_result.returncode, 0, custom_result.stderr)
-        self.assertIn("matcher=loma checkpoint=custom", custom_result.stdout)
-        self.assertIn("checkpoint_components=matcher_only", custom_result.stdout)
-        self.assertIn(loma.name, custom_result.stdout)
-
-        self.assertEqual(rdd_result.returncode, 0, rdd_result.stderr)
-        self.assertIn("matcher=rdd-lightglue checkpoint=custom", rdd_result.stdout)
-        self.assertIn(rdd.name, rdd_result.stdout)
+            default_rows = [
+                row for row in rows
+                if row["method"] == "vismatch" and row["checkpoint"] == "default"
+            ]
+            for row in default_rows:
+                result = self.run_script(
+                    "--dry-run",
+                    env={
+                        **env,
+                        "SLURM_ARRAY_TASK_ID": row["index"],
+                        "PROBE_PARALLEL_DRY_RUN": "1",
+                    },
+                )
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertIn("checkpoint_source=default", result.stdout)
+                self.assertNotIn("checkpoint_components=matcher_only", result.stdout)
 
     def test_missing_custom_checkpoint_fails_before_probe(self):
         rows = self.task_rows()
-        custom_loma_index = next(
+        custom_index = next(
             int(row["index"])
             for row in rows
-            if row["method"] == "vismatch" and row["matcher"] == "loma" and row["checkpoint"] == "custom"
+            if row["method"] == "vismatch" and row["checkpoint"] == "custom"
         )
         result = self.run_script(
             "--dry-run",
             env={
-                "SLURM_ARRAY_TASK_ID": str(custom_loma_index),
+                "SLURM_ARRAY_TASK_ID": str(custom_index),
                 "LOMA_CUSTOM_CHECKPOINT_PATH": "/tmp/does-not-exist-loma-checkpoint",
                 "RDD_CUSTOM_CHECKPOINT_PATH": "/tmp/does-not-exist-rdd-checkpoint",
             },
         )
         self.assertNotEqual(result.returncode, 0)
-        self.assertIn("LoMa custom checkpoint does not exist", result.stderr)
+        self.assertRegex(result.stderr, re.compile(r"(LoMa|RDD-LightGlue) custom checkpoint does not exist"))
 
     def test_array_index_boundaries(self):
         task_count = len(self.task_rows())
