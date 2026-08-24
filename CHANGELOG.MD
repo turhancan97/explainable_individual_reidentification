@@ -9,6 +9,9 @@ kept under Unreleased until a project version is assigned.
 
 - Added immutable submission manifests for parallel probe arrays, including copied Hydra configuration, explicit dataset profiles, checkpoint ownership, and SHA-256 provenance.
 - Added the active `ZindiTurtleRecall` dataset profile to `probe-parallel-wildlife.sh`, using its no-background metadata and matching custom LoMa/RDD checkpoint ownership.
+- Added `scripts/export_paper_tables.py` and dependency-light reporting helpers for per-animal CVPR LaTeX/CSV tables, fixed-budget comparisons, and candidate-budget ablations sourced directly from completed experiment artifacts.
+- Wrapped generated paper tables in a `graphicx` `\\resizebox` so wide CVPR ablation tables fit the available column width.
+- Updated parallel launcher regression checks to honor the active candidate-budget list configured by the user.
 
 ### Changed
 

@@ -492,7 +492,23 @@ Summarize runs with:
 python scripts/summarize_runs.py --dataset CzechLynx_v2
 python scripts/summarize_runs.py --method vismatch --matcher loma
 python scripts/summarize_runs.py --sort-by top_1 --format markdown
+
+# Generate per-animal CVPR-ready LaTeX and audit CSV tables
+python scripts/export_paper_tables.py
+python scripts/export_paper_tables.py --animal BelugaID
 ```
+
+The paper-table exporter reads completed `experiments/` manifests directly. It
+creates `reports/paper_tables/<animal>_{main,ablation}.{tex,csv}` for each
+discovered animal. The main table uses `candidate_k=100`; the ablation table
+uses `10, 50, 100, 250, 500, 1000`. Failed or incomplete runs are excluded,
+and missing configurations are shown as `--`. LaTeX values are percentage
+points, while companion CSV files retain the source fractional values. Full
+gallery methods use `mAP`; shortlist-constrained WildFusion and Vismatch use
+`mAP@k`. The generated tabular is wrapped in
+`\resizebox{\linewidth}{!}{...}` so the wide ablation table fits a CVPR
+column; the template must provide `graphicx` (the standard CVPR template does).
+Include a generated table with `\input{reports/paper_tables/BelugaID_main.tex}`.
 
 For compatibility, tagged model-only checkpoints remain readable. Automatic probe
 discovery searches the new `experiments/finetune/` root first and then historical

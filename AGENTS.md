@@ -42,6 +42,7 @@ bash probe-parallel-czechlynx.sh --list-tasks
 bash probe-parallel-wildlife.sh --list-tasks
 python scripts/kaggle_jaguar_submit.py --config config/kaggle_jaguar.yaml --data-dir /path/to/jaguar-re-id
 python scripts/summarize_runs.py --format markdown
+python scripts/export_paper_tables.py
 python -m unittest discover -s tests -p 'test_*.py'
 python -m py_compile models/*.py reid/**/*.py train/*.py scripts/*.py
 ~~~
@@ -71,6 +72,7 @@ builds tasks from its explicit `VARIANTS` table and crosses them with the
 `CANDIDATE_K_VALUES` list. The active tables near the top of the selected launcher
 are the source of truth for its comparison grid. Run the launcher for the desired
 dataset; `MAX_CONCURRENT_JOBS` becomes the Slurm array `%` throttle.
+Launcher regression tests derive their expected candidate budgets from the active launcher table, so intentional budget edits do not require changing the launcher itself.
 `--list-tasks` and `PROBE_PARALLEL_DRY_RUN=1` are safe non-executing inspection
 modes. Custom Vismatch tasks explicitly use `checkpoint_components=matcher_only`;
 the selected launcher validates custom paths before submission and prints the
@@ -98,6 +100,19 @@ finetune runs also retain `training_metrics.csv` and canonical checkpoints.
 `benchmark_runs/benchmark_results.csv` and `results/.../train_metrics.csv` remain
 populated for compatibility. Historical generated artifacts are never migrated or
 rewritten automatically.
+Paper tables are generated with `scripts/export_paper_tables.py` from completed
+run-local manifests under `experiments/`, never from the aggregate benchmark
+CSV. The exporter discovers animals and methods automatically, selects the
+newest completed run for each method/matcher/checkpoint/budget identity, and
+writes ignored generated files under `reports/paper_tables/`. Main tables use
+`candidate_k=100`; ablation tables use `[10, 50, 100, 250, 500, 1000]` and show
+missing configurations as `--`. LaTeX displays percentage points and includes
+run IDs and manifest paths in comments; companion CSV files retain source
+fractions. Full-gallery methods report `mAP`, while WildFusion and Vismatch
+report shortlist-aware `mAP@k`. Generated LaTeX wraps the wide tabular in
+`\resizebox{\linewidth}{!}{...}` and requires `graphicx` (normally already
+loaded by the CVPR template).
+
 
 New visualizations belong inside the run’s `visualizations/` directory. Their
 `index.csv` must map query/database identities, ranks, scores, correctness, and

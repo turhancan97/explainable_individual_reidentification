@@ -69,7 +69,11 @@ class ParallelProbeLauncherTests(unittest.TestCase):
             parsed.append(fields)
 
         self.assertEqual([int(row["index"]) for row in parsed], list(range(len(parsed))))
-        self.assertEqual(sorted({int(row["candidate_k"]) for row in parsed}), [10, 50, 100, 250, 500, 1000])
+        script_text = SCRIPT.read_text(encoding="utf-8")
+        candidate_matches = re.findall(r"(?m)^(?!\s*#)\s*CANDIDATE_K_VALUES=\(([^)]*)\)", script_text)
+        self.assertTrue(candidate_matches)
+        expected_candidates = sorted(int(value) for value in candidate_matches[-1].split())
+        self.assertEqual(sorted({int(row["candidate_k"]) for row in parsed}), expected_candidates)
         methods = {row["method"] for row in parsed}
         self.assertIn("vismatch", methods)
         self.assertTrue(methods.issubset({"cosine", "wildfusion", "local_lightglue", "linear_probe", "efficient_probe", "vismatch"}))
@@ -160,9 +164,13 @@ class ParallelProbeLauncherTests(unittest.TestCase):
             last = self.run_script("--dry-run", env={**env, "SLURM_ARRAY_TASK_ID": str(task_count - 1)})
             outside = self.run_script("--dry-run", env={**env, "SLURM_ARRAY_TASK_ID": str(task_count)})
         self.assertEqual(first.returncode, 0, first.stderr)
-        self.assertIn("candidate_k=10", first.stdout)
+        script_text = SCRIPT.read_text(encoding="utf-8")
+        candidate_matches = re.findall(r"(?m)^(?!\s*#)\s*CANDIDATE_K_VALUES=\(([^)]*)\)", script_text)
+        self.assertTrue(candidate_matches)
+        expected_candidates = sorted(int(value) for value in candidate_matches[-1].split())
+        self.assertIn(f"candidate_k={expected_candidates[0]}", first.stdout)
         self.assertEqual(last.returncode, 0, last.stderr)
-        self.assertIn("candidate_k=1000", last.stdout)
+        self.assertIn(f"candidate_k={expected_candidates[-1]}", last.stdout)
         self.assertNotEqual(outside.returncode, 0)
         self.assertRegex(outside.stderr, re.compile(rf"outside 0\.\.{task_count - 1}"))
 
