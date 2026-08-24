@@ -38,7 +38,8 @@ python train/finetune.py
 python train/finetune.py train.epochs=10
 python train/probe.py
 python train/probe.py benchmark.method=vismatch benchmark.methods.vismatch.matcher=loma
-bash probe-parallel.sh --list-tasks
+bash probe-parallel-czechlynx.sh --list-tasks
+bash probe-parallel-wildlife.sh --list-tasks
 python scripts/kaggle_jaguar_submit.py --config config/kaggle_jaguar.yaml --data-dir /path/to/jaguar-re-id
 python scripts/summarize_runs.py --format markdown
 python -m unittest discover -s tests -p 'test_*.py'
@@ -64,19 +65,19 @@ the current experiment contract. Jaguar remains on its
 existing argparse and `config/kaggle_jaguar.yaml` workflow; its internal finetune
 template points to `conf/finetune.yaml`.
 
-`probe-parallel.sh` is a separate self-submitting Slurm launcher and must not
-modify or replace `probe.sh`. It builds tasks from the explicit `VARIANTS` table
-and crosses them with the `CANDIDATE_K_VALUES` list. The active tables near the top
-of the launcher are the source of truth for the current comparison grid. Run it
-with `bash probe-parallel.sh`; `MAX_CONCURRENT_JOBS` becomes the
-Slurm array `%` throttle. `--list-tasks` and `PROBE_PARALLEL_DRY_RUN=1` are safe
-non-executing inspection modes. The custom checkpoint variables are defined near
-the top of the launcher, and custom Vismatch tasks explicitly use
-`checkpoint_components=matcher_only`. The launcher validates both custom paths
-before submission and prints the complete Hydra command in each task log.
+`probe-parallel-czechlynx.sh` and `probe-parallel-wildlife.sh` are separate
+self-submitting Slurm launchers and must not modify or replace `probe.sh`. Each
+builds tasks from its explicit `VARIANTS` table and crosses them with the
+`CANDIDATE_K_VALUES` list. The active tables near the top of the selected launcher
+are the source of truth for its comparison grid. Run the launcher for the desired
+dataset; `MAX_CONCURRENT_JOBS` becomes the Slurm array `%` throttle.
+`--list-tasks` and `PROBE_PARALLEL_DRY_RUN=1` are safe non-executing inspection
+modes. Custom Vismatch tasks explicitly use `checkpoint_components=matcher_only`;
+the selected launcher validates custom paths before submission and prints the
+complete Hydra command in each task log.
 Slurm's raw array stdout and stderr remain under `logs/parallel_run/`; keep that
-directory separate from single-run probe logs. After a task starts, the launcher
-also mirrors output into
+directory separate from single-run probe logs. After a task starts, the selected
+launcher also mirrors output into
 `logs/parallel_run/<dataset>/<animal>/job-<array_job>/task-<index>__<method>__<checkpoint>__k<candidate>/`.
 Each task-local record contains `.out`, `.err`, `.combined.log`, and JSON metadata
 with the resolved command, status, timestamps, concise failure summary, and the
@@ -428,3 +429,11 @@ applied at load time.
 
 These validity changes are forward-only. Historical generated artifacts, aggregate CSVs,
 and old caches are not rewritten automatically; rerun affected experiments before using
+
+
+## Immutable parallel probe submissions
+
+The selected dataset launcher creates a submission directory under `logs/parallel_run/submissions/<submission_id>/` containing the copied Hydra config, task table, and JSON manifest. The manifest is passed to Slurm with `--export=ALL,PROBE_PARALLEL_MANIFEST=...`; array tasks must read it rather than rereading `conf/probe.yaml`, shell checkpoint variables, or mutable dataset settings.
+
+Dataset profiles explicitly pair dataset/animal settings with expected custom-checkpoint owners. Submission-time SHA-256 hashes and owner declarations are validated before model loading or cache writing. A missing, changed, or mismatched checkpoint/config fails closed and cancels only the current array element. The active benchmark grid and `probe.sh` contract remain unchanged. Use the selected launcher with `--list-tasks` or `--dry-run` for inspection, and never alter submitted manifests, copied configs, or checkpoint inputs.
+Exactly one `DATASET_PROFILES` entry must be active. The launcher includes templates for CzechLynx, NyalaData, WhaleSharkID, BelugaID, and ZindiTurtleRecall; the shipped active profile is `ZindiTurtleRecall`. It derives default LoMa and RDD checkpoint paths from the active profile's animal name and fails before task generation when zero or multiple profiles are active. Explicit checkpoint overrides remain supported but must belong to the active animal; `animal_name`, when supplied, must match it.

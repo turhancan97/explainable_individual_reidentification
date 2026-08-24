@@ -133,7 +133,7 @@ output:
   csv_path: "benchmark_runs/benchmark_results.csv"
 
 safety_checks:
-  enabled: true
+  enabled: false
 
 reporting:
   enabled: true

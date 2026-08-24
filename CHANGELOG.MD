@@ -7,6 +7,25 @@ kept under Unreleased until a project version is assigned.
 
 ### Added
 
+- Added immutable submission manifests for parallel probe arrays, including copied Hydra configuration, explicit dataset profiles, checkpoint ownership, and SHA-256 provenance.
+- Added the active `ZindiTurtleRecall` dataset profile to `probe-parallel-wildlife.sh`, using its no-background metadata and matching custom LoMa/RDD checkpoint ownership.
+
+### Changed
+
+- Parallel tasks now receive their complete configuration through the submission manifest and emit explicit dataset/checkpoint overrides. The existing benchmark grid and `probe.sh` remain unchanged.
+- Parallel launcher checkpoint defaults are now derived from the sole active profile's animal; zero or multiple active profiles fail fast before task generation.
+- Added commented dataset-profile templates for CzechLynx, NyalaData, WhaleSharkID, and BelugaID; users activate exactly one profile for a run.
+
+### Fixed
+
+- Prevented mutable post-submission configuration or checkpoint variables from creating mismatched animal/checkpoint runs. Invalid tasks fail before model loading/cache creation and cancel only their own array element.
+
+### Known Issues
+
+- Additional datasets must be enabled by adding a complete, validated `DATASET_PROFILES` entry and their custom checkpoint paths. Historical logs are not migrated.
+
+### Added
+
 - Added shortlist-safe retrieval metrics `mAP_at_k`, `rerank_mAP_at_k`, `recall_at_k`,
   `num_queries_with_relevant_in_top_k`, and `score_coverage`, computed identically for
   full-matrix and shortlist-constrained methods so matchers stay comparable.
@@ -45,10 +64,10 @@ kept under Unreleased until a project version is assigned.
 - Added SHA-256 fingerprint helpers and explicit WildFusion calibration diagnostics.
 - Added dependency-light Vismatch checkpoint discovery for exact files and epoch directories, including RDD extractor, LightGlue, and LoMa component schemas.
 - Added an optional ex-reid-gated smoke test for constructing RDD-LightGlue with a custom checkpoint and aligned Hydra regression coverage with the preserved LoMa default.
-- Added `probe-parallel.sh`, a self-submitting capped Slurm array for 54 explicit
-  method/checkpoint/`candidate_k` comparisons. It preserves `probe.sh`, validates
-  custom LoMa and RDD-LightGlue checkpoint paths, supports task listing and dry-run
-  inspection, and records the resolved task command in each array log.
+- Added `probe-parallel-czechlynx.sh` and `probe-parallel-wildlife.sh`, separate
+  self-submitting capped Slurm arrays for explicit method/checkpoint/`candidate_k`
+  comparisons. They preserve `probe.sh`, validate custom matcher checkpoints,
+  support task listing and dry-run inspection, and record resolved task commands.
 - Added a dedicated `logs/parallel_run/` destination for parallel-array stdout and
   stderr so those logs are separate from ordinary probe logs.
 - Added descriptive per-task parallel log copies, task metadata with lifecycle and
@@ -360,3 +379,5 @@ OOM backoff.
   visualizations.
 - Standalone Kaggle Jaguar pipeline with stratified validation, alpha-mask support,
   Stage-A retrieval, optional RDD fusion, score validation, and submission export.
+
+\n

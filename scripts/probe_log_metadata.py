@@ -64,6 +64,13 @@ def init(args: argparse.Namespace) -> None:
         "stderr_path": args.stderr_path,
         "combined_path": args.combined_path,
         "error_summary": "",
+        "submission_id": args.submission_id,
+        "manifest_path": args.manifest_path,
+        "profile_id": args.profile_id,
+        "checkpoint_owner": args.checkpoint_owner,
+        "checkpoint_sha256": args.checkpoint_sha256,
+        "validation_status": args.validation_status,
+        "validation_error": "",
     }
     _write_json(args.path, payload)
 
@@ -76,6 +83,10 @@ def update(args: argparse.Namespace) -> None:
     payload["end_time"] = args.end_time
     payload["experiment_run_directory"] = args.experiment_run_directory or ""
     payload["error_summary"] = _error_summary(args.error_file)
+    if args.validation_status:
+        payload["validation_status"] = args.validation_status
+    if args.validation_error:
+        payload["validation_error"] = args.validation_error
     _write_json(args.path, payload)
 
 
@@ -99,6 +110,12 @@ def main() -> None:
     init_parser.add_argument("--stdout-path", required=True)
     init_parser.add_argument("--stderr-path", required=True)
     init_parser.add_argument("--combined-path", required=True)
+    init_parser.add_argument("--submission-id", default="")
+    init_parser.add_argument("--manifest-path", default="")
+    init_parser.add_argument("--profile-id", default="")
+    init_parser.add_argument("--checkpoint-owner", default="")
+    init_parser.add_argument("--checkpoint-sha256", default="")
+    init_parser.add_argument("--validation-status", default="")
     init_parser.add_argument("--status", choices=("running", "completed", "failed"), default="running")
     init_parser.set_defaults(handler=init)
 
@@ -108,6 +125,8 @@ def main() -> None:
     update_parser.add_argument("--end-time", required=True)
     update_parser.add_argument("--experiment-run-directory", default="")
     update_parser.add_argument("--error-file")
+    update_parser.add_argument("--validation-status", default="")
+    update_parser.add_argument("--validation-error", default="")
     update_parser.set_defaults(handler=update)
 
     args = parser.parse_args()

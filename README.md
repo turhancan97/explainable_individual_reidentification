@@ -125,28 +125,30 @@ python train/probe.py benchmark.method=vismatch benchmark.methods.vismatch.match
 For the reproducible Slurm ablation grid, use the separate launcher:
 
 ```bash
-# Submit the active task table with the configured concurrency cap.
-bash probe-parallel.sh
+# Submit the CzechLynx task table.
+bash probe-parallel-czechlynx.sh
 
-# Inspect the complete task table without submitting jobs.
-bash probe-parallel.sh --list-tasks
+# Submit the WildlifeReID-10k task table.
+bash probe-parallel-wildlife.sh
 
-# Print the array submission command without submitting it.
-PROBE_PARALLEL_DRY_RUN=1 bash probe-parallel.sh
+# Inspect either task table without submitting jobs.
+bash probe-parallel-czechlynx.sh --list-tasks
+bash probe-parallel-wildlife.sh --list-tasks
+
+# Print an array submission command without submitting it.
+PROBE_PARALLEL_DRY_RUN=1 bash probe-parallel-wildlife.sh
 ```
 
-`probe-parallel.sh` leaves `probe.sh` unchanged and can evaluate cosine, WildFusion,
-local LightGlue, linear probe, efficient probe, and default/fine-tuned LoMa and
-RDD-LightGlue. It crosses the active variants with the candidate budgets listed in
-`CANDIDATE_K_VALUES`; the
-active `VARIANTS` table near the top of the launcher is the source of truth for
-which methods run.
-The concurrency cap is controlled by `MAX_CONCURRENT_JOBS` near the top of the file. The two
-custom Vismatch checkpoint paths are also editable there; custom variants use
+`probe-parallel-czechlynx.sh` and `probe-parallel-wildlife.sh` leave `probe.sh`
+unchanged and provide separate task tables for CzechLynx and WildlifeReID-10k.
+Each launcher crosses its active variants with the candidate budgets listed in
+`CANDIDATE_K_VALUES`; its `VARIANTS` table is the source of truth for which methods
+run. Exactly one dataset profile is active in each launcher. The concurrency cap is
+controlled by `MAX_CONCURRENT_JOBS` near the top of the selected file. Custom
+Vismatch checkpoint paths are editable there; custom variants use
 `checkpoint_components=matcher_only`, while default variants use Vismatch-managed
-weights. The launcher fails before submission if either custom checkpoint path is
-missing. Slurm's raw stdout and stderr remain under `logs/parallel_run/` for
-compatibility, while each task also creates descriptive copies under
+weights. The selected launcher fails before submission if a custom checkpoint is
+missing. Slurm's raw stdout and stderr remain under `logs/parallel_run/`, while each task also creates descriptive copies under
 `logs/parallel_run/<dataset>/<animal>/job-<array_job>/`. Files are named with
 the task index, method, matcher, checkpoint, and candidate budget. Each task writes
 `.out`, `.err`, `.combined.log`, and a JSON metadata record containing
@@ -154,7 +156,7 @@ its command, status, timestamps, error summary, and experiment-run link.
 `logs/index.csv` is updated atomically as tasks start and finish. The launcher uses
 Slurm's `SLURM_SUBMIT_DIR`, so it remains valid even though Slurm executes a copied
 script from its private spool directory. Use
-`MAX_CONCURRENT_JOBS=2 bash probe-parallel.sh` to change the throttle.
+`MAX_CONCURRENT_JOBS=2 bash probe-parallel-wildlife.sh` to change the throttle.
 
 To inspect the organized logs:
 
@@ -625,3 +627,10 @@ for primary metrics and retain final-epoch metrics separately. The current test 
 is still the model-selection split; this limitation has not been changed.
 
   - Adjust device/AMP settings in config.
+
+
+### Immutable parallel probe submissions
+
+The selected dataset launcher snapshots every submission under `logs/parallel_run/submissions/<submission_id>/`. The snapshot contains the copied `probe.yaml`, `tasks.tsv`, and `manifest.json`. Array tasks receive the manifest through `--export` and use only that record for dataset, matcher, checkpoint, and `candidate_k` values; changing the working configuration or launcher variables after `sbatch` does not change a submitted task.
+
+Dataset/checkpoint ownership is declared in each launcher's `DATASET_PROFILES`. The CzechLynx launcher has the CzechLynx profile active; the Wildlife launcher has the ZindiTurtleRecall profile active and contains templates for NyalaData, WhaleSharkID, and BelugaID. Exactly one profile must be active; zero or multiple profiles fail before task generation. Default LoMa and RDD checkpoint paths are derived from the active profile's animal name, while explicit overrides are still checked against that animal. Custom checkpoints are checked for existence, ownership, and SHA-256 content identity before model loading or cache creation. Use the selected dataset launcher with `--list-tasks` or `--dry-run` to inspect the immutable task grid. Keep `probe.sh` unchanged, and do not edit a submission manifest or its checkpoint after submission.

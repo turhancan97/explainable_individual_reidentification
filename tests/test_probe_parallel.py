@@ -7,7 +7,7 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[1]
-SCRIPT = ROOT / "probe-parallel.sh"
+SCRIPT = ROOT / "probe-parallel-wildlife.sh"
 
 
 class ParallelProbeLauncherTests(unittest.TestCase):
@@ -90,7 +90,7 @@ class ParallelProbeLauncherTests(unittest.TestCase):
         self.assertIn(f"Submitting {task_count} probe tasks with array throttle 7", result.stdout)
         self.assertRegex(
             result.stdout,
-            re.compile(rf"sbatch --array=0-{task_count - 1}%7 .*probe-parallel\.sh"),
+            re.compile(rf"sbatch --array=0-{task_count - 1}%7 .*probe-parallel-wildlife\.sh"),
         )
 
     def test_default_and_custom_checkpoint_mapping(self):
