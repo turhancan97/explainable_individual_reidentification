@@ -106,12 +106,22 @@ CSV. The exporter discovers animals and methods automatically, selects the
 newest completed run for each method/matcher/checkpoint/budget identity, and
 writes ignored generated files under `reports/paper_tables/`. Main tables use
 `candidate_k=100`; ablation tables use `[10, 50, 100, 250, 500, 1000]` and show
-missing configurations as `--`. LaTeX displays percentage points and includes
-run IDs and manifest paths in comments; companion CSV files retain source
-fractions. Full-gallery methods report `mAP`, while WildFusion and Vismatch
-report shortlist-aware `mAP@k`. Generated LaTeX wraps the wide tabular in
+missing configurations as `--`. LaTeX displays percentage points and labels
+custom checkpoints as `fine-tuned` for paper readability. Run IDs and manifest paths are included
+only with the exporter’s `--detailed-comments` option; companion CSV files always
+retain source fractions.
+Full-gallery methods report `mAP`, while WildFusion and Vismatch report
+shortlist-aware `mAP@k`. Generated LaTeX wraps the wide tabular in
 `\resizebox{\linewidth}{!}{...}` and requires `graphicx` (normally already
 loaded by the CVPR template).
+
+Probe timing uses separate fields for primary compute, matcher/reranking,
+method computation, feature extraction, cache lookup, model setup, calibration,
+and total wall-clock runtime. Primary compute is pairwise Stage-B matching for
+Vismatch, WildFusion, and Local LightGlue; Stage-A selection, feature
+extraction, setup, calibration, cache I/O, and visualization are excluded.
+Cosine and classifier probes use their method-computation time. Historical runs
+without primary timing fields must not be relabeled as matcher timings.
 
 
 New visualizations belong inside the run’s `visualizations/` directory. Their
@@ -375,6 +385,10 @@ applied at load time.
   by `min(relevant, k)` so a shortlist miss scores 0. `rerank_mAP_at_k` divides instead by
   the hits present in the scored top-k and isolates Stage-B ordering from Stage-A reach;
   read it together with `recall_at_k` and `candidate_recall_at_k`.
+- In reports and paper tables, `k` is the candidate budget: the number of gallery images
+  retained by Stage A for second-stage refinement. Increasing `k` can improve shortlist
+  coverage but costs more computation. A dash (`--`) means the method evaluates the full
+  gallery and does not have a shortlist budget.
 - Evaluation cutoffs are validated before model loading: every `benchmark.top_k` entry and
   `benchmark.candidate_k` must fit inside the Vismatch shortlist. Vismatch candidate
   selection, WildFusion refinement (`B`), and the mAP@k cutoff all derive from this one

@@ -37,6 +37,7 @@ from reid.features.containers import FeatureContainer, get_labels_string
 from reid.methods.vismatch import run_vismatch_benchmark
 from reid.methods.wildfusion_calibration import fit_pipeline_calibration, fit_wildfusion_calibration
 from reid.reporting.artifacts import build_run_context, file_identity, run_index_row, upsert_run_index
+from reid.reporting.timing import set_primary_compute_runtime
 from reid.reporting.visualizations import finalize_visualizations
 from reid.training.accumulation import accumulation_group_size, should_step_accumulated_gradients
 from reid.training.checkpointing import resolve_configured_model_checkpoint, resolve_model_checkpoint
@@ -51,6 +52,38 @@ def _format_metric_value(value: Any) -> str:
     if isinstance(value, (int, float, np.integer, np.floating)):
         return f"{float(value):.6f}"
     return str(value)
+
+
+def _instrument_local_pipeline(pipeline: Any, timings: Dict[str, float]) -> None:
+    """Time local feature extraction and pairwise matching separately.
+
+    ``wildlife-tools`` pipelines expose both operations as callables inside
+    ``SimilarityPipeline``. Wrapping those callables preserves the package's
+    scoring path while making the Stage-B matcher boundary observable.
+    """
+
+    original_get_features = pipeline.get_feature_dataset
+
+    def timed_get_features(dataset: Any) -> Any:
+        started = time.perf_counter()
+        result = original_get_features(dataset)
+        timings["feature_extraction_compute_sec"] = timings.get("feature_extraction_compute_sec", 0.0) + (
+            time.perf_counter() - started
+        )
+        return result
+
+    pipeline.get_feature_dataset = timed_get_features
+    original_matcher = pipeline.matcher
+
+    def timed_matcher(*args: Any, **kwargs: Any) -> Any:
+        started = time.perf_counter()
+        result = original_matcher(*args, **kwargs)
+        timings["matcher_runtime_sec"] = timings.get("matcher_runtime_sec", 0.0) + (
+            time.perf_counter() - started
+        )
+        return result
+
+    pipeline.matcher = timed_matcher
 
 
 PROBE_CSV_METADATA_COLUMNS = [
@@ -87,6 +120,15 @@ PROBE_CSV_METRIC_COLUMNS = [
 ]
 
 PROBE_CSV_TIMING_COLUMNS = [
+    "primary_compute_runtime_sec",
+    "matcher_runtime_sec",
+    "method_compute_runtime_sec",
+    "feature_extraction_compute_sec",
+    "feature_cache_lookup_sec",
+    "feature_cache_hits",
+    "feature_cache_misses",
+    "model_setup_sec",
+    "calibration_sec",
     "feature_extraction_sec",
     "similarity_sec",
     "vismatch_stage_a_sec",
@@ -100,6 +142,8 @@ PROBE_CSV_TIMING_COLUMNS = [
     "efficient_probe_train_sec",
     "efficient_probe_eval_sec",
     "total_method_sec",
+    "total_run_sec",
+    "total_run_min",
 ]
 
 
@@ -274,6 +318,10 @@ class FeatureCache:
         self.cache_dir = cache_dir
         self.fmt = fmt
         self.used_keys: List[str] = []
+        self.lookup_sec = 0.0
+        self.compute_sec = 0.0
+        self.hits = 0
+        self.misses = 0
         if self.enabled:
             self.cache_dir.mkdir(parents=True, exist_ok=True)
         if self.fmt not in {"pt", "npz"}:
@@ -286,9 +334,18 @@ class FeatureCache:
     def get_or_compute(self, key: str, compute_fn) -> np.ndarray:
         self.used_keys.append(str(key))
         path = self._path_for(key)
+        t_lookup = time.perf_counter()
         if self.enabled and path.is_file():
-            return self._load(path)
+            data = self._load(path)
+            self.lookup_sec += time.perf_counter() - t_lookup
+            self.hits += 1
+            return data
+        else:
+            self.lookup_sec += time.perf_counter() - t_lookup
+        self.misses += 1
+        t_compute = time.perf_counter()
         data = self._normalize_features(compute_fn())
+        self.compute_sec += time.perf_counter() - t_compute
         if self.enabled:
             self._save(path, data)
         return data
@@ -1352,7 +1409,7 @@ def run_method(
 
     elif method == "wildfusion":
         settings = cfg.benchmark.methods.wildfusion
-        t_extract = time.perf_counter()
+        t_setup = time.perf_counter()
         matcher_aliked = SimilarityPipeline(
             matcher=MatchLightGlue(features="aliked", device=device, batch_size=settings.local_batch_size),
             extractor=AlikedExtractor(
@@ -1378,10 +1435,13 @@ def run_method(
             calibration=IsotonicCalibration(),
         )
         wildfusion = WildFusion(calibrated_pipelines=[matcher_aliked, matcher_mega], priority_pipeline=matcher_mega)
+        timings["model_setup_sec"] = time.perf_counter() - t_setup
         calibration_cfg = getattr(cfg.benchmark, "calibration", {})
+        t_calibration = time.perf_counter()
         calibration_info = fit_wildfusion_calibration(wildfusion, dataset_calibration, dataset_calibration, exclude_self_pairs=bool(getattr(calibration_cfg, "exclude_self_pairs", True)), official_same_set=bool(getattr(calibration_cfg, "official_same_set", False)))
+        timings["calibration_sec"] = time.perf_counter() - t_calibration
         if method_artifacts is not None: method_artifacts["wildfusion_calibration"] = calibration_info
-        timings["feature_extraction_sec"] = time.perf_counter() - t_extract
+        _instrument_local_pipeline(matcher_aliked, timings)
         t_sim = time.perf_counter()
         candidate_k = resolve_candidate_k(cfg, len(dataset_database))
         similarity = _call_similarity(wildfusion, dataset_query, dataset_database, candidate_k)
@@ -1397,17 +1457,20 @@ def run_method(
 
     elif method == "local_lightglue":
         settings = cfg.benchmark.methods.local_lightglue
-        t_extract = time.perf_counter()
+        t_setup = time.perf_counter()
         matcher_local = SimilarityPipeline(
             matcher=MatchLightGlue(features="aliked", device=device, batch_size=settings.local_batch_size),
             extractor=AlikedExtractor(),
             transform=transform_aliked,
             calibration=IsotonicCalibration(),
         )
+        timings["model_setup_sec"] = time.perf_counter() - t_setup
         calibration_cfg = getattr(cfg.benchmark, "calibration", {})
+        t_calibration = time.perf_counter()
         calibration_info = fit_pipeline_calibration(matcher_local, dataset_calibration, dataset_calibration, exclude_self_pairs=bool(getattr(calibration_cfg, "exclude_self_pairs", True)) and not bool(getattr(calibration_cfg, "official_same_set", False)))
+        timings["calibration_sec"] = time.perf_counter() - t_calibration
         if method_artifacts is not None: method_artifacts["local_calibration"] = calibration_info
-        timings["feature_extraction_sec"] = time.perf_counter() - t_extract
+        _instrument_local_pipeline(matcher_local, timings)
         t_sim = time.perf_counter()
         candidate_k = resolve_candidate_k(cfg, len(dataset_database))
         similarity = _call_similarity(matcher_local, dataset_query, dataset_database, candidate_k)
@@ -1514,6 +1577,21 @@ def run_method(
         )
 
     timings["total_method_sec"] = time.perf_counter() - t0
+    timings["feature_cache_lookup_sec"] = float(timings.get("feature_cache_lookup_sec", 0.0)) + float(cache.lookup_sec)
+    timings["feature_cache_hits"] = float(timings.get("feature_cache_hits", 0.0)) + float(cache.hits)
+    timings["feature_cache_misses"] = float(timings.get("feature_cache_misses", 0.0)) + float(cache.misses)
+    timings["feature_extraction_compute_sec"] = float(timings.get("feature_extraction_compute_sec", 0.0)) + float(cache.compute_sec)
+    timings.setdefault(
+        "feature_extraction_sec",
+        timings["feature_extraction_compute_sec"] + timings["feature_cache_lookup_sec"],
+    )
+    timings.setdefault("model_setup_sec", 0.0)
+    timings.setdefault("calibration_sec", 0.0)
+    if method == "cosine":
+        timings["method_compute_runtime_sec"] = float(timings.get("similarity_sec", 0.0))
+    else:
+        timings["method_compute_runtime_sec"] = float(timings["total_method_sec"])
+    set_primary_compute_runtime(method, timings)
     return np.asarray(similarity), timings, method_metrics
 
 
@@ -1648,15 +1726,18 @@ def _run_probe(cfg: DictConfig, context: Any) -> None:
         )
 
     use_backbone = method != "vismatch"
+    backbone_setup_sec = 0.0
     if method == "vismatch":
         stage_a_method = str(cfg.benchmark.methods.vismatch.stage_a_method)
         stage_a_needs_backbone = stage_a_method in {"cosine", "wildfusion", "linear_probe", "efficient_probe"}
         use_backbone = stage_a_needs_backbone
     if use_backbone:
         device = choose_device(cfg.model.device)
+        t_backbone_setup = time.perf_counter()
         model, embedding_size, mean, std, img_size, arch, number_of_patches, checkpoint_path = load_backbone(cfg)
         model.to(device)
         model.eval()
+        backbone_setup_sec = time.perf_counter() - t_backbone_setup
     else:
         device = choose_device(str(cfg.benchmark.methods.vismatch.device))
         model = None
@@ -1747,6 +1828,7 @@ def _run_probe(cfg: DictConfig, context: Any) -> None:
         wandb_run=wandb_run,
         method_artifacts=method_artifacts,
     )
+    timings["model_setup_sec"] = float(timings.get("model_setup_sec", 0.0)) + float(backbone_setup_sec)
 
     top_k_values = [int(k) for k in cfg.benchmark.top_k]
     metrics = compute_metrics(
@@ -1892,7 +1974,14 @@ def _run_probe(cfg: DictConfig, context: Any) -> None:
                 "num_query": len(dataset_query),
                 "num_database": len(dataset_database),
                 "feature_extraction_sec": timings.get("vismatch_feature_extraction_sec", timings.get("feature_extraction_sec", "")),
-                "matching_sec": timings.get("vismatch_rerank_sec", timings.get("similarity_sec", "")),
+                "feature_extraction_compute_sec": timings.get("feature_extraction_compute_sec", ""),
+                "feature_cache_lookup_sec": timings.get("feature_cache_lookup_sec", ""),
+                "primary_compute_runtime_sec": timings.get("primary_compute_runtime_sec", ""),
+                "matcher_runtime_sec": timings.get("matcher_runtime_sec", ""),
+                "method_compute_runtime_sec": timings.get("method_compute_runtime_sec", ""),
+                "model_setup_sec": timings.get("model_setup_sec", ""),
+                "calibration_sec": timings.get("calibration_sec", ""),
+                "matching_sec": timings.get("matcher_runtime_sec", timings.get("primary_compute_runtime_sec", "")),
                 "total_runtime_sec": elapsed_sec,
                 **metrics,
                 **timings,

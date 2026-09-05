@@ -181,6 +181,10 @@ class VismatchMatcherBackend:
             "configured_match_batch_size": None,
             "effective_extract_batch_size": None,
             "effective_match_batch_size": None,
+            "feature_extraction_compute_sec": 0.0,
+            "feature_cache_lookup_sec": 0.0,
+            "feature_cache_hits": 0,
+            "feature_cache_misses": 0,
         }
         matcher_kwargs: Dict[str, Any] = {}
         if matcher == "loma":
@@ -913,12 +917,22 @@ def _extract_split_features(
             return
         if batch_mode == "serial":
             for entry in entries:
-                store_batch([entry], [backend.extract_prepared(entry[1])], 1)
+                t_extract_compute = time.perf_counter()
+                extracted = backend.extract_prepared(entry[1])
+                backend.batch_diagnostics["feature_extraction_compute_sec"] += (
+                    time.perf_counter() - t_extract_compute
+                )
+                store_batch([entry], [extracted], 1)
             return
 
         def process_batch(current: Sequence[Tuple[int, PreparedImage, Path]]) -> Tuple[List[Tuple[int, PreparedImage, Path]], List[FrameFeat]]:
             current_list = list(current)
-            return current_list, backend.extract_prepared_batch([item[1] for item in current_list])
+            t_extract_compute = time.perf_counter()
+            extracted = backend.extract_prepared_batch([item[1] for item in current_list])
+            backend.batch_diagnostics["feature_extraction_compute_sec"] += (
+                time.perf_counter() - t_extract_compute
+            )
+            return current_list, extracted
 
         for (processed_entries, extracted), effective_size in run_with_batch_backoff(
             list(entries),
@@ -936,14 +950,19 @@ def _extract_split_features(
         if not resolved_path.is_absolute(): resolved_path = dataset_root / resolved_path
         key = _cache_key(image_path=image_path, image_content_hash=sha256_file(resolved_path), split_name=split_name, resize_max=resize_max, top_k=top_k, cfg_tag=cfg_tag)
         cache_path = _cache_path(cache_dir, key)
+        t_cache_lookup = time.perf_counter()
         if cache_path.is_file():
             try:
                 cached = _load_cached_feat(cache_path)
                 if cached.schema_version == FEATURE_SCHEMA_VERSION:
                     features[idx] = cached
+                    backend.batch_diagnostics["feature_cache_hits"] += 1
+                    backend.batch_diagnostics["feature_cache_lookup_sec"] += time.perf_counter() - t_cache_lookup
                     continue
             except (OSError, ValueError, KeyError, zipfile.BadZipFile):
                 pass
+        backend.batch_diagnostics["feature_cache_misses"] += 1
+        backend.batch_diagnostics["feature_cache_lookup_sec"] += time.perf_counter() - t_cache_lookup
         row = dataset.df.iloc[idx]
         image = _load_raw_rgb_image(
             row=row,
@@ -1185,6 +1204,12 @@ def run_vismatch_benchmark(
         "vismatch_model_build_sec": float(model_build_sec),
         "vismatch_feature_extraction_sec": float(extract_sec),
         "vismatch_rerank_sec": float(rerank_sec),
+        "model_setup_sec": float(model_build_sec),
+        "matcher_runtime_sec": float(rerank_sec),
+        "feature_extraction_compute_sec": float(backend.batch_diagnostics["feature_extraction_compute_sec"]),
+        "feature_cache_lookup_sec": float(backend.batch_diagnostics["feature_cache_lookup_sec"]),
+        "feature_cache_hits": float(backend.batch_diagnostics["feature_cache_hits"]),
+        "feature_cache_misses": float(backend.batch_diagnostics["feature_cache_misses"]),
         "vismatch_extract_batches": float(backend.batch_diagnostics["extract_batches"]),
         "vismatch_match_batches": float(backend.batch_diagnostics["match_batches"]),
         "vismatch_configured_extract_batch_size": float(extract_batch_size),

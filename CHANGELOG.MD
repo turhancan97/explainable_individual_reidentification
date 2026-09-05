@@ -11,9 +11,17 @@ kept under Unreleased until a project version is assigned.
 - Added the active `ZindiTurtleRecall` dataset profile to `probe-parallel-wildlife.sh`, using its no-background metadata and matching custom LoMa/RDD checkpoint ownership.
 - Added `scripts/export_paper_tables.py` and dependency-light reporting helpers for per-animal CVPR LaTeX/CSV tables, fixed-budget comparisons, and candidate-budget ablations sourced directly from completed experiment artifacts.
 - Wrapped generated paper tables in a `graphicx` `\\resizebox` so wide CVPR ablation tables fit the available column width.
+- Added the opt-in `--detailed-comments` exporter flag; timestamp, run-ID, and manifest comments are now omitted by default.
+- Paper tables now display the internal `custom` checkpoint variant as `fine-tuned` without changing run selection or provenance identities.
+- Added standardized primary compute, matcher, feature, setup, calibration, cache, and total runtime fields for probe runs; paper tables now show primary compute and total runtime separately.
 - Updated parallel launcher regression checks to honor the active candidate-budget list configured by the user.
 
 ### Changed
+
+- Matcher-only timing excludes Stage-A selection, feature extraction, setup, calibration, cache I/O, and visualization; historical runs without the new fields require reruns for matcher-speed comparisons.
+- Clarified that `k` is the gallery-candidate budget for shortlist-based second-stage
+  matching; larger values can improve coverage at higher compute cost, while `--`
+  denotes full-gallery evaluation.
 
 - Parallel tasks now receive their complete configuration through the submission manifest and emit explicit dataset/checkpoint overrides. The existing benchmark grid and `probe.sh` remain unchanged.
 - Parallel launcher checkpoint defaults are now derived from the sole active profile's animal; zero or multiple active profiles fail fast before task generation.

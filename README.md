@@ -261,6 +261,10 @@ Key blocks:
 - `benchmark.candidate_k`: single comparison budget (default `100`) used for Vismatch
   candidates, WildFusion refinement, and the `mAP_at_k`, `rerank_mAP_at_k`, and
   `recall_at_k` evaluation cutoff.
+- Here, `k` is the number of gallery candidates retained for the expensive second
+  stage. A larger `k` can recover identities missed by a smaller shortlist, but
+  increases computation. In the paper tables, `k=--` means the method uses the
+  full gallery rather than a shortlist, such as cosine.
 - WildFusion settings: `local_batch_size` controls pair-processing batches and
   `local_top_k` controls ALIKED keypoints (default `512`). Its refinement `B` is derived
   from `benchmark.candidate_k`.
@@ -496,6 +500,7 @@ python scripts/summarize_runs.py --sort-by top_1 --format markdown
 # Generate per-animal CVPR-ready LaTeX and audit CSV tables
 python scripts/export_paper_tables.py
 python scripts/export_paper_tables.py --animal BelugaID
+python scripts/export_paper_tables.py --detailed-comments  # opt in to provenance comments
 ```
 
 The paper-table exporter reads completed `experiments/` manifests directly. It
@@ -503,12 +508,23 @@ creates `reports/paper_tables/<animal>_{main,ablation}.{tex,csv}` for each
 discovered animal. The main table uses `candidate_k=100`; the ablation table
 uses `10, 50, 100, 250, 500, 1000`. Failed or incomplete runs are excluded,
 and missing configurations are shown as `--`. LaTeX values are percentage
-points, while companion CSV files retain the source fractional values. Full
-gallery methods use `mAP`; shortlist-constrained WildFusion and Vismatch use
+points, while companion CSV files retain the source fractional values. Paper tables
+display the checkpoint source `custom` as `fine-tuned`; run-selection identities
+remain unchanged. Full-gallery methods use `mAP`; shortlist-constrained WildFusion and Vismatch use
 `mAP@k`. The generated tabular is wrapped in
 `\resizebox{\linewidth}{!}{...}` so the wide ablation table fits a CVPR
 column; the template must provide `graphicx` (the standard CVPR template does).
+By default, generated LaTeX omits timestamp, run-ID, and manifest comments; pass
+`--detailed-comments` when those provenance comments are needed.
 Include a generated table with `\input{reports/paper_tables/BelugaID_main.tex}`.
+
+Paper-table runtime uses the primary compute phase: pairwise matcher time for
+Vismatch, WildFusion, and Local LightGlue, and method-computation time for
+cosine and classifier probes. Total wall-clock runtime is shown separately.
+Matcher timing excludes Stage-A selection, feature extraction, model setup,
+calibration, cache I/O, and visualization. Historical runs without the new
+timing fields show `--` for primary compute runtime and must be rerun before
+making matcher-speed claims.
 
 For compatibility, tagged model-only checkpoints remain readable. Automatic probe
 discovery searches the new `experiments/finetune/` root first and then historical

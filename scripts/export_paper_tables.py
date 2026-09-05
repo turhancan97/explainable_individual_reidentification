@@ -21,6 +21,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--animal", action="append", help="Animal to export; repeat for multiple animals")
     parser.add_argument("--main-candidate-k", type=int, default=100)
     parser.add_argument("--budgets", type=int, nargs="+", default=list(DEFAULT_ABLATION_BUDGETS))
+    parser.add_argument(
+        "--detailed-comments",
+        action="store_true",
+        help="Include generation timestamp, run IDs, and manifest paths in LaTeX comments.",
+    )
     return parser.parse_args()
 
 
@@ -32,6 +37,7 @@ def main() -> None:
         animals=args.animal,
         main_candidate_k=args.main_candidate_k,
         budgets=args.budgets,
+        detailed_comments=args.detailed_comments,
     )
     for output in outputs:
         print(output)

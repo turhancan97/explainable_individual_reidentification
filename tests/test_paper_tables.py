@@ -28,6 +28,8 @@ def write_run(
     top_1=0.5,
     map_value=0.4,
     map_at_k=0.3,
+    primary_runtime_sec=None,
+    total_runtime_sec=None,
 ):
     run_dir = root / "probe" / "Dataset" / animal / run_id
     run_dir.mkdir(parents=True)
@@ -52,6 +54,10 @@ def write_run(
     if candidate_k is not None:
         manifest["metrics"]["map_at_k"] = candidate_k
         manifest["timings"]["benchmark_candidate_k"] = candidate_k
+    if primary_runtime_sec is not None:
+        manifest["timings"]["primary_compute_runtime_sec"] = primary_runtime_sec
+    if total_runtime_sec is not None:
+        manifest["timings"]["total_run_sec"] = total_runtime_sec
     if method == "vismatch":
         manifest["vismatch_checkpoint"] = {"source": variant}
     (run_dir / "run_manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
@@ -91,6 +97,10 @@ class PaperTableTests(unittest.TestCase):
             self.assertEqual({row["checkpoint"] for row in rows}, {"default", "custom"})
             self.assertEqual({row["mAP"] for row in rows}, {None})
             self.assertEqual({row["mAP_at_k"] for row in rows}, {0.31, 0.72})
+            latex = render_latex(rows, animal="Lynx", table_name="main", candidate_k=100)
+            self.assertIn("fine-tuned", latex)
+            self.assertIn("Vismatch & custom & fine-tuned", latex)
+            self.assertNotIn("Vismatch & custom & custom", latex)
 
     def test_ablation_grid_preserves_missing_budgets(self):
         with TemporaryDirectory() as temp_dir:
@@ -110,7 +120,15 @@ class PaperTableTests(unittest.TestCase):
         with TemporaryDirectory() as temp_dir:
             root = Path(temp_dir) / "experiments"
             output = Path(temp_dir) / "reports" / "paper_tables"
-            write_run(root, animal="Czech_Lynx", run_id="20260101_run", method="cosine", top_1=0.8765)
+            write_run(
+                root,
+                animal="Czech_Lynx",
+                run_id="20260101_run",
+                method="cosine",
+                top_1=0.8765,
+                primary_runtime_sec=2.5,
+                total_runtime_sec=750.0,
+            )
             outputs = write_animal_tables(
                 discover_records(root),
                 animal="Czech_Lynx",
@@ -119,16 +137,56 @@ class PaperTableTests(unittest.TestCase):
             )
             self.assertEqual({path.suffix for path in outputs}, {".tex", ".csv"})
             latex = (output / "Czech_Lynx_main.tex").read_text(encoding="utf-8")
-            self.assertIn("% generated_at=2026-08-24T00:00:00+00:00", latex)
-            self.assertIn("% run_id=20260101_run", latex)
+            self.assertNotIn("% generated_at=", latex)
+            self.assertNotIn("% run_id=", latex)
             self.assertIn(r"\resizebox{\linewidth}{!}{%", latex)
             self.assertIn("}%", latex)
             self.assertIn(r"\textbf{87.65}", latex)
+            self.assertIn("0.04", latex)
+            self.assertIn("12.50", latex)
+            detailed = render_latex(
+                [
+                    {
+                        "method": "Cosine",
+                        "matcher": "-",
+                        "checkpoint": "default",
+                        "candidate_k": None,
+                        "top_1": 0.5,
+                        "top_5": 0.6,
+                        "top_10": 0.7,
+                        "balanced_top_1": 0.4,
+                        "mAP": 0.3,
+                        "mAP_at_k": None,
+                        "runtime_min": 1.0,
+                        "run_id": "20260101_run",
+                        "manifest_path": "experiments/run_manifest.json",
+                    }
+                ],
+                animal="Czech_Lynx",
+                table_name="main",
+                candidate_k=100,
+                generated_at="2026-08-24T00:00:00+00:00",
+                detailed_comments=True,
+            )
+            self.assertIn("% generated_at=2026-08-24T00:00:00+00:00", detailed)
+            self.assertIn("% run_id=20260101_run", detailed)
             self.assertIn("12.50", latex)
             self.assertIn(r"\_", latex)
             with (output / "Czech_Lynx_main.csv").open(newline="", encoding="utf-8") as handle:
                 rows = list(csv.DictReader(handle))
             self.assertEqual(rows[0]["top_1"], "0.8765")
+            self.assertEqual(rows[0]["runtime_min"], "0.041666666666666664")
+            self.assertEqual(rows[0]["total_runtime_min"], "12.5")
+
+    def test_legacy_run_without_primary_runtime_is_not_mislabeled(self):
+        with TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir) / "experiments"
+            write_run(root, animal="Lynx", run_id="20260101_legacy", method="cosine")
+            rows = build_main_rows(discover_records(root), "Lynx", 100)
+            self.assertIsNone(rows[0]["runtime_min"])
+            self.assertEqual(rows[0]["total_runtime_min"], 12.5)
+            latex = render_latex(rows, animal="Lynx", table_name="main", candidate_k=100)
+            self.assertIn("-- & 12.50", latex)
 
     def test_export_all_animals_writes_four_files_each(self):
         with TemporaryDirectory() as temp_dir:
