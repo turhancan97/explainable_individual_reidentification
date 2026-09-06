@@ -51,6 +51,25 @@ class ParallelProbeLauncherTests(unittest.TestCase):
         self.assertIn("#SBATCH --error=logs/parallel_run/%x_%A_%a.err", text)
         self.assertIn('SCRIPT_DIR="${SLURM_SUBMIT_DIR:-$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)}"', text)
 
+    def test_new_wildlife_profiles_are_ready_to_activate(self):
+        script_text = SCRIPT.read_text(encoding="utf-8")
+        expected_profiles = {
+            "ATRW": ("metadata_ATRW.csv", "299", "299"),
+            "Giraffes": ("metadata_Giraffes.csv", "299", "299"),
+            "LeopardID2022": ("metadata_LeopardID2022.csv", "299", "299"),
+            "HyenaID2022": ("metadata_HyenaID2022.csv", "299", "299"),
+        }
+        for animal, (metadata_name, loma_epoch, rdd_epoch) in expected_profiles.items():
+            self.assertIn(f"|WildlifeReID-10k|{animal}|", script_text)
+            self.assertIn(
+                f"metadata_mdsplit_no_background/{metadata_name}",
+                script_text,
+            )
+            self.assertIn(
+                f"|100|legacy|legacy|{loma_epoch}|{rdd_epoch}\"",
+                script_text,
+            )
+
     def test_slurm_submission_directory_is_used(self):
         with tempfile.TemporaryDirectory() as submit_dir:
             result = self.run_script("--list-tasks", env={"SLURM_SUBMIT_DIR": submit_dir})

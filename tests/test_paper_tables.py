@@ -11,6 +11,7 @@ from reid.reporting.paper_tables import (
     discover_animals,
     discover_records,
     export_tables,
+    render_csv,
     render_latex,
     write_animal_tables,
 )
@@ -115,6 +116,60 @@ class PaperTableTests(unittest.TestCase):
             self.assertEqual([row["candidate_k"] for row in matcher_rows], list(DEFAULT_ABLATION_BUDGETS))
             self.assertIsNone(next(row for row in matcher_rows if row["candidate_k"] == 50)["run_id"])
             self.assertEqual(len([row for row in rows if row["method_key"] == "cosine"]), 1)
+
+    def test_compact_ablation_latex_matches_paper_layout(self):
+        with TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir) / "experiments"
+            write_run(root, animal="Lynx", run_id="20260101_cosine", method="cosine", primary_runtime_sec=60)
+            write_run(
+                root,
+                animal="Lynx",
+                run_id="20260102_loma_default",
+                method="vismatch",
+                variant="default",
+                candidate_k=10,
+                top_1=0.50,
+                primary_runtime_sec=120,
+            )
+            write_run(
+                root,
+                animal="Lynx",
+                run_id="20260103_loma_custom",
+                method="vismatch",
+                variant="custom",
+                candidate_k=10,
+                top_1=0.55,
+                primary_runtime_sec=90,
+            )
+            for run_id in ("20260102_loma_default", "20260103_loma_custom"):
+                manifest_path = root / "probe" / "Dataset" / "Lynx" / run_id / "run_manifest.json"
+                manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+                manifest["variant"] = "loma"
+                manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+            records = discover_records(root)
+            rows = build_ablation_rows(records, "Lynx", (10,))
+            latex = render_latex(
+                rows,
+                animal="Lynx",
+                table_name="ablation",
+                candidate_k=None,
+                compact_ablation=True,
+            )
+
+            self.assertIn(r"\multicolumn{9}{l}{\textbf{Baselines}}", latex)
+            self.assertIn(r"\multicolumn{9}{l}{\textbf{LoMa}}", latex)
+            self.assertIn(r"\rowcolor{gray!10}", latex)
+            self.assertIn(r"\rowcolor{green!10}", latex)
+            self.assertIn(r"\uparrow", latex)
+            self.assertNotIn("mAP (%)", latex)
+            self.assertNotIn("mAP@k (%)", latex)
+            self.assertNotIn("Total Runtime (min)", latex)
+            self.assertIn("Primary Compute (min)", latex)
+            self.assertIn("1.50", latex)
+
+            audit_csv = render_csv(rows)
+            self.assertIn("mAP_at_k", audit_csv)
+            self.assertIn("total_runtime_min", audit_csv)
 
     def test_latex_and_csv_outputs_have_provenance_and_display_format(self):
         with TemporaryDirectory() as temp_dir:

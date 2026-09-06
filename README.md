@@ -80,6 +80,14 @@ Supported model identifiers:
 The legacy name megadescriptor is not accepted. Use an explicit supported
 identifier in custom configurations.
 
+The WildlifeReID-10k analysis profiles currently cover NyalaData, WhaleSharkID,
+BelugaID, ZindiTurtleRecall, ATRW, Giraffes, LeopardID2022, and HyenaID2022.
+The four newly added profiles use `metadata_mdsplit_no_background/metadata_<animal>.csv`,
+with `identity` as the label column and `split` values `train` and `test`. These
+metadata paths point to the corresponding pre-masked `masked_images/` tree, so
+their profile uses `image_variant: no_background` and `no_background: false`.
+
+
 ## Dataset Requirements
 
 Configs assume a dataset root containing metadata CSV with split/label columns.
@@ -138,6 +146,8 @@ bash probe-parallel-wildlife.sh --list-tasks
 # Print an array submission command without submitting it.
 PROBE_PARALLEL_DRY_RUN=1 bash probe-parallel-wildlife.sh
 ```
+The wildlife launcher includes ready-to-activate profiles for ATRW, Giraffes,
+LeopardID2022, and HyenaID2022 in addition to the existing WildlifeReID-10k animals.
 
 `probe-parallel-czechlynx.sh` and `probe-parallel-wildlife.sh` leave `probe.sh`
 unchanged and provide separate task tables for CzechLynx and WildlifeReID-10k.
@@ -501,6 +511,11 @@ python scripts/summarize_runs.py --sort-by top_1 --format markdown
 python scripts/export_paper_tables.py
 python scripts/export_paper_tables.py --animal BelugaID
 python scripts/export_paper_tables.py --detailed-comments  # opt in to provenance comments
+
+# Generate CVPR-style accuracy-versus-candidate-budget figures
+python scripts/plot_paper_figures.py
+python scripts/plot_paper_figures.py --metric top_1
+python scripts/plot_paper_figures.py --animal BelugaID --metric top_5 --formats png pdf
 ```
 
 The paper-table exporter reads completed `experiments/` manifests directly. It
@@ -514,9 +529,25 @@ remain unchanged. Full-gallery methods use `mAP`; shortlist-constrained WildFusi
 `mAP@k`. The generated tabular is wrapped in
 `\resizebox{\linewidth}{!}{...}` so the wide ablation table fits a CVPR
 column; the template must provide `graphicx` (the standard CVPR template does).
+The ablation LaTeX uses a compact CVPR-style layout with method sections, gray
+default rows, green fine-tuned rows, same-`k` delta arrows, Top-1/5/10, balanced
+Top-1, and primary compute runtime. It intentionally omits mAP, mAP@k, and total
+runtime from the typeset ablation table to keep it readable; the companion CSV
+retains all metrics and timing fields for auditability. The colored rows and
+arrows require the usual `xcolor` support in the manuscript template.
 By default, generated LaTeX omits timestamp, run-ID, and manifest comments; pass
 `--detailed-comments` when those provenance comments are needed.
 Include a generated table with `\input{reports/paper_tables/BelugaID_main.tex}`.
+
+`scripts/plot_paper_figures.py` reads completed probe artifacts directly from
+`experiments/` and writes one multi-panel figure per requested metric under
+`reports/figures/` (PNG and PDF by default). Panels are created per animal and
+use equally spaced categorical candidate budgets `10, 50, 100, 250, 500, 1000`,
+matching the paper-style plots. The default series are WildFusion, LoMa
+default/fine-tuned, and RDD-LightGlue default/fine-tuned. Missing runs are left
+as gaps; failed or incomplete runs are ignored. Use `--metric balanced_top_1`
+when a balanced-accuracy figure is needed, or `--metric all` for every supported
+metric.
 
 Paper-table runtime uses the primary compute phase: pairwise matcher time for
 Vismatch, WildFusion, and Local LightGlue, and method-computation time for

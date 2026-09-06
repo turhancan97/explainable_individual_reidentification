@@ -100,6 +100,11 @@ finetune runs also retain `training_metrics.csv` and canonical checkpoints.
 `benchmark_runs/benchmark_results.csv` and `results/.../train_metrics.csv` remain
 populated for compatibility. Historical generated artifacts are never migrated or
 rewritten automatically.
+Accuracy-versus-`k` figures are generated with `scripts/plot_paper_figures.py`
+from the same completed run artifacts. It writes PNG/PDF figures under
+`reports/figures/`, uses categorical budgets `[10, 50, 100, 250, 500, 1000]`,
+and renders WildFusion plus default/fine-tuned LoMa and RDD-LightGlue series.
+Missing budgets are plotted as gaps; failed and incomplete runs are excluded.
 Paper tables are generated with `scripts/export_paper_tables.py` from completed
 run-local manifests under `experiments/`, never from the aggregate benchmark
 CSV. The exporter discovers animals and methods automatically, selects the
@@ -114,6 +119,12 @@ Full-gallery methods report `mAP`, while WildFusion and Vismatch report
 shortlist-aware `mAP@k`. Generated LaTeX wraps the wide tabular in
 `\resizebox{\linewidth}{!}{...}` and requires `graphicx` (normally already
 loaded by the CVPR template).
+Generated ablation LaTeX additionally uses compact method sections, gray default
+rows, green fine-tuned rows, and same-budget delta arrows. It shows Top-1/5/10,
+balanced Top-1, and primary compute runtime, while omitting mAP, mAP@k, and total
+runtime from the typeset ablation fragment for readability. The ablation CSV is
+the audit record and retains the omitted metrics, total runtime, and provenance.
+The manuscript template must provide `xcolor` for row colors and delta arrows.
 
 Probe timing uses separate fields for primary compute, matcher/reranking,
 method computation, feature extraction, cache lookup, model setup, calibration,
@@ -465,4 +476,11 @@ and old caches are not rewritten automatically; rerun affected experiments befor
 The selected dataset launcher creates a submission directory under `logs/parallel_run/submissions/<submission_id>/` containing the copied Hydra config, task table, and JSON manifest. The manifest is passed to Slurm with `--export=ALL,PROBE_PARALLEL_MANIFEST=...`; array tasks must read it rather than rereading `conf/probe.yaml`, shell checkpoint variables, or mutable dataset settings.
 
 Dataset profiles explicitly pair dataset/animal settings with expected custom-checkpoint owners. Submission-time SHA-256 hashes and owner declarations are validated before model loading or cache writing. A missing, changed, or mismatched checkpoint/config fails closed and cancels only the current array element. The active benchmark grid and `probe.sh` contract remain unchanged. Use the selected launcher with `--list-tasks` or `--dry-run` for inspection, and never alter submitted manifests, copied configs, or checkpoint inputs.
-Exactly one `DATASET_PROFILES` entry must be active. The launcher includes templates for CzechLynx, NyalaData, WhaleSharkID, BelugaID, and ZindiTurtleRecall; the shipped active profile is `ZindiTurtleRecall`. It derives default LoMa and RDD checkpoint paths from the active profile's animal name and fails before task generation when zero or multiple profiles are active. Explicit checkpoint overrides remain supported but must belong to the active animal; `animal_name`, when supplied, must match it.
+Exactly one `DATASET_PROFILES` entry must be active. The wildlife launcher includes
+templates for NyalaData, WhaleSharkID, BelugaID, ZindiTurtleRecall, ATRW, Giraffes,
+LeopardID2022, and HyenaID2022; the current active entry is the uncommented row in
+the file. The four new profiles use official pre-masked metadata and profile-specific
+checkpoint layout/epoch fields. The launcher derives default LoMa and RDD checkpoint
+paths from the active profile and fails before task generation when zero or multiple
+profiles are active. Explicit checkpoint overrides remain supported but must belong
+to the active animal; `animal_name`, when supplied, must match it.

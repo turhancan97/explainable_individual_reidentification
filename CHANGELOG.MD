@@ -15,6 +15,12 @@ kept under Unreleased until a project version is assigned.
 - Paper tables now display the internal `custom` checkpoint variant as `fine-tuned` without changing run selection or provenance identities.
 - Added standardized primary compute, matcher, feature, setup, calibration, cache, and total runtime fields for probe runs; paper tables now show primary compute and total runtime separately.
 - Updated parallel launcher regression checks to honor the active candidate-budget list configured by the user.
+- Added compact CVPR-style ablation LaTeX tables with method sections,
+  default/fine-tuned row shading, same-budget delta arrows, and primary compute
+  runtime. mAP, mAP@k, and total runtime remain in the companion CSV audit files.
+- Added `scripts/plot_paper_figures.py` for per-animal, multi-panel accuracy-versus-
+  candidate-budget figures in PNG/PDF formats, with consistent paper styling and
+  explicit handling of missing or incomplete runs.
 
 ### Changed
 
@@ -25,6 +31,9 @@ kept under Unreleased until a project version is assigned.
 
 - Parallel tasks now receive their complete configuration through the submission manifest and emit explicit dataset/checkpoint overrides. The existing benchmark grid and `probe.sh` remain unchanged.
 - Parallel launcher checkpoint defaults are now derived from the sole active profile's animal; zero or multiple active profiles fail fast before task generation.
+- Added ready-to-activate WildlifeReID-10k profiles for ATRW, Giraffes,
+  LeopardID2022, and HyenaID2022, including their official masked metadata and
+  known fine-tuned checkpoint layouts.
 - Added commented dataset-profile templates for CzechLynx, NyalaData, WhaleSharkID, and BelugaID; users activate exactly one profile for a run.
 
 ### Fixed

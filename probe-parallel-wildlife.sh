@@ -3,7 +3,7 @@
 #SBATCH --gpus=1
 #SBATCH --qos=batch
 #SBATCH --cpus-per-task=10
-#SBATCH --mem=256G
+#SBATCH --mem=64G
 #SBATCH --ntasks=1
 #SBATCH --exclude=c22,c11,c15,dgx1
 #SBATCH --job-name=probe_wildlife
@@ -15,12 +15,12 @@
 set -euo pipefail
 
 MAX_CONCURRENT_JOBS="${MAX_CONCURRENT_JOBS:-12}"
-CANDIDATE_K_VALUES=(10)
-# CANDIDATE_K_VALUES=(50 100 250 500 1000)
+# CANDIDATE_K_VALUES=(10)
+CANDIDATE_K_VALUES=(50 100 250 500 1000)
 
 # Leave empty to derive paths from the single active dataset profile. Explicit
 # overrides remain supported, but must belong to that profile's animal.
-animal_name="${animal_name:-BelugaID}"
+animal_name="${animal_name:-}" # optional validation override; the active profile supplies the animal
 CHECKPOINT_ROOT="${CHECKPOINT_ROOT:-/shared/sets/datasets/vision/czechlynx/checkpoints/wildlife-reid-10k}"
 CHECKPOINT_EPOCH="${CHECKPOINT_EPOCH:-299}"
 LOMA_CUSTOM_CHECKPOINT_PATH="${LOMA_CUSTOM_CHECKPOINT_PATH:-}"
@@ -38,26 +38,32 @@ MANIFEST_HELPER="${SCRIPT_DIR}/scripts/probe_parallel_manifest.py"
 LAUNCHER_NAME="probe-parallel-wildlife.sh"
 LAUNCHER_PATH="${SCRIPT_DIR}/${LAUNCHER_NAME}"
 
-# profile|dataset|animal|root|metadata|label|mask|no_background|image_variant|split_col|database_split|query_split|calibration_size
+# profile|dataset|animal|root|metadata|label|mask|no_background|image_variant|split_col|database_split|query_split|calibration_size|loma_checkpoint_dir|rdd_checkpoint_dir|loma_epoch|rdd_epoch
 DATASET_PROFILES=(
     # "zindi|WildlifeReID-10k|ZindiTurtleRecall|/shared/sets/datasets/vision/czechlynx/WildlifeReID-10k|metadata_no_background/metadata_ZindiTurtleRecall.csv|identity|mask|false|no_background|split|train|test|100"
     # Uncomment exactly one profile at a time.
     # "czechlynx|CzechLynx_v2|CzechLynx|/shared/sets/datasets/vision/czechlynx/CzechLynx_v2|CzechLynxDataset-Metadata-Real.csv|unique_name|mask|false|background|split-time_closed|train|test|100"
     # "nyala|WildlifeReID-10k|NyalaData|/shared/sets/datasets/vision/czechlynx/WildlifeReID-10k|metadata_no_background/metadata_NyalaData.csv|identity|mask|false|no_background|split|train|test|100"
     # "whaleshark|WildlifeReID-10k|WhaleSharkID|/shared/sets/datasets/vision/czechlynx/WildlifeReID-10k|metadata_no_background/metadata_WhaleSharkID.csv|identity|mask|false|no_background|split|train|test|100"
-    "beluga|WildlifeReID-10k|BelugaID|/shared/sets/datasets/vision/czechlynx/WildlifeReID-10k|metadata_no_background/metadata_BelugaID.csv|identity|mask|false|no_background|split|train|test|100"
+    # "beluga|WildlifeReID-10k|BelugaID|/shared/sets/datasets/vision/czechlynx/WildlifeReID-10k|metadata_no_background/metadata_BelugaID.csv|identity|mask|false|no_background|split|train|test|100"
+    # New WildlifeReID-10k profiles use the official masked metadata. The final
+    # four fields select the known checkpoint layout/epoch for each animal.
+    # "atrw|WildlifeReID-10k|ATRW|/shared/sets/datasets/vision/czechlynx/WildlifeReID-10k|metadata_mdsplit_no_background/metadata_ATRW.csv|identity|mask|false|no_background|split|train|test|100|legacy|legacy|299|299"
+    "giraffes|WildlifeReID-10k|Giraffes|/shared/sets/datasets/vision/czechlynx/WildlifeReID-10k|metadata_mdsplit_no_background/metadata_Giraffes.csv|identity|mask|false|no_background|split|train|test|100|legacy|legacy|299|299"
+    # "leopardid2022|WildlifeReID-10k|LeopardID2022|/shared/sets/datasets/vision/czechlynx/WildlifeReID-10k|metadata_mdsplit_no_background/metadata_LeopardID2022.csv|identity|mask|false|no_background|split|train|test|100|legacy|legacy|299|299"
+    # "hyenaid2022|WildlifeReID-10k|HyenaID2022|/shared/sets/datasets/vision/czechlynx/WildlifeReID-10k|metadata_mdsplit_no_background/metadata_HyenaID2022.csv|identity|mask|false|no_background|split|train|test|100|legacy|legacy|299|299"
 )
 
 # method|matcher|checkpoint_label|checkpoint_path
 VARIANTS=(
-    # "cosine|-|default|-"
-    # "wildfusion|-|default|-"
+    "cosine|-|default|-"
+    "wildfusion|-|default|-"
     # "local_lightglue|-|default|-"
     # "linear_probe|-|default|-"
     # "efficient_probe|-|default|-"
-    # "vismatch|loma|default|-"
+    "vismatch|loma|default|-"
     "vismatch|loma|custom|${LOMA_CUSTOM_CHECKPOINT_PATH}"
-    # "vismatch|rdd-lightglue|default|-"
+    "vismatch|rdd-lightglue|default|-"
     "vismatch|rdd-lightglue|custom|${RDD_CUSTOM_CHECKPOINT_PATH}"
 )
 
@@ -70,17 +76,21 @@ if (( ${#DATASET_PROFILES[@]} != 1 )); then
     die "exactly one DATASET_PROFILES entry must be active; found ${#DATASET_PROFILES[@]}"
 fi
 
-IFS='|' read -r ACTIVE_PROFILE_ID ACTIVE_DATASET_NAME ACTIVE_ANIMAL ACTIVE_DATASET_ROOT ACTIVE_METADATA_FILE ACTIVE_LABEL_COL ACTIVE_MASK_COL ACTIVE_NO_BACKGROUND ACTIVE_IMAGE_VARIANT ACTIVE_SPLIT_COL ACTIVE_DATABASE_SPLIT ACTIVE_QUERY_SPLIT ACTIVE_CALIBRATION_SIZE <<< "${DATASET_PROFILES[0]}"
+IFS='|' read -r ACTIVE_PROFILE_ID ACTIVE_DATASET_NAME ACTIVE_ANIMAL ACTIVE_DATASET_ROOT ACTIVE_METADATA_FILE ACTIVE_LABEL_COL ACTIVE_MASK_COL ACTIVE_NO_BACKGROUND ACTIVE_IMAGE_VARIANT ACTIVE_SPLIT_COL ACTIVE_DATABASE_SPLIT ACTIVE_QUERY_SPLIT ACTIVE_CALIBRATION_SIZE ACTIVE_LOMA_CHECKPOINT_DIR ACTIVE_RDD_CHECKPOINT_DIR ACTIVE_LOMA_EPOCH ACTIVE_RDD_EPOCH <<< "${DATASET_PROFILES[0]}"
 if [[ -n "${animal_name}" && "${animal_name}" != "${ACTIVE_ANIMAL}" ]]; then
     die "animal_name='${animal_name}' does not match the active profile animal '${ACTIVE_ANIMAL}'"
 fi
 animal_name="${animal_name:-${ACTIVE_ANIMAL}}"
-LOMA_CUSTOM_CHECKPOINT_PATH="${LOMA_CUSTOM_CHECKPOINT_PATH:-${CHECKPOINT_ROOT}/${animal_name}/loma-finetuned/legacy-loma-mined/epoch_${CHECKPOINT_EPOCH}/model.safetensors}"
-RDD_CUSTOM_CHECKPOINT_PATH="${RDD_CUSTOM_CHECKPOINT_PATH:-${CHECKPOINT_ROOT}/${animal_name}/rdd-finetuned/legacy-loma-mined/epoch_${CHECKPOINT_EPOCH}/model.safetensors}"
+ACTIVE_LOMA_CHECKPOINT_DIR="${ACTIVE_LOMA_CHECKPOINT_DIR:-legacy}"
+ACTIVE_RDD_CHECKPOINT_DIR="${ACTIVE_RDD_CHECKPOINT_DIR:-legacy}"
+ACTIVE_LOMA_EPOCH="${ACTIVE_LOMA_EPOCH:-${CHECKPOINT_EPOCH}}"
+ACTIVE_RDD_EPOCH="${ACTIVE_RDD_EPOCH:-${CHECKPOINT_EPOCH}}"
+LOMA_CUSTOM_CHECKPOINT_PATH="${LOMA_CUSTOM_CHECKPOINT_PATH:-${CHECKPOINT_ROOT}/${animal_name}/loma-finetuned/${ACTIVE_LOMA_CHECKPOINT_DIR}/epoch_${ACTIVE_LOMA_EPOCH}/model.safetensors}"
+RDD_CUSTOM_CHECKPOINT_PATH="${RDD_CUSTOM_CHECKPOINT_PATH:-${CHECKPOINT_ROOT}/${animal_name}/rdd-finetuned/${ACTIVE_RDD_CHECKPOINT_DIR}/epoch_${ACTIVE_RDD_EPOCH}/model.safetensors}"
 
 TASKS=()
 for profile in "${DATASET_PROFILES[@]}"; do
-    IFS='|' read -r PROFILE_ID DATASET_NAME ANIMAL DATASET_ROOT METADATA_FILE LABEL_COL MASK_COL NO_BACKGROUND IMAGE_VARIANT SPLIT_COL DATABASE_SPLIT_VALUE QUERY_SPLIT_VALUE CALIBRATION_SIZE <<< "${profile}"
+    IFS='|' read -r PROFILE_ID DATASET_NAME ANIMAL DATASET_ROOT METADATA_FILE LABEL_COL MASK_COL NO_BACKGROUND IMAGE_VARIANT SPLIT_COL DATABASE_SPLIT_VALUE QUERY_SPLIT_VALUE CALIBRATION_SIZE PROFILE_LOMA_CHECKPOINT_DIR PROFILE_RDD_CHECKPOINT_DIR PROFILE_LOMA_EPOCH PROFILE_RDD_EPOCH <<< "${profile}"
     RDD_OWNER="${ANIMAL}"; RDD_PROFILE_CHECKPOINT="${RDD_CUSTOM_CHECKPOINT_PATH}"
     LOMA_OWNER="${ANIMAL}"; LOMA_PROFILE_CHECKPOINT="${LOMA_CUSTOM_CHECKPOINT_PATH}"
     for candidate_k in "${CANDIDATE_K_VALUES[@]}"; do
