@@ -1,6 +1,6 @@
 dataset:
   name: "CzechLynx_v2" # WildlifeReID-10k | CzechLynx_v2
-  animal: "CzechLynx" # CzechLynx | NyalaData | WhaleSharkID | BelugaID | ZindiTurtleRecall | ATRW | Giraffes | LeopardID2022 | HyenaID2022 | ReunionTurtles
+  animal: "CzechLynx" # CzechLynx | NyalaData | WhaleSharkID | BelugaID | ZindiTurtleRecall | ATRW | Giraffes | LeopardID2022 | HyenaID2022 | GiraffeZebraID | CowDataset | StripeSpotter | SeaStarReID2023 | ReunionTurtles
   root: "/shared/sets/datasets/vision/czechlynx/${dataset.name}"
   metadata_file: "CzechLynxDataset-Metadata-Real.csv" # metadata_no_background/metadata_${dataset.animal}.csv | metadata_mdsplit_no_background/metadata_${dataset.animal}.csv | metadata_with_background/metadata_${dataset.animal}.csv | CzechLynxDataset-Metadata-Real.csv
   label_col: "unique_name" # identity | unique_name

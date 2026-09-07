@@ -171,6 +171,52 @@ class PaperTableTests(unittest.TestCase):
             self.assertIn("mAP_at_k", audit_csv)
             self.assertIn("total_runtime_min", audit_csv)
 
+    def test_main_table_uses_fixed_k_and_gain_layout(self):
+        with TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir) / "experiments"
+            write_run(
+                root,
+                animal="Lynx",
+                run_id="20260101_loma_default",
+                method="vismatch",
+                variant="default",
+                candidate_k=50,
+                top_1=0.50,
+                primary_runtime_sec=120,
+            )
+            write_run(
+                root,
+                animal="Lynx",
+                run_id="20260102_loma_custom",
+                method="vismatch",
+                variant="custom",
+                candidate_k=50,
+                top_1=0.55,
+                primary_runtime_sec=90,
+            )
+            for run_id in ("20260101_loma_default", "20260102_loma_custom"):
+                manifest_path = root / "probe" / "Dataset" / "Lynx" / run_id / "run_manifest.json"
+                manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+                manifest["variant"] = "loma"
+                manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+            records = discover_records(root)
+            rows = build_main_rows(records, "Lynx", 50)
+            latex = render_latex(
+                rows,
+                animal="Lynx",
+                table_name="main",
+                candidate_k=50,
+                compact_ablation=True,
+            )
+
+            self.assertIn("candidate budget $k=50$", latex)
+            self.assertIn(r"\rowcolor{gray!10}", latex)
+            self.assertIn(r"\rowcolor{green!10}", latex)
+            self.assertIn(r"\uparrow", latex)
+            self.assertIn("Primary Compute (min)", latex)
+            self.assertNotIn("mAP (%)", latex)
+            self.assertNotIn("Total Runtime (min)", latex)
+
     def test_latex_and_csv_outputs_have_provenance_and_display_format(self):
         with TemporaryDirectory() as temp_dir:
             root = Path(temp_dir) / "experiments"
@@ -198,7 +244,8 @@ class PaperTableTests(unittest.TestCase):
             self.assertIn("}%", latex)
             self.assertIn(r"\textbf{87.65}", latex)
             self.assertIn("0.04", latex)
-            self.assertIn("12.50", latex)
+            self.assertIn("candidate budget $k=50$", latex)
+            self.assertNotIn("12.50", latex)
             detailed = render_latex(
                 [
                     {
@@ -225,7 +272,6 @@ class PaperTableTests(unittest.TestCase):
             )
             self.assertIn("% generated_at=2026-08-24T00:00:00+00:00", detailed)
             self.assertIn("% run_id=20260101_run", detailed)
-            self.assertIn("12.50", latex)
             self.assertIn(r"\_", latex)
             with (output / "Czech_Lynx_main.csv").open(newline="", encoding="utf-8") as handle:
                 rows = list(csv.DictReader(handle))

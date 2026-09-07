@@ -81,9 +81,10 @@ The legacy name megadescriptor is not accepted. Use an explicit supported
 identifier in custom configurations.
 
 The WildlifeReID-10k analysis profiles currently cover NyalaData, WhaleSharkID,
-BelugaID, ZindiTurtleRecall, ATRW, Giraffes, LeopardID2022, and HyenaID2022.
-The four newly added profiles use `metadata_mdsplit_no_background/metadata_<animal>.csv`,
-with `identity` as the label column and `split` values `train` and `test`. These
+BelugaID, ZindiTurtleRecall, ATRW, Giraffes, LeopardID2022, HyenaID2022,
+GiraffeZebraID, CowDataset, StripeSpotter, and SeaStarReID2023. The added
+profiles use `metadata_mdsplit_no_background/metadata_<animal>.csv`, with
+`identity` as the label column and `split` values `train` and `test`. These
 metadata paths point to the corresponding pre-masked `masked_images/` tree, so
 their profile uses `image_variant: no_background` and `no_background: false`.
 
@@ -147,7 +148,10 @@ bash probe-parallel-wildlife.sh --list-tasks
 PROBE_PARALLEL_DRY_RUN=1 bash probe-parallel-wildlife.sh
 ```
 The wildlife launcher includes ready-to-activate profiles for ATRW, Giraffes,
-LeopardID2022, and HyenaID2022 in addition to the existing WildlifeReID-10k animals.
+LeopardID2022, HyenaID2022, GiraffeZebraID, CowDataset, StripeSpotter, and
+SeaStarReID2023 in addition to the existing WildlifeReID-10k animals. Activate
+exactly one profile at a time; each new profile expects the corresponding
+`legacy/epoch_299/model.safetensors` LoMa and RDD checkpoint paths.
 
 `probe-parallel-czechlynx.sh` and `probe-parallel-wildlife.sh` leave `probe.sh`
 unchanged and provide separate task tables for CzechLynx and WildlifeReID-10k.
@@ -520,7 +524,8 @@ python scripts/plot_paper_figures.py --animal BelugaID --metric top_5 --formats 
 
 The paper-table exporter reads completed `experiments/` manifests directly. It
 creates `reports/paper_tables/<animal>_{main,ablation}.{tex,csv}` for each
-discovered animal. The main table uses `candidate_k=100`; the ablation table
+discovered animal. The main table uses `candidate_k=50` and presents default
+and fine-tuned rows together with same-budget gain arrows; the ablation table
 uses `10, 50, 100, 250, 500, 1000`. Failed or incomplete runs are excluded,
 and missing configurations are shown as `--`. LaTeX values are percentage
 points, while companion CSV files retain the source fractional values. Paper tables
@@ -529,12 +534,13 @@ remain unchanged. Full-gallery methods use `mAP`; shortlist-constrained WildFusi
 `mAP@k`. The generated tabular is wrapped in
 `\resizebox{\linewidth}{!}{...}` so the wide ablation table fits a CVPR
 column; the template must provide `graphicx` (the standard CVPR template does).
-The ablation LaTeX uses a compact CVPR-style layout with method sections, gray
-default rows, green fine-tuned rows, same-`k` delta arrows, Top-1/5/10, balanced
-Top-1, and primary compute runtime. It intentionally omits mAP, mAP@k, and total
-runtime from the typeset ablation table to keep it readable; the companion CSV
-retains all metrics and timing fields for auditability. The colored rows and
-arrows require the usual `xcolor` support in the manuscript template.
+The main and ablation LaTeX fragments use a compact CVPR-style layout with method
+sections, gray default rows, green fine-tuned rows, same-`k` delta arrows,
+Top-1/5/10, balanced Top-1, and primary compute runtime. They intentionally omit
+mAP, mAP@k, and total runtime from the typeset fragments to keep them readable;
+the companion CSV files retain all metrics and timing fields for auditability.
+The colored rows and arrows require the usual `xcolor` support in the manuscript
+template.
 By default, generated LaTeX omits timestamp, run-ID, and manifest comments; pass
 `--detailed-comments` when those provenance comments are needed.
 Include a generated table with `\input{reports/paper_tables/BelugaID_main.tex}`.
@@ -696,4 +702,4 @@ is still the model-selection split; this limitation has not been changed.
 
 The selected dataset launcher snapshots every submission under `logs/parallel_run/submissions/<submission_id>/`. The snapshot contains the copied `probe.yaml`, `tasks.tsv`, and `manifest.json`. Array tasks receive the manifest through `--export` and use only that record for dataset, matcher, checkpoint, and `candidate_k` values; changing the working configuration or launcher variables after `sbatch` does not change a submitted task.
 
-Dataset/checkpoint ownership is declared in each launcher's `DATASET_PROFILES`. The CzechLynx launcher has the CzechLynx profile active; the Wildlife launcher has the ZindiTurtleRecall profile active and contains templates for NyalaData, WhaleSharkID, and BelugaID. Exactly one profile must be active; zero or multiple profiles fail before task generation. Default LoMa and RDD checkpoint paths are derived from the active profile's animal name, while explicit overrides are still checked against that animal. Custom checkpoints are checked for existence, ownership, and SHA-256 content identity before model loading or cache creation. Use the selected dataset launcher with `--list-tasks` or `--dry-run` to inspect the immutable task grid. Keep `probe.sh` unchanged, and do not edit a submission manifest or its checkpoint after submission.
+Dataset/checkpoint ownership is declared in each launcher's `DATASET_PROFILES`. The CzechLynx launcher has the CzechLynx profile active; the Wildlife launcher contains templates for NyalaData, WhaleSharkID, BelugaID, ZindiTurtleRecall, ATRW, Giraffes, LeopardID2022, HyenaID2022, GiraffeZebraID, CowDataset, StripeSpotter, and SeaStarReID2023. Exactly one profile must be active; zero or multiple profiles fail before task generation. Default LoMa and RDD checkpoint paths are derived from the active profile's animal name, while explicit overrides are still checked against that animal. Custom checkpoints are checked for existence, ownership, and SHA-256 content identity before model loading or cache creation. Use the selected dataset launcher with `--list-tasks` or `--dry-run` to inspect the immutable task grid. Keep `probe.sh` unchanged, and do not edit a submission manifest or its checkpoint after submission.

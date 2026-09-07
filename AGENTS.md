@@ -4,8 +4,9 @@
 
 This repository trains and evaluates wildlife individual re-identification systems.
 Given query and database images, it produces identity-retrieval similarity scores.
-The primary datasets are wildlife datasets such as CzechLynx, LeopardID2022,
-ReunionTurtles, and Kaggle Jaguar data.
+The primary datasets are wildlife datasets such as CzechLynx, WildlifeReID-10k
+animals (including LeopardID2022, GiraffeZebraID, CowDataset, StripeSpotter,
+and SeaStarReID2023), ReunionTurtles, and Kaggle Jaguar data.
 
 The project is retrieval-oriented. Do not describe or evaluate it as a conventional
 single-label animal-species classifier: identity labels represent individual animals.
@@ -110,7 +111,8 @@ run-local manifests under `experiments/`, never from the aggregate benchmark
 CSV. The exporter discovers animals and methods automatically, selects the
 newest completed run for each method/matcher/checkpoint/budget identity, and
 writes ignored generated files under `reports/paper_tables/`. Main tables use
-`candidate_k=100`; ablation tables use `[10, 50, 100, 250, 500, 1000]` and show
+`candidate_k=50` and use the compact paired default/fine-tuned layout with
+same-budget gain arrows; ablation tables use `[10, 50, 100, 250, 500, 1000]` and show
 missing configurations as `--`. LaTeX displays percentage points and labels
 custom checkpoints as `fine-tuned` for paper readability. Run IDs and manifest paths are included
 only with the exporter’s `--detailed-comments` option; companion CSV files always
@@ -119,11 +121,12 @@ Full-gallery methods report `mAP`, while WildFusion and Vismatch report
 shortlist-aware `mAP@k`. Generated LaTeX wraps the wide tabular in
 `\resizebox{\linewidth}{!}{...}` and requires `graphicx` (normally already
 loaded by the CVPR template).
-Generated ablation LaTeX additionally uses compact method sections, gray default
-rows, green fine-tuned rows, and same-budget delta arrows. It shows Top-1/5/10,
-balanced Top-1, and primary compute runtime, while omitting mAP, mAP@k, and total
-runtime from the typeset ablation fragment for readability. The ablation CSV is
-the audit record and retains the omitted metrics, total runtime, and provenance.
+Generated main and ablation LaTeX use compact method sections, gray default rows,
+green fine-tuned rows, and same-budget delta arrows. Main is fixed at `k=50`.
+They show Top-1/5/10, balanced Top-1, and primary compute runtime, while omitting
+mAP, mAP@k, and total runtime from the typeset fragments for readability. The CSV
+files are the audit records and retain the omitted metrics, total runtime, and
+provenance.
 The manuscript template must provide `xcolor` for row colors and delta arrows.
 
 Probe timing uses separate fields for primary compute, matcher/reranking,
@@ -478,9 +481,11 @@ The selected dataset launcher creates a submission directory under `logs/paralle
 Dataset profiles explicitly pair dataset/animal settings with expected custom-checkpoint owners. Submission-time SHA-256 hashes and owner declarations are validated before model loading or cache writing. A missing, changed, or mismatched checkpoint/config fails closed and cancels only the current array element. The active benchmark grid and `probe.sh` contract remain unchanged. Use the selected launcher with `--list-tasks` or `--dry-run` for inspection, and never alter submitted manifests, copied configs, or checkpoint inputs.
 Exactly one `DATASET_PROFILES` entry must be active. The wildlife launcher includes
 templates for NyalaData, WhaleSharkID, BelugaID, ZindiTurtleRecall, ATRW, Giraffes,
-LeopardID2022, and HyenaID2022; the current active entry is the uncommented row in
-the file. The four new profiles use official pre-masked metadata and profile-specific
-checkpoint layout/epoch fields. The launcher derives default LoMa and RDD checkpoint
+LeopardID2022, HyenaID2022, GiraffeZebraID, CowDataset, StripeSpotter, and
+SeaStarReID2023; the current active entry is the uncommented row in the file. The
+added profiles use official pre-masked metadata and profile-specific checkpoint
+layout/epoch fields; the four newest profiles use `legacy/epoch_299/model.safetensors`
+for both LoMa and RDD. The launcher derives default LoMa and RDD checkpoint
 paths from the active profile and fails before task generation when zero or multiple
 profiles are active. Explicit checkpoint overrides remain supported but must belong
 to the active animal; `animal_name`, when supplied, must match it.

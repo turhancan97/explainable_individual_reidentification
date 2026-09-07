@@ -58,6 +58,10 @@ class ParallelProbeLauncherTests(unittest.TestCase):
             "Giraffes": ("metadata_Giraffes.csv", "299", "299"),
             "LeopardID2022": ("metadata_LeopardID2022.csv", "299", "299"),
             "HyenaID2022": ("metadata_HyenaID2022.csv", "299", "299"),
+            "GiraffeZebraID": ("metadata_GiraffeZebraID.csv", "299", "299"),
+            "CowDataset": ("metadata_CowDataset.csv", "299", "299"),
+            "StripeSpotter": ("metadata_StripeSpotter.csv", "299", "299"),
+            "SeaStarReID2023": ("metadata_SeaStarReID2023.csv", "299", "299"),
         }
         for animal, (metadata_name, loma_epoch, rdd_epoch) in expected_profiles.items():
             self.assertIn(f"|WildlifeReID-10k|{animal}|", script_text)

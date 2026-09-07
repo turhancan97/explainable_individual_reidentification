@@ -51,3 +51,5 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+
+# python scripts/plot_paper_figures.py --metric balanced_top_1

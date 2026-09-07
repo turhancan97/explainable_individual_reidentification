@@ -18,6 +18,9 @@ kept under Unreleased until a project version is assigned.
 - Added compact CVPR-style ablation LaTeX tables with method sections,
   default/fine-tuned row shading, same-budget delta arrows, and primary compute
   runtime. mAP, mAP@k, and total runtime remain in the companion CSV audit files.
+- Changed the paper-table main comparison to the compact paired layout at
+  `candidate_k=50`, including default-versus-fine-tuned gain arrows and the same
+  primary-runtime presentation as the ablation tables.
 - Added `scripts/plot_paper_figures.py` for per-animal, multi-panel accuracy-versus-
   candidate-budget figures in PNG/PDF formats, with consistent paper styling and
   explicit handling of missing or incomplete runs.
@@ -34,6 +37,10 @@ kept under Unreleased until a project version is assigned.
 - Added ready-to-activate WildlifeReID-10k profiles for ATRW, Giraffes,
   LeopardID2022, and HyenaID2022, including their official masked metadata and
   known fine-tuned checkpoint layouts.
+- (2026-09-07) Added ready-to-activate WildlifeReID-10k profiles for
+  GiraffeZebraID, CowDataset, StripeSpotter, and SeaStarReID2023. They use the
+  established mdsplit no-background metadata protocol and profile-derived
+  `legacy/epoch_299` LoMa/RDD checkpoint paths.
 - Added commented dataset-profile templates for CzechLynx, NyalaData, WhaleSharkID, and BelugaID; users activate exactly one profile for a run.
 
 ### Fixed
