@@ -509,6 +509,23 @@ def _set_trainable_params(model: Any, cfg: DictConfig, method_key: str) -> None:
     raise ValueError(f"{method_key}.train_mode must be one of: all, partial, classifier")
 
 
+def _set_probe_training_mode(model: Any, objective: Any, train_mode: str) -> None:
+    """Set module modes without accidentally training a frozen probe backbone.
+
+    In classifier mode the backbone is a fixed feature extractor. Calling
+    ``model.train()`` would still switch dropout/stochastic-depth layers to
+    training behavior and would update running statistics in stateful
+    normalization layers, even though all backbone parameters are frozen.
+    The classifier objective is a separate module and remains in training mode.
+    """
+
+    objective.train()
+    if str(train_mode) == "classifier":
+        model.eval()
+    else:
+        model.train()
+
+
 def _build_optimizer(params, method_cfg: DictConfig, method_key: str):
     opt_name = str(method_cfg.optimizer).lower()
     lr = float(method_cfg.lr)
@@ -933,8 +950,7 @@ def run_linear_probe(
     t_train = time.perf_counter()
     log_every = int(lp_cfg.log_every) if "log_every" in lp_cfg else 1
     for epoch in range(start_epoch, int(lp_cfg.epochs)):
-        model.train()
-        objective.train()
+        _set_probe_training_mode(model, objective, str(lp_cfg.train_mode))
         losses: List[float] = []
         train_probs_list: List[np.ndarray] = []
         train_targets_list: List[np.ndarray] = []
@@ -1149,8 +1165,7 @@ def run_efficient_probe(
     t_train = time.perf_counter()
     log_every = int(ep_cfg.log_every) if "log_every" in ep_cfg else 1
     for epoch in range(start_epoch, int(ep_cfg.epochs)):
-        model.train()
-        objective.train()
+        _set_probe_training_mode(model, objective, str(ep_cfg.train_mode))
         losses: List[float] = []
         train_probs_list: List[np.ndarray] = []
         train_targets_list: List[np.ndarray] = []

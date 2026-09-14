@@ -5,6 +5,13 @@ kept under Unreleased until a project version is assigned.
 
 ## [Unreleased] - 2026-08-13
 
+
+### Fixed
+
+- Classifier-mode linear and efficient probes now keep the frozen backbone in
+evaluation mode while training only the probe objective, preventing dropout and
+normalization-state changes in the extracted representation.
+
 ### Added
 
 - Added immutable submission manifests for parallel probe arrays, including copied Hydra configuration, explicit dataset profiles, checkpoint ownership, and SHA-256 provenance.

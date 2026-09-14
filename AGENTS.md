@@ -180,6 +180,12 @@ Classifier probes are closed-set methods: query identities must occur in the
 database identities. Retrieval methods may evaluate unseen identities, but the
 safety-check output must be considered before interpreting metrics.
 
+For `train_mode: classifier` in linear and efficient probes, the backbone is a
+frozen feature extractor and must remain in `eval()` mode during training. Only
+the classifier objective is put in `train()` mode. This prevents
+dropout/stochastic-depth randomness and stateful normalization updates from
+changing the frozen representation.
+
 ## Checkpoints
 
 Canonical finetune outputs are:

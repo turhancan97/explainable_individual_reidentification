@@ -26,7 +26,11 @@ from reid.utils import fingerprints
 from reid.utils.fingerprints import file_digest_cache, hash_state_dict, sha256_file
 try:
     from omegaconf import OmegaConf
-    from reid.engine.probe_runner import _format_metric_value, extract_deep_features_with_cache
+    from reid.engine.probe_runner import (
+        _format_metric_value,
+        _set_probe_training_mode,
+        extract_deep_features_with_cache,
+    )
     HAS_PROBE_CACHE_DEPS = True
 except ModuleNotFoundError:
     HAS_PROBE_CACHE_DEPS = False
@@ -472,6 +476,28 @@ class ResearchValidityTests(unittest.TestCase):
             self.assertEqual(diagnostics["excluded_self_pairs"], 2)
             self.assertEqual(len(pipeline.calibration.scores), 2)
             self.assertTrue(pipeline.calibration_done)
+
+
+    @unittest.skipUnless(HAS_PROBE_CACHE_DEPS, "probe runner dependencies not available")
+    def test_classifier_probe_keeps_frozen_backbone_in_eval_mode(self):
+        import torch
+        from torch import nn
+
+        backbone = nn.Sequential(nn.BatchNorm1d(4), nn.Dropout(p=0.5), nn.Linear(4, 3))
+        objective = nn.Linear(3, 2)
+        backbone.train()
+        objective.eval()
+
+        _set_probe_training_mode(backbone, objective, "classifier")
+
+        self.assertFalse(backbone.training)
+        self.assertFalse(backbone[0].training)
+        self.assertFalse(backbone[1].training)
+        self.assertTrue(objective.training)
+
+        _set_probe_training_mode(backbone, objective, "all")
+        self.assertTrue(backbone.training)
+        self.assertTrue(objective.training)
 
 
 if __name__ == "__main__":
