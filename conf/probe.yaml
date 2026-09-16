@@ -53,17 +53,20 @@ benchmark:
       local_batch_size: 16
     linear_probe:
       train_mode: "classifier"  # all | partial | classifier (frozen backbone)
+      class_weighting: "inverse_frequency"  # inverse_frequency | none
+      class_weight_normalize: true
+      class_weight_max: 5.0
       epochs: 50
       log_every: 1
-      batch_size: 64
+      batch_size: 16
       num_workers: 8
-      accumulation_steps: 1
+      accumulation_steps: 4
       optimizer: "sgd"          # sgd | adam | adamw
       lr: 0.001
       momentum: 0.9
       weight_decay: 0.0001
       eta_min_scale: 1e-3
-      eval_batch_size: 128
+      eval_batch_size: 64
       eval_num_workers: 8
       resume_checkpoint: null
       save_checkpoint: false

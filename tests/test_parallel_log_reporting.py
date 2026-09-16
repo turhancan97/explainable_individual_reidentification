@@ -41,6 +41,8 @@ class ParallelLogReportingTests(unittest.TestCase):
                 "vismatch",
                 "--matcher",
                 "rdd-lightglue",
+                "--class-weighting",
+                "weighted",
                 "--checkpoint",
                 "custom",
                 "--checkpoint-path",
@@ -63,6 +65,7 @@ class ParallelLogReportingTests(unittest.TestCase):
             result = subprocess.run(command, cwd=ROOT, capture_output=True, text=True)
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertEqual(json.loads(metadata.read_text())["status"], "running")
+            self.assertEqual(json.loads(metadata.read_text())["class_weighting"], "weighted")
 
             stderr.write_text("ordinary warning\nRuntimeError: synthetic failure\n", encoding="utf-8")
             result = subprocess.run(
@@ -117,6 +120,7 @@ class ParallelLogReportingTests(unittest.TestCase):
                 rows = list(csv.DictReader(handle))
             self.assertEqual(len(rows), 1)
             self.assertEqual(rows[0]["candidate_k"], "100")
+            self.assertEqual(rows[0]["class_weighting"], "weighted")
             self.assertEqual(rows[0]["experiment_run_directory"], "experiments/probe/example")
 
     def test_summary_filters_and_csv_output(self):

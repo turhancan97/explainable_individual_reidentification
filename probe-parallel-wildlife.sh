@@ -5,7 +5,7 @@
 #SBATCH --cpus-per-task=10
 #SBATCH --mem=64G
 #SBATCH --ntasks=1
-#SBATCH --exclude=c22,c11,c15,dgx1
+#SBATCH --exclude=c22,c11,c13,c15,dgx1
 #SBATCH --job-name=probe_wildlife
 #SBATCH --time=24:00:00
 #SBATCH --output=logs/parallel_run/%x_%A_%a.out
@@ -40,9 +40,9 @@ LAUNCHER_PATH="${SCRIPT_DIR}/${LAUNCHER_NAME}"
 
 # profile|dataset|animal|root|metadata|label|mask|no_background|image_variant|split_col|database_split|query_split|calibration_size|loma_checkpoint_dir|rdd_checkpoint_dir|loma_epoch|rdd_epoch
 DATASET_PROFILES=(
-    # "zindi|WildlifeReID-10k|ZindiTurtleRecall|/shared/sets/datasets/vision/czechlynx/WildlifeReID-10k|metadata_no_background/metadata_ZindiTurtleRecall.csv|identity|mask|false|no_background|split|train|test|100"
+    "zindi|WildlifeReID-10k|ZindiTurtleRecall|/shared/sets/datasets/vision/czechlynx/WildlifeReID-10k|metadata_no_background/metadata_ZindiTurtleRecall.csv|identity|mask|false|no_background|split|train|test|100"
     # Uncomment exactly one profile at a time.
-    "nyala|WildlifeReID-10k|NyalaData|/shared/sets/datasets/vision/czechlynx/WildlifeReID-10k|metadata_no_background/metadata_NyalaData.csv|identity|mask|false|no_background|split|train|test|100"
+    # "nyala|WildlifeReID-10k|NyalaData|/shared/sets/datasets/vision/czechlynx/WildlifeReID-10k|metadata_no_background/metadata_NyalaData.csv|identity|mask|false|no_background|split|train|test|100"
     # "whaleshark|WildlifeReID-10k|WhaleSharkID|/shared/sets/datasets/vision/czechlynx/WildlifeReID-10k|metadata_no_background/metadata_WhaleSharkID.csv|identity|mask|false|no_background|split|train|test|100"
     # "beluga|WildlifeReID-10k|BelugaID|/shared/sets/datasets/vision/czechlynx/WildlifeReID-10k|metadata_no_background/metadata_BelugaID.csv|identity|mask|false|no_background|split|train|test|100"
     # New WildlifeReID-10k profiles use the official masked metadata. The final
@@ -57,14 +57,17 @@ DATASET_PROFILES=(
     # "seastarreid2023|WildlifeReID-10k|SeaStarReID2023|/shared/sets/datasets/vision/czechlynx/WildlifeReID-10k|metadata_mdsplit_no_background/metadata_SeaStarReID2023.csv|identity|mask|false|no_background|split|train|test|100|legacy|legacy|299|299"
 )
 
-# method|matcher|checkpoint_label|checkpoint_path|train_mode
+# method|matcher|checkpoint_label|checkpoint_path|train_mode|class_weighting
 VARIANTS=(
     # "cosine|-|default|-|-"
     # "wildfusion|-|default|-|-"
     # "local_lightglue|-|default|-|-"
-    # "linear_probe|-|default|-|classifier"
-    # "linear_probe|-|default|-|partial"
-    "linear_probe|-|default|-|all"
+    "linear_probe|-|default|-|classifier|weighted"
+    # "linear_probe|-|default|-|classifier|unweighted"
+    # "linear_probe|-|default|-|partial|weighted"
+    # "linear_probe|-|default|-|partial|unweighted"
+    "linear_probe|-|default|-|all|weighted"
+    # "linear_probe|-|default|-|all|unweighted"
     # "efficient_probe|-|default|-|-"
     # "vismatch|loma|default|-|-"
     # "vismatch|loma|custom|${LOMA_CUSTOM_CHECKPOINT_PATH}|-"
@@ -100,17 +103,24 @@ for profile in "${DATASET_PROFILES[@]}"; do
     LOMA_OWNER="${ANIMAL}"; LOMA_PROFILE_CHECKPOINT="${LOMA_CUSTOM_CHECKPOINT_PATH}"
     for candidate_k in "${CANDIDATE_K_VALUES[@]}"; do
         for variant in "${VARIANTS[@]}"; do
-            IFS='|' read -r METHOD MATCHER CHECKPOINT_LABEL CHECKPOINT_PATH TRAIN_MODE <<< "${variant}"
+            IFS='|' read -r METHOD MATCHER CHECKPOINT_LABEL CHECKPOINT_PATH TRAIN_MODE CLASS_WEIGHTING <<< "${variant}"
             if [[ "${METHOD}" == linear_probe && "${candidate_k}" != "${CANDIDATE_K_VALUES[0]}" ]]; then
                 continue
             fi
             CHECKPOINT_OWNER=-; CHECKPOINT_COMPONENTS=-; LOMA_ARCH=-
             [[ -n "${TRAIN_MODE}" ]] || TRAIN_MODE=-
+            [[ -n "${CLASS_WEIGHTING}" ]] || CLASS_WEIGHTING=-
             if [[ "${METHOD}" == linear_probe && "${TRAIN_MODE}" != classifier && "${TRAIN_MODE}" != partial && "${TRAIN_MODE}" != all ]]; then
                 die "linear_probe variant must use train_mode classifier, partial, or all"
             fi
+            if [[ "${METHOD}" == linear_probe && "${CLASS_WEIGHTING}" != weighted && "${CLASS_WEIGHTING}" != unweighted ]]; then
+                die "linear_probe variant must specify class_weighting weighted or unweighted"
+            fi
             if [[ "${METHOD}" != linear_probe && "${TRAIN_MODE}" != - ]]; then
                 die "only linear_probe variants may specify train_mode; got '${TRAIN_MODE}' for ${METHOD}"
+            fi
+            if [[ "${METHOD}" != linear_probe && "${CLASS_WEIGHTING}" != - ]]; then
+                die "only linear_probe variants may specify class_weighting; got '${CLASS_WEIGHTING}' for ${METHOD}"
             fi
             if [[ "${CHECKPOINT_LABEL}" == custom ]]; then
                 CHECKPOINT_COMPONENTS=matcher_only
@@ -119,15 +129,15 @@ for profile in "${DATASET_PROFILES[@]}"; do
             elif [[ "${MATCHER}" == loma ]]; then
                 LOMA_ARCH=LoMa-B
             fi
-            TASKS+=("${PROFILE_ID}|${DATASET_NAME}|${ANIMAL}|${DATASET_ROOT}|${METADATA_FILE}|${LABEL_COL}|${MASK_COL}|${NO_BACKGROUND}|${IMAGE_VARIANT}|${SPLIT_COL}|${DATABASE_SPLIT_VALUE}|${QUERY_SPLIT_VALUE}|${CALIBRATION_SIZE}|${METHOD}|${MATCHER}|${CHECKPOINT_LABEL}|${CHECKPOINT_PATH}|${CHECKPOINT_OWNER}|${CHECKPOINT_COMPONENTS}|${LOMA_ARCH}|${TRAIN_MODE}|${candidate_k}")
+            TASKS+=("${PROFILE_ID}|${DATASET_NAME}|${ANIMAL}|${DATASET_ROOT}|${METADATA_FILE}|${LABEL_COL}|${MASK_COL}|${NO_BACKGROUND}|${IMAGE_VARIANT}|${SPLIT_COL}|${DATABASE_SPLIT_VALUE}|${QUERY_SPLIT_VALUE}|${CALIBRATION_SIZE}|${METHOD}|${MATCHER}|${CHECKPOINT_LABEL}|${CHECKPOINT_PATH}|${CHECKPOINT_OWNER}|${CHECKPOINT_COMPONENTS}|${LOMA_ARCH}|${TRAIN_MODE}|${CLASS_WEIGHTING}|${candidate_k}")
         done
     done
 done
 
 print_task() {
     local i="$1" t="$2"
-    IFS='|' read -r profile dataset animal root metadata label mask no_background image_variant split_col db_split query_split calibration method matcher checkpoint_label checkpoint_path owner components loma_arch train_mode candidate <<< "$t"
-    printf 'index=%s profile=%s dataset=%s candidate_k=%s method=%s matcher=%s train_mode=%s checkpoint=%s checkpoint_owner=%s path=%s\n' "$i" "$profile" "$dataset" "$candidate" "$method" "$matcher" "$train_mode" "$checkpoint_label" "$owner" "$checkpoint_path"
+    IFS='|' read -r profile dataset animal root metadata label mask no_background image_variant split_col db_split query_split calibration method matcher checkpoint_label checkpoint_path owner components loma_arch train_mode class_weighting candidate <<< "$t"
+    printf 'index=%s profile=%s dataset=%s candidate_k=%s method=%s matcher=%s train_mode=%s class_weighting=%s checkpoint=%s checkpoint_owner=%s path=%s\n' "$i" "$profile" "$dataset" "$candidate" "$method" "$matcher" "$train_mode" "$class_weighting" "$checkpoint_label" "$owner" "$checkpoint_path"
 }
 
 validate_positive_integer MAX_CONCURRENT_JOBS "${MAX_CONCURRENT_JOBS}"
@@ -166,7 +176,7 @@ if [[ -z "${PROBE_PARALLEL_MANIFEST:-}" ]]; then
     [[ "${PROBE_PARALLEL_DRY_RUN:-0}" == 1 || "${1:-}" == --dry-run ]] || die "PROBE_PARALLEL_MANIFEST is required for array tasks"
     (( TASK_INDEX < ${#TASKS[@]} )) || die "array task index ${TASK_INDEX} is outside 0..$((${#TASKS[@]} - 1))"
     CURRENT_TASK="${TASKS[${TASK_INDEX}]}"
-    IFS='|' read -r PROFILE_ID DATASET_NAME ANIMAL DATASET_ROOT METADATA_FILE LABEL_COL MASK_COL NO_BACKGROUND IMAGE_VARIANT SPLIT_COL DATABASE_SPLIT_VALUE QUERY_SPLIT_VALUE CALIBRATION_SIZE METHOD MATCHER CHECKPOINT_LABEL CHECKPOINT_PATH CHECKPOINT_OWNER CHECKPOINT_COMPONENTS LOMA_ARCH TRAIN_MODE CANDIDATE_K <<< "${CURRENT_TASK}"
+    IFS='|' read -r PROFILE_ID DATASET_NAME ANIMAL DATASET_ROOT METADATA_FILE LABEL_COL MASK_COL NO_BACKGROUND IMAGE_VARIANT SPLIT_COL DATABASE_SPLIT_VALUE QUERY_SPLIT_VALUE CALIBRATION_SIZE METHOD MATCHER CHECKPOINT_LABEL CHECKPOINT_PATH CHECKPOINT_OWNER CHECKPOINT_COMPONENTS LOMA_ARCH TRAIN_MODE CLASS_WEIGHTING CANDIDATE_K <<< "${CURRENT_TASK}"
     CHECKPOINT_SOURCE=default; [[ "${CHECKPOINT_LABEL}" == custom ]] && CHECKPOINT_SOURCE=custom
     if [[ "${CHECKPOINT_SOURCE}" == custom && ! -e "${CHECKPOINT_PATH}" ]]; then CHECKPOINT_DISPLAY="${MATCHER}"; [[ "${MATCHER}" == rdd-lightglue ]] && CHECKPOINT_DISPLAY="RDD-LightGlue"; [[ "${MATCHER}" == loma ]] && CHECKPOINT_DISPLAY="LoMa"; die "${CHECKPOINT_DISPLAY} custom checkpoint does not exist: ${CHECKPOINT_PATH}"; fi
     CONFIG_SNAPSHOT_PATH="${CONFIG_FILE}"; SUBMISSION_ID=local-dry-run; CHECKPOINT_SHA256=
@@ -175,11 +185,11 @@ else
     eval "$(python "${MANIFEST_HELPER}" emit-shell --manifest "${PROBE_PARALLEL_MANIFEST}" --index "${TASK_INDEX}")"
     if ! VALIDATION_OUTPUT="$(python "${MANIFEST_HELPER}" validate --manifest "${PROBE_PARALLEL_MANIFEST}" --index "${TASK_INDEX}" 2>&1)"; then
         LOG_DATASET="$(sanitize_component "${DATASET_NAME}")"; LOG_ANIMAL="$(sanitize_component "${ANIMAL}")"
-        ARRAY_JOB_ID="${SLURM_ARRAY_JOB_ID:-${SLURM_JOB_ID:-local}}"; TASK_SLUG="${METHOD}-${MATCHER}"; [[ "${METHOD}" == linear_probe ]] && TASK_SLUG="${TASK_SLUG}-${TRAIN_MODE}"; TASK_SLUG="$(sanitize_component "${TASK_SLUG}")"; TASK_CHECKPOINT="$(sanitize_component "${CHECKPOINT_LABEL}")"
+        ARRAY_JOB_ID="${SLURM_ARRAY_JOB_ID:-${SLURM_JOB_ID:-local}}"; TASK_SLUG="${METHOD}-${MATCHER}"; [[ "${METHOD}" == linear_probe ]] && TASK_SLUG="${TASK_SLUG}-${TRAIN_MODE}-${CLASS_WEIGHTING}"; TASK_SLUG="$(sanitize_component "${TASK_SLUG}")"; TASK_CHECKPOINT="$(sanitize_component "${CHECKPOINT_LABEL}")"
         TASK_LOG_DIR="${LOG_ROOT}/${LOG_DATASET}/${LOG_ANIMAL}/job-${ARRAY_JOB_ID}"; TASK_STEM="task-$(printf '%03d' "${TASK_INDEX}")__${TASK_SLUG}__${TASK_CHECKPOINT}__k${CANDIDATE_K}"
         TASK_OUT_PATH="${TASK_LOG_DIR}/${TASK_STEM}.out"; TASK_ERR_PATH="${TASK_LOG_DIR}/${TASK_STEM}.err"; TASK_COMBINED_PATH="${TASK_LOG_DIR}/${TASK_STEM}.combined.log"; TASK_METADATA_PATH="${TASK_LOG_DIR}/${TASK_STEM}.json"; mkdir -p "${TASK_LOG_DIR}"
         printf '[launcher] immutable task validation failed: %s\n' "${VALIDATION_OUTPUT}" | tee -a "${TASK_ERR_PATH}" "${TASK_COMBINED_PATH}" >&2
-        python scripts/probe_log_metadata.py init --path "${TASK_METADATA_PATH}" --job-id "${ARRAY_JOB_ID}" --task-id "${TASK_INDEX}" --dataset "${LOG_DATASET}" --animal "${LOG_ANIMAL}" --method "${METHOD}" --matcher "${MATCHER}" --train-mode "${TRAIN_MODE}" --checkpoint "${CHECKPOINT_LABEL}" --checkpoint-path "${CHECKPOINT_PATH}" --candidate-k "${CANDIDATE_K}" --command "validation-only: no probe execution" --start-time "$(date -u +%Y-%m-%dT%H:%M:%SZ)" --stdout-path "${TASK_OUT_PATH}" --stderr-path "${TASK_ERR_PATH}" --combined-path "${TASK_COMBINED_PATH}" --submission-id "${SUBMISSION_ID}" --manifest-path "${PROBE_PARALLEL_MANIFEST}" --profile-id "${PROFILE_ID}" --checkpoint-owner "${CHECKPOINT_OWNER}" --checkpoint-sha256 "${CHECKPOINT_SHA256}" --validation-status failed --status failed
+        python scripts/probe_log_metadata.py init --path "${TASK_METADATA_PATH}" --job-id "${ARRAY_JOB_ID}" --task-id "${TASK_INDEX}" --dataset "${LOG_DATASET}" --animal "${LOG_ANIMAL}" --method "${METHOD}" --matcher "${MATCHER}" --train-mode "${TRAIN_MODE}" --class-weighting "${CLASS_WEIGHTING}" --checkpoint "${CHECKPOINT_LABEL}" --checkpoint-path "${CHECKPOINT_PATH}" --candidate-k "${CANDIDATE_K}" --command "validation-only: no probe execution" --start-time "$(date -u +%Y-%m-%dT%H:%M:%SZ)" --stdout-path "${TASK_OUT_PATH}" --stderr-path "${TASK_ERR_PATH}" --combined-path "${TASK_COMBINED_PATH}" --submission-id "${SUBMISSION_ID}" --manifest-path "${PROBE_PARALLEL_MANIFEST}" --profile-id "${PROFILE_ID}" --checkpoint-owner "${CHECKPOINT_OWNER}" --checkpoint-sha256 "${CHECKPOINT_SHA256}" --validation-status failed --status failed
         python scripts/probe_log_metadata.py update --path "${TASK_METADATA_PATH}" --status failed --end-time "$(date -u +%Y-%m-%dT%H:%M:%SZ)" --validation-status failed --validation-error "${VALIDATION_OUTPUT}" --error-file "${TASK_ERR_PATH}" || true
         python scripts/summarize_logs.py --logs-root "${LOG_ROOT}" --write-index --quiet || true
         if [[ -n "${SLURM_ARRAY_JOB_ID:-}" && -n "${SLURM_ARRAY_TASK_ID:-}" ]]; then scancel "${SLURM_ARRAY_JOB_ID}_${SLURM_ARRAY_TASK_ID}" || true; elif [[ -n "${SLURM_JOB_ID:-}" ]]; then scancel "${SLURM_JOB_ID}" || true; fi
@@ -188,8 +198,8 @@ else
 fi
 
 LOG_DATASET="$(sanitize_component "${DATASET_NAME}")"; LOG_ANIMAL="$(sanitize_component "${ANIMAL}")"
-IFS='|' read -r _ _ _ _ _ _ _ _ _ _ _ _ _ METHOD MATCHER CHECKPOINT_LABEL CHECKPOINT_PATH CHECKPOINT_OWNER CHECKPOINT_COMPONENTS LOMA_ARCH TRAIN_MODE CANDIDATE_K <<< "${CURRENT_TASK:-${PROFILE_ID}|${DATASET_NAME}|${ANIMAL}|${DATASET_ROOT}|${METADATA_FILE}|${LABEL_COL}|${MASK_COL}|${NO_BACKGROUND}|${IMAGE_VARIANT}|${SPLIT_COL}|${DATABASE_SPLIT_VALUE}|${QUERY_SPLIT_VALUE}|${CALIBRATION_SIZE}|${METHOD}|${MATCHER}|${CHECKPOINT_LABEL}|${CHECKPOINT_PATH}|${CHECKPOINT_OWNER}|${CHECKPOINT_COMPONENTS}|${LOMA_ARCH}|${TRAIN_MODE}|${CANDIDATE_K}}"
-CURRENT_TASK="${PROFILE_ID}|${DATASET_NAME}|${ANIMAL}|${DATASET_ROOT}|${METADATA_FILE}|${LABEL_COL}|${MASK_COL}|${NO_BACKGROUND}|${IMAGE_VARIANT}|${SPLIT_COL}|${DATABASE_SPLIT_VALUE}|${QUERY_SPLIT_VALUE}|${CALIBRATION_SIZE}|${METHOD}|${MATCHER}|${CHECKPOINT_LABEL}|${CHECKPOINT_PATH}|${CHECKPOINT_OWNER}|${CHECKPOINT_COMPONENTS}|${LOMA_ARCH}|${TRAIN_MODE}|${CANDIDATE_K}"
+IFS='|' read -r _ _ _ _ _ _ _ _ _ _ _ _ _ METHOD MATCHER CHECKPOINT_LABEL CHECKPOINT_PATH CHECKPOINT_OWNER CHECKPOINT_COMPONENTS LOMA_ARCH TRAIN_MODE CLASS_WEIGHTING CANDIDATE_K <<< "${CURRENT_TASK:-${PROFILE_ID}|${DATASET_NAME}|${ANIMAL}|${DATASET_ROOT}|${METADATA_FILE}|${LABEL_COL}|${MASK_COL}|${NO_BACKGROUND}|${IMAGE_VARIANT}|${SPLIT_COL}|${DATABASE_SPLIT_VALUE}|${QUERY_SPLIT_VALUE}|${CALIBRATION_SIZE}|${METHOD}|${MATCHER}|${CHECKPOINT_LABEL}|${CHECKPOINT_PATH}|${CHECKPOINT_OWNER}|${CHECKPOINT_COMPONENTS}|${LOMA_ARCH}|${TRAIN_MODE}|${CLASS_WEIGHTING}|${CANDIDATE_K}}"
+CURRENT_TASK="${PROFILE_ID}|${DATASET_NAME}|${ANIMAL}|${DATASET_ROOT}|${METADATA_FILE}|${LABEL_COL}|${MASK_COL}|${NO_BACKGROUND}|${IMAGE_VARIANT}|${SPLIT_COL}|${DATABASE_SPLIT_VALUE}|${QUERY_SPLIT_VALUE}|${CALIBRATION_SIZE}|${METHOD}|${MATCHER}|${CHECKPOINT_LABEL}|${CHECKPOINT_PATH}|${CHECKPOINT_OWNER}|${CHECKPOINT_COMPONENTS}|${LOMA_ARCH}|${TRAIN_MODE}|${CLASS_WEIGHTING}|${CANDIDATE_K}"
 CHECKPOINT_SOURCE="${CHECKPOINT_SOURCE:-default}"
 
 PROBE_ARGS=(--config-dir "$(dirname -- "${CONFIG_SNAPSHOT_PATH}")" --config-name probe
@@ -199,6 +209,8 @@ PROBE_ARGS=(--config-dir "$(dirname -- "${CONFIG_SNAPSHOT_PATH}")" --config-name
     "benchmark.method=${METHOD}" "benchmark.candidate_k=${CANDIDATE_K}")
 if [[ "${METHOD}" == linear_probe ]]; then
     PROBE_ARGS+=("benchmark.methods.linear_probe.train_mode=${TRAIN_MODE}")
+    [[ "${CLASS_WEIGHTING}" == weighted ]] && PROBE_ARGS+=("benchmark.methods.linear_probe.class_weighting=inverse_frequency")
+    [[ "${CLASS_WEIGHTING}" == unweighted ]] && PROBE_ARGS+=("benchmark.methods.linear_probe.class_weighting=none")
 fi
 if [[ "${METHOD}" == vismatch ]]; then
     PROBE_ARGS+=("benchmark.methods.vismatch.matcher=${MATCHER}")
@@ -211,12 +223,12 @@ printf 'Submission ID: %s\nManifest: %s\nConfig snapshot: %s\nCheckpoint owner: 
 printf 'python train/probe.py'; printf ' %q' "${PROBE_ARGS[@]}"; printf '\n'
 if [[ "${PROBE_PARALLEL_DRY_RUN:-0}" == 1 || "${1:-}" == --dry-run ]]; then exit 0; fi
 
-ARRAY_JOB_ID="${SLURM_ARRAY_JOB_ID:-${SLURM_JOB_ID:-local}}"; TASK_SLUG="${METHOD}"; [[ "${MATCHER}" != - ]] && TASK_SLUG="${TASK_SLUG}-${MATCHER}"; [[ "${METHOD}" == linear_probe ]] && TASK_SLUG="${TASK_SLUG}-${TRAIN_MODE}"; TASK_SLUG="$(sanitize_component "${TASK_SLUG}")"; TASK_CHECKPOINT="$(sanitize_component "${CHECKPOINT_LABEL}")"
+ARRAY_JOB_ID="${SLURM_ARRAY_JOB_ID:-${SLURM_JOB_ID:-local}}"; TASK_SLUG="${METHOD}"; [[ "${MATCHER}" != - ]] && TASK_SLUG="${TASK_SLUG}-${MATCHER}"; [[ "${METHOD}" == linear_probe ]] && TASK_SLUG="${TASK_SLUG}-${TRAIN_MODE}-${CLASS_WEIGHTING}"; TASK_SLUG="$(sanitize_component "${TASK_SLUG}")"; TASK_CHECKPOINT="$(sanitize_component "${CHECKPOINT_LABEL}")"
 TASK_LOG_DIR="${LOG_ROOT}/${LOG_DATASET}/${LOG_ANIMAL}/job-${ARRAY_JOB_ID}"; TASK_STEM="task-$(printf '%03d' "${TASK_INDEX}")__${TASK_SLUG}__${TASK_CHECKPOINT}__k${CANDIDATE_K}"
 TASK_OUT_PATH="${TASK_LOG_DIR}/${TASK_STEM}.out"; TASK_ERR_PATH="${TASK_LOG_DIR}/${TASK_STEM}.err"; TASK_COMBINED_PATH="${TASK_LOG_DIR}/${TASK_STEM}.combined.log"; TASK_METADATA_PATH="${TASK_LOG_DIR}/${TASK_STEM}.json"; mkdir -p "${TASK_LOG_DIR}"
 exec > >(tee -a "${TASK_OUT_PATH}" "${TASK_COMBINED_PATH}") 2> >(tee -a "${TASK_ERR_PATH}" "${TASK_COMBINED_PATH}" >&2)
 COMMAND_STRING="$(printf '%q ' python train/probe.py "${PROBE_ARGS[@]}")"; STARTED_AT="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-python scripts/probe_log_metadata.py init --path "${TASK_METADATA_PATH}" --job-id "${ARRAY_JOB_ID}" --task-id "${TASK_INDEX}" --dataset "${LOG_DATASET}" --animal "${LOG_ANIMAL}" --method "${METHOD}" --matcher "${MATCHER}" --train-mode "${TRAIN_MODE}" --checkpoint "${CHECKPOINT_LABEL}" --checkpoint-path "${CHECKPOINT_PATH}" --candidate-k "${CANDIDATE_K}" --command "${COMMAND_STRING}" --start-time "${STARTED_AT}" --stdout-path "${TASK_OUT_PATH}" --stderr-path "${TASK_ERR_PATH}" --combined-path "${TASK_COMBINED_PATH}" --submission-id "${SUBMISSION_ID}" --manifest-path "${PROBE_PARALLEL_MANIFEST:-}" --profile-id "${PROFILE_ID}" --checkpoint-owner "${CHECKPOINT_OWNER:-}" --checkpoint-sha256 "${CHECKPOINT_SHA256:-}" --validation-status validated --status running
+python scripts/probe_log_metadata.py init --path "${TASK_METADATA_PATH}" --job-id "${ARRAY_JOB_ID}" --task-id "${TASK_INDEX}" --dataset "${LOG_DATASET}" --animal "${LOG_ANIMAL}" --method "${METHOD}" --matcher "${MATCHER}" --train-mode "${TRAIN_MODE}" --class-weighting "${CLASS_WEIGHTING}" --checkpoint "${CHECKPOINT_LABEL}" --checkpoint-path "${CHECKPOINT_PATH}" --candidate-k "${CANDIDATE_K}" --command "${COMMAND_STRING}" --start-time "${STARTED_AT}" --stdout-path "${TASK_OUT_PATH}" --stderr-path "${TASK_ERR_PATH}" --combined-path "${TASK_COMBINED_PATH}" --submission-id "${SUBMISSION_ID}" --manifest-path "${PROBE_PARALLEL_MANIFEST:-}" --profile-id "${PROFILE_ID}" --checkpoint-owner "${CHECKPOINT_OWNER:-}" --checkpoint-sha256 "${CHECKPOINT_SHA256:-}" --validation-status validated --status running
 
 finalize_task() {
     local exit_code="$?" status=completed run_directory=""; [[ "${exit_code}" -eq 0 ]] || status=failed

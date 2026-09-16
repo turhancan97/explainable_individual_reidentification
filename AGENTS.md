@@ -97,7 +97,12 @@ in the selected launcher’s `VARIANTS` table as needed. They pass
 `benchmark.methods.linear_probe.train_mode=<mode>` directly to Hydra and run
 once per active mode; linear probing does not need the full candidate-budget
 sweep, so each launcher uses the first configured candidate value only for the
-shared evaluation configuration. The mode is recorded in task names and metadata.
+shared evaluation configuration. Each mode can be paired with a `weighted` or
+`unweighted` launcher row. These map to
+`class_weighting=inverse_frequency` or `class_weighting=none`; the weighting
+label is recorded in task names, commands, manifests, metadata, and logs. The
+active launcher table remains the source of truth, so uncomment both rows when
+a paired comparison is wanted.
 Slurm's raw array stdout and stderr remain under `logs/parallel_run/`; keep that
 directory separate from single-run probe logs. After a task starts, the selected
 launcher also mirrors output into
@@ -199,6 +204,26 @@ megadescriptor is intentionally unsupported.
 Classifier probes are closed-set methods: query identities must occur in the
 database identities. Retrieval methods may evaluate unseen identities, but the
 safety-check output must be considered before interpreting metrics.
+
+Linear-probe training uses identity-weighted cross-entropy by default. Weights
+are computed from database/training labels only, in deterministic label-index
+order: raw `1 / n_identity`, optional mean-one normalization, then an optional
+maximum cap (default `5.0`) without renormalizing after the cap.
+`class_weighting=none` restores the unweighted training loss for paired
+comparisons. The policy applies equally to `classifier`, `partial`, and `all`;
+query/test loss and all metrics remain unweighted. Efficient probe and all
+retrieval methods remain unchanged. Singleton identities are upweighted in the
+formula but receive no additional visual information, so weighted and
+unweighted results must be reported separately.
+
+W&B run names are generated when `wandb.name` is null. Probe names identify the
+workflow, dataset, animal, split, backbone and pretrained/finetuned backbone
+mode, method/matcher, checkpoint variant,
+candidate budget, image variant, and a short run token; linear probes also show
+their train mode and weighting policy. Finetune names identify the workflow,
+dataset, animal, split, backbone, epoch schedule, and learning rate. An explicit
+`wandb.name` remains authoritative. Do not identify experiments from the random
+W&B run ID alone when the generated name is available.
 
 For `train_mode: classifier` in linear and efficient probes, the backbone is a
 frozen feature extractor and must remain in `eval()` mode during training. Only

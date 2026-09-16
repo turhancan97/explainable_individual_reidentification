@@ -55,6 +55,7 @@ def init(args: argparse.Namespace) -> None:
         "method": args.method,
         "matcher": args.matcher,
         "train_mode": args.train_mode,
+        "class_weighting": args.class_weighting,
         "checkpoint": args.checkpoint,
         "checkpoint_path": None if args.checkpoint_path in {"", "-"} else args.checkpoint_path,
         "candidate_k": int(args.candidate_k),
@@ -106,6 +107,7 @@ def main() -> None:
     init_parser.add_argument("--method", required=True)
     init_parser.add_argument("--matcher", required=True)
     init_parser.add_argument("--train-mode", default="-")
+    init_parser.add_argument("--class-weighting", default="-")
     init_parser.add_argument("--checkpoint", required=True)
     init_parser.add_argument("--checkpoint-path", required=True)
     init_parser.add_argument("--candidate-k", required=True)

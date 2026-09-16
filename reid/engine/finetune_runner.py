@@ -34,6 +34,7 @@ from reid.training.accumulation import (
     should_step_accumulated_gradients,
 )
 from reid.reporting.artifacts import build_run_context, run_index_row, upsert_run_index
+from reid.reporting.wandb_naming import finetune_wandb_name
 from reid.utils.cache_identity import build_dataset_cache_identity
 from reid.utils.fingerprints import file_digest_cache
 from reid.utils.io import append_csv_row, ensure_dir, ensure_file, update_csv_rows
@@ -288,7 +289,7 @@ def _run_finetune(cfg: DictConfig, context: Any) -> None:
             entity=cfg.wandb.entity if cfg.wandb.entity else None,
             group=cfg.wandb.group if cfg.wandb.group else None,
             tags=list(cfg.wandb.tags) if cfg.wandb.tags else None,
-            name=cfg.wandb.name if cfg.wandb.name else run_id,
+            name=cfg.wandb.name if cfg.wandb.name else finetune_wandb_name(cfg, run_id),
             config=OmegaConf.to_container(cfg, resolve=True),
         )
 

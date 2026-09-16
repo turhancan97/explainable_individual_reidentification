@@ -39,8 +39,10 @@ from reid.methods.wildfusion_calibration import fit_pipeline_calibration, fit_wi
 from reid.reporting.artifacts import build_run_context, file_identity, run_index_row, upsert_run_index
 from reid.reporting.timing import set_primary_compute_runtime
 from reid.reporting.visualizations import finalize_visualizations
+from reid.reporting.wandb_naming import probe_wandb_name
 from reid.training.accumulation import accumulation_group_size, should_step_accumulated_gradients
 from reid.training.checkpointing import resolve_configured_model_checkpoint, resolve_model_checkpoint
+from reid.training.class_weights import compute_identity_class_weights
 from reid.utils.cache_identity import build_dataset_cache_identity
 from reid.utils.fingerprints import file_digest_cache, model_fingerprint, sha256_file
 from reid.utils.io import append_csv_row, ensure_dir, ensure_file
@@ -117,6 +119,16 @@ PROBE_CSV_METRIC_COLUMNS = [
     "num_unscored_pairs",
     "candidate_fraction",
     "score_matrix_policy",
+    "linear_probe_class_weighting",
+    "linear_probe_class_weight_formula",
+    "linear_probe_class_weight_normalize",
+    "linear_probe_class_weight_cap",
+    "linear_probe_class_weight_min",
+    "linear_probe_class_weight_max",
+    "linear_probe_class_weight_mean",
+    "linear_probe_class_weight_median",
+    "linear_probe_class_weight_num_identities",
+    "linear_probe_class_weight_stats",
 ]
 
 PROBE_CSV_TIMING_COLUMNS = [
@@ -152,6 +164,8 @@ def _as_csv_scalar(value: Any) -> Any:
         return ""
     if isinstance(value, (float, int, np.floating, np.integer, bool, np.bool_)):
         return value
+    if isinstance(value, (dict, list, tuple)):
+        return json.dumps(value, sort_keys=True)
     return str(value)
 
 
@@ -897,9 +911,10 @@ def run_linear_probe(
     dataset_database: Any,
     run_dir: Path,
     wandb_run: Any = None,
+    method_artifacts: Optional[Dict[str, Any]] = None,
 ) -> Tuple[np.ndarray, Dict[str, float], Dict[str, float]]:
     timings: Dict[str, float] = {}
-    method_metrics: Dict[str, float] = {}
+    method_metrics: Dict[str, Any] = {}
     t0 = time.perf_counter()
 
     label_to_index = _build_label_mapping(dataset_database, cfg.dataset.label_col)
@@ -910,9 +925,42 @@ def run_linear_probe(
     query_ds = EncodedLabelDataset(dataset_query, label_to_index)
 
     _set_trainable_params(model, cfg, method_key="linear_probe")
-    objective = SoftmaxLoss(num_classes=len(label_to_index), embedding_size=embedding_size)
-    objective.to(device)
     lp_cfg = cfg.benchmark.methods.linear_probe
+    class_order = [label for label, _ in sorted(label_to_index.items(), key=lambda item: item[1])]
+    class_weights_np, class_weight_metadata = compute_identity_class_weights(
+        dataset_database.df[cfg.dataset.label_col].astype(str).tolist(),
+        class_order,
+        weighting=str(getattr(lp_cfg, "class_weighting", "none")),
+        normalize=bool(getattr(lp_cfg, "class_weight_normalize", True)),
+        max_weight=float(getattr(lp_cfg, "class_weight_max", 5.0)),
+    )
+    class_weights = (
+        torch.as_tensor(class_weights_np, dtype=torch.float32, device=device)
+        if class_weights_np is not None
+        else None
+    )
+    objective = SoftmaxLoss(
+        num_classes=len(label_to_index),
+        embedding_size=embedding_size,
+        class_weights=class_weights,
+    )
+    objective.to(device)
+    method_metrics.update(
+        {
+            "linear_probe_class_weighting": class_weight_metadata["mode"],
+            "linear_probe_class_weight_formula": class_weight_metadata["formula"],
+            "linear_probe_class_weight_normalize": class_weight_metadata["normalize_to_mean_one"],
+            "linear_probe_class_weight_cap": class_weight_metadata["max_weight"],
+            "linear_probe_class_weight_min": class_weight_metadata["min"],
+            "linear_probe_class_weight_max": class_weight_metadata["max"],
+            "linear_probe_class_weight_mean": class_weight_metadata["mean"],
+            "linear_probe_class_weight_median": class_weight_metadata["median"],
+            "linear_probe_class_weight_num_identities": class_weight_metadata["num_identities"],
+            "linear_probe_class_weight_stats": class_weight_metadata,
+        }
+    )
+    if method_artifacts is not None:
+        method_artifacts["linear_probe_class_weighting"] = class_weight_metadata
 
     trainable_backbone = [p for p in model.parameters() if p.requires_grad]
     params = list(trainable_backbone) + list(objective.parameters())
@@ -996,7 +1044,7 @@ def run_linear_probe(
                 yq = yq.to(device)
                 emb = model(xq)
                 probs = _predict_class_probabilities(objective, emb)
-                val_loss = objective(emb, yq)
+                val_loss = objective.unweighted_loss(emb, yq)
                 val_losses.append(float(val_loss.detach().cpu()))
                 probs_list.append(probs.detach().cpu().numpy())
                 val_iter.set_postfix(loss=f"{val_losses[-1]:.4f}")
@@ -1503,6 +1551,7 @@ def run_method(
             dataset_database=dataset_database,
             run_dir=run_dir,
             wandb_run=wandb_run,
+            method_artifacts=method_artifacts,
         )
         timings.update(lp_timings)
     elif method == "efficient_probe":
@@ -1817,7 +1866,7 @@ def _run_probe(cfg: DictConfig, context: Any) -> None:
             entity=cfg.wandb.entity if cfg.wandb.entity else None,
             group=cfg.wandb.group if cfg.wandb.group else None,
             tags=list(cfg.wandb.tags) if cfg.wandb.tags else None,
-            name=cfg.wandb.name if cfg.wandb.name else run_id,
+            name=cfg.wandb.name if cfg.wandb.name else probe_wandb_name(cfg, run_id),
             config=OmegaConf.to_container(cfg, resolve=True),
         )
 
@@ -1940,6 +1989,7 @@ def _run_probe(cfg: DictConfig, context: Any) -> None:
         "visualizations": visuals,
         "cache_fingerprints": list(cache.used_keys),
         "vismatch_checkpoint": method_artifacts.get("vismatch_checkpoint"),
+        "linear_probe_class_weighting": method_artifacts.get("linear_probe_class_weighting"),
     }
     with output_json.open("w", encoding="utf-8") as f:
         json.dump(result, f, indent=2)
@@ -1966,6 +2016,7 @@ def _run_probe(cfg: DictConfig, context: Any) -> None:
             "visualizations": visuals,
             "cache_fingerprints": list(cache.used_keys),
             "vismatch_checkpoint": method_artifacts.get("vismatch_checkpoint"),
+            "linear_probe_class_weighting": method_artifacts.get("linear_probe_class_weighting"),
             "calibration": method_artifacts.get("wildfusion_calibration", method_artifacts.get("local_calibration")),
             "status": "completed",
         },

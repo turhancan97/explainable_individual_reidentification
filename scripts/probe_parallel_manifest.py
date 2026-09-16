@@ -39,6 +39,7 @@ TASK_FIELDS = (
     "checkpoint_components",
     "loma_arch",
     "train_mode",
+    "class_weighting",
     "candidate_k",
 )
 
@@ -86,16 +87,23 @@ def _path_owner(path: str) -> str | None:
 
 def _parse_task_line(line: str, line_number: int) -> dict[str, str]:
     values = line.rstrip("\n").split("|")
-    # Keep accepting manifests produced by the pre-train-mode launcher. New
-    # launcher task records include the explicit linear-probe mode before the
-    # candidate budget.
-    if len(values) == len(TASK_FIELDS) - 1:
+    legacy_task_format = len(values) < len(TASK_FIELDS)
+    # Keep accepting task tables produced before explicit train-mode and
+    # class-weighting fields were added.
+    if len(values) == len(TASK_FIELDS) - 2:
+        values.insert(-1, "-")
+        values.insert(-1, "-")
+    elif len(values) == len(TASK_FIELDS) - 1:
         values.insert(-1, "-")
     if len(values) != len(TASK_FIELDS):
         raise ValueError(
             f"task line {line_number} has {len(values)} fields; expected {len(TASK_FIELDS)}"
         )
     task = dict(zip(TASK_FIELDS, values))
+    if legacy_task_format and task["method"] == "linear_probe" and task["class_weighting"] == "-":
+        # Before weighting was explicit, linear probes used the unweighted
+        # objective. Preserve that behavior for already-created task tables.
+        task["class_weighting"] = "unweighted"
     if not task["profile_id"] or not task["dataset_name"] or not task["animal"]:
         raise ValueError(f"task line {line_number} is missing a dataset profile")
     if not task["candidate_k"].isdigit() or int(task["candidate_k"]) <= 0:
@@ -103,8 +111,14 @@ def _parse_task_line(line: str, line_number: int) -> dict[str, str]:
     if task["method"] == "linear_probe":
         if task["train_mode"] not in {"classifier", "partial", "all"}:
             raise ValueError(f"task line {line_number} has invalid linear_probe train_mode")
+        if task["class_weighting"] not in {"weighted", "unweighted"}:
+            raise ValueError(
+                f"task line {line_number} has invalid linear_probe class_weighting"
+            )
     elif task["train_mode"] != "-":
         raise ValueError(f"task line {line_number} has train_mode for non-linear probe method")
+    elif task["class_weighting"] != "-":
+        raise ValueError(f"task line {line_number} has class_weighting for non-linear probe method")
     return task
 
 
@@ -188,6 +202,7 @@ def create_manifest(args: argparse.Namespace) -> None:
                 "checkpoint_components": raw["checkpoint_components"],
                 "loma_arch": raw["loma_arch"],
                 "train_mode": raw["train_mode"],
+                "class_weighting": raw["class_weighting"],
             },
             "checkpoint": checkpoint,
         }
@@ -277,6 +292,7 @@ def emit_shell(args: argparse.Namespace) -> None:
         "CHECKPOINT_COMPONENTS": benchmark["checkpoint_components"],
         "LOMA_ARCH": benchmark["loma_arch"],
         "TRAIN_MODE": benchmark["train_mode"],
+        "CLASS_WEIGHTING": benchmark.get("class_weighting", "-"),
         "CHECKPOINT_SOURCE": checkpoint["source"],
         "CHECKPOINT_PATH": checkpoint["path"] or "",
         "CHECKPOINT_OWNER": checkpoint["owner"] or "",

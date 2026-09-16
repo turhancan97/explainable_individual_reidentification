@@ -1,5 +1,6 @@
 import torch.nn as nn
 import torch
+import torch.nn.functional as F
 from pytorch_metric_learning import distances, losses, miners
 
 
@@ -68,14 +69,18 @@ class SoftmaxLoss(nn.Module):
         embedding_size (int): Size of the input embeddings.
     """
 
-    def __init__(self, num_classes: int, embedding_size: int):
+    def __init__(self, num_classes: int, embedding_size: int, class_weights: torch.Tensor | None = None):
 
         super().__init__()
-        self.criterion = nn.CrossEntropyLoss()
+        self.criterion = nn.CrossEntropyLoss(weight=class_weights)
         self.linear = nn.Linear(embedding_size, num_classes)
 
     def forward(self, x, y):
         return self.criterion(self.linear(x), y)
+
+    def unweighted_loss(self, x, y):
+        """Compute evaluation loss without changing the training criterion."""
+        return F.cross_entropy(self.linear(x), y)
 
     def predict_probabilities(self, x):
         logits = self.linear(x)

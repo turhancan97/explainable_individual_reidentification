@@ -24,6 +24,7 @@ FIELDS = [
     "split_protocol",
     "method",
     "matcher",
+    "class_weighting",
     "checkpoint",
     "checkpoint_owner",
     "checkpoint_sha256",

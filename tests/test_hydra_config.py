@@ -39,6 +39,9 @@ class HydraConfigurationTests(unittest.TestCase):
         self.assertLessEqual(max(probe.benchmark.top_k), probe.benchmark.candidate_k)
         self.assertEqual(probe.benchmark.methods.vismatch.checkpoint_source, "default")
         self.assertEqual(probe.benchmark.methods.vismatch.checkpoint_components, "auto")
+        self.assertEqual(probe.benchmark.methods.linear_probe.class_weighting, "inverse_frequency")
+        self.assertTrue(probe.benchmark.methods.linear_probe.class_weight_normalize)
+        self.assertEqual(probe.benchmark.methods.linear_probe.class_weight_max, 5.0)
         self.assertEqual(probe.dataset.image_variant, "no_background")
         self.assertEqual(finetune.model.type, "megadescriptor-l")
         self.assertEqual(finetune.dataset.image_variant, "background")
@@ -63,6 +66,18 @@ class HydraConfigurationTests(unittest.TestCase):
         self.assertFalse(cfg.benchmark.methods.vismatch.oom_backoff)
         self.assertEqual(list(cfg.benchmark.top_k), [1, 10])
         self.assertEqual(cfg.dataset.metadata_file, "custom.csv")
+
+    def test_linear_probe_weighting_override(self):
+        cfg = compose_config(
+            "probe",
+            [
+                "benchmark.method=linear_probe",
+                "benchmark.methods.linear_probe.class_weighting=none",
+                "benchmark.methods.linear_probe.class_weight_max=3.0",
+            ],
+        )
+        self.assertEqual(cfg.benchmark.methods.linear_probe.class_weighting, "none")
+        self.assertEqual(cfg.benchmark.methods.linear_probe.class_weight_max, 3.0)
 
     def test_unknown_override_is_rejected(self):
         with self.assertRaises(ConfigCompositionException):

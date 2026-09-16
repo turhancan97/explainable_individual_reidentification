@@ -184,6 +184,9 @@ its command, status, timestamps, error summary, and experiment-run link.
 Slurm's `SLURM_SUBMIT_DIR`, so it remains valid even though Slurm executes a copied
 script from its private spool directory. Use
 `MAX_CONCURRENT_JOBS=2 bash probe-parallel-wildlife.sh` to change the throttle.
+For linear-probe comparisons, add launcher rows ending in `|weighted` or
+`|unweighted`. These become `inverse_frequency` and `none` Hydra overrides,
+respectively, and are included in task names, commands, manifests, and logs.
 
 To inspect the organized logs:
 
@@ -326,6 +329,9 @@ Config path:
 
 Core options:
 - `train_mode`: `all` | `partial` | `classifier`
+- `class_weighting`: `inverse_frequency` (default) | `none`
+- `class_weight_normalize`: normalize inverse-frequency weights to mean 1 (default `true`)
+- `class_weight_max`: cap after normalization (default `5.0`; no second normalization)
 - `epochs`, `batch_size`, `num_workers`, `accumulation_steps`
 - `optimizer`: `sgd` | `adam` | `adamw`
 - `lr`, `momentum`, `weight_decay`, `eta_min_scale`
@@ -338,6 +344,16 @@ Reported metrics for `linear_probe`:
 - Retrieval: `top_k`, `mAP` (same benchmark path as other methods)
 - Classification: `classification_top_1`, `classification_top_5`, `classification_top_10`
 
+By default, the training cross-entropy is identity-weighted using only the
+database/training split: each identity receives raw weight `1 / n_identity`,
+weights are optionally normalized to mean one, and then capped at `5.0`.
+Evaluation loss and all reported metrics remain unweighted. Set
+`class_weighting: "none"` for a paired unweighted run. This policy applies to
+`classifier`, `partial`, and `all` modes; `efficient_probe` is intentionally
+unchanged. Singleton identities are mathematically upweighted, but weighting
+cannot create additional visual information for them. Report weighted and
+unweighted results separately.
+
 Example snippet:
 
 ```yaml
@@ -346,6 +362,9 @@ benchmark:
   methods:
     linear_probe:
       train_mode: "classifier"   # all | partial | classifier
+      class_weighting: "inverse_frequency"  # inverse_frequency | none
+      class_weight_normalize: true
+      class_weight_max: 5.0
       epochs: 10
       optimizer: "sgd"
       lr: 0.001
@@ -617,6 +636,15 @@ Logged data:
 - probe: benchmark metrics/timings, metadata, optional visualization images
 - linear_probe (within probe): per-epoch train loss, learning rate, classification + retrieval metrics
 - efficient_probe (within probe): per-epoch train loss, learning rate, classification + retrieval metrics
+
+When `wandb.name` is `null`, the repository generates an informative name such
+as `probe-wildlifereid-10k-nyaladata-split-megadescriptor-l-pretrained-vismatch-loma-finetuned-k100-masked-<id>`.
+It includes workflow, dataset/animal, split, model and pretrained/finetuned
+backbone mode, method or matcher,
+checkpoint variant or linear-probe weighting, candidate budget where relevant,
+image variant, and a short run identifier. Finetuning names similarly include
+the dataset, animal, split, model, epoch count, and learning rate. Set an
+explicit `wandb.name` when a custom name is preferred; it always takes priority.
 
 ## Known Constraints and Future Work
 

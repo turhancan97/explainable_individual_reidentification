@@ -6,6 +6,22 @@ kept under Unreleased until a project version is assigned.
 ## [Unreleased] - 2026-08-13
 
 
+### Added
+
+- Added readable default W&B names for probe and finetune runs. Names include
+  dataset, animal, split, model/mode, method-specific settings, checkpoint variant,
+  linear-probe weighting where applicable, and a short run token. Explicit
+  `wandb.name` values remain unchanged and take precedence.
+
+- Added identity-weighted cross-entropy for `linear_probe`. New runs default to
+  training-only inverse-frequency weights, normalized to mean one and capped at
+  5.0 after normalization without a second renormalization. Explicit
+  `class_weighting=none` runs remain available for paired comparisons; query
+  loss and reported metrics stay unweighted. Parallel launcher task identities
+  now distinguish `weighted` and `unweighted` linear-probe variants. Efficient
+  probe, retrieval methods, and historical artifacts are unchanged.
+
+
 ### Fixed
 
 - Restored safe handling of the legacy CzechLynx checkpoint environment

@@ -120,11 +120,14 @@ class ParallelProbeLauncherTests(unittest.TestCase):
         linear_modes = {row["train_mode"] for row in parsed if row["method"] == "linear_probe"}
         self.assertTrue(linear_modes)
         self.assertTrue(linear_modes.issubset({"classifier", "partial", "all"}))
+        self.assertTrue({row["class_weighting"] for row in parsed}.issubset({"-", "weighted", "unweighted"}))
         variant_text = SCRIPT.read_text(encoding="utf-8")
         for mode in ("classifier", "partial", "all"):
             self.assertIn(f'linear_probe|-|default|-|{mode}', variant_text)
+            self.assertIn(f'linear_probe|-|default|-|{mode}|weighted', variant_text)
+            self.assertIn(f'linear_probe|-|default|-|{mode}|unweighted', variant_text)
         self.assertEqual(
-            len({(row["candidate_k"], row["method"], row["matcher"], row["checkpoint"], row["train_mode"]) for row in parsed}),
+            len({(row["candidate_k"], row["method"], row["matcher"], row["checkpoint"], row["train_mode"], row["class_weighting"]) for row in parsed}),
             len(parsed),
         )
 
@@ -155,6 +158,11 @@ class ParallelProbeLauncherTests(unittest.TestCase):
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertIn(
                 f"benchmark.methods.linear_probe.train_mode={row['train_mode']}",
+                result.stdout,
+            )
+            expected_weighting = "inverse_frequency" if row["class_weighting"] == "weighted" else "none"
+            self.assertIn(
+                f"benchmark.methods.linear_probe.class_weighting={expected_weighting}",
                 result.stdout,
             )
             self.assertIn(f"train_mode={row['train_mode']}", result.stdout)
@@ -217,7 +225,7 @@ class ParallelProbeLauncherTests(unittest.TestCase):
         counts = {split: sum(row["split_protocol"] == split for row in parsed) for split in {"split-time_closed", "split-time_open"}}
         self.assertEqual(counts["split-time_closed"], counts["split-time_open"])
         self.assertEqual(
-            len({(row["split_protocol"], row["method"], row["matcher"], row["checkpoint"], row["candidate_k"]) for row in parsed}),
+            len({(row["split_protocol"], row["method"], row["matcher"], row["checkpoint"], row["train_mode"], row["class_weighting"], row["candidate_k"]) for row in parsed}),
             len(parsed),
         )
 
