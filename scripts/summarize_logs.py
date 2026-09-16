@@ -21,6 +21,7 @@ FIELDS = [
     "profile_id",
     "dataset",
     "animal",
+    "split_protocol",
     "method",
     "matcher",
     "checkpoint",
@@ -56,7 +57,7 @@ def load_records(logs_root: Path) -> list[dict[str, Any]]:
 
 
 def _matches(record: dict[str, Any], args: argparse.Namespace) -> bool:
-    for key in ("dataset", "animal", "method", "matcher", "checkpoint", "status"):
+    for key in ("dataset", "animal", "split_protocol", "method", "matcher", "checkpoint", "status"):
         expected = getattr(args, key)
         if expected and str(record.get(key, "")) != expected:
             return False
@@ -123,6 +124,7 @@ def _markdown(records: list[dict[str, Any]]) -> str:
         "task_id",
         "dataset",
         "animal",
+        "split_protocol",
         "method",
         "matcher",
         "checkpoint",
@@ -160,6 +162,7 @@ def main() -> None:
     parser.add_argument("--index-path", type=Path)
     parser.add_argument("--dataset")
     parser.add_argument("--animal")
+    parser.add_argument("--split-protocol")
     parser.add_argument("--method")
     parser.add_argument("--matcher")
     parser.add_argument("--checkpoint")

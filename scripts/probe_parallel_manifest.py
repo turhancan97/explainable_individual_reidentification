@@ -38,6 +38,7 @@ TASK_FIELDS = (
     "checkpoint_owner",
     "checkpoint_components",
     "loma_arch",
+    "train_mode",
     "candidate_k",
 )
 
@@ -85,6 +86,11 @@ def _path_owner(path: str) -> str | None:
 
 def _parse_task_line(line: str, line_number: int) -> dict[str, str]:
     values = line.rstrip("\n").split("|")
+    # Keep accepting manifests produced by the pre-train-mode launcher. New
+    # launcher task records include the explicit linear-probe mode before the
+    # candidate budget.
+    if len(values) == len(TASK_FIELDS) - 1:
+        values.insert(-1, "-")
     if len(values) != len(TASK_FIELDS):
         raise ValueError(
             f"task line {line_number} has {len(values)} fields; expected {len(TASK_FIELDS)}"
@@ -94,6 +100,11 @@ def _parse_task_line(line: str, line_number: int) -> dict[str, str]:
         raise ValueError(f"task line {line_number} is missing a dataset profile")
     if not task["candidate_k"].isdigit() or int(task["candidate_k"]) <= 0:
         raise ValueError(f"task line {line_number} has invalid candidate_k")
+    if task["method"] == "linear_probe":
+        if task["train_mode"] not in {"classifier", "partial", "all"}:
+            raise ValueError(f"task line {line_number} has invalid linear_probe train_mode")
+    elif task["train_mode"] != "-":
+        raise ValueError(f"task line {line_number} has train_mode for non-linear probe method")
     return task
 
 
@@ -164,6 +175,7 @@ def create_manifest(args: argparse.Namespace) -> None:
                 "no_background": raw["no_background"].lower() == "true",
                 "image_variant": raw["image_variant"],
                 "split_col": raw["split_col"],
+                "split_protocol": raw["split_col"],
                 "database_split_value": raw["database_split_value"],
                 "query_split_value": raw["query_split_value"],
                 "calibration_size": int(raw["calibration_size"]),
@@ -175,6 +187,7 @@ def create_manifest(args: argparse.Namespace) -> None:
                 "checkpoint_label": raw["checkpoint_label"],
                 "checkpoint_components": raw["checkpoint_components"],
                 "loma_arch": raw["loma_arch"],
+                "train_mode": raw["train_mode"],
             },
             "checkpoint": checkpoint,
         }
@@ -253,6 +266,7 @@ def emit_shell(args: argparse.Namespace) -> None:
         "NO_BACKGROUND": str(dataset["no_background"]).lower(),
         "IMAGE_VARIANT": dataset["image_variant"],
         "SPLIT_COL": dataset["split_col"],
+        "SPLIT_PROTOCOL": dataset.get("split_protocol", dataset["split_col"]),
         "DATABASE_SPLIT_VALUE": dataset["database_split_value"],
         "QUERY_SPLIT_VALUE": dataset["query_split_value"],
         "CALIBRATION_SIZE": str(dataset["calibration_size"]),
@@ -262,6 +276,7 @@ def emit_shell(args: argparse.Namespace) -> None:
         "CHECKPOINT_LABEL": benchmark["checkpoint_label"],
         "CHECKPOINT_COMPONENTS": benchmark["checkpoint_components"],
         "LOMA_ARCH": benchmark["loma_arch"],
+        "TRAIN_MODE": benchmark["train_mode"],
         "CHECKPOINT_SOURCE": checkpoint["source"],
         "CHECKPOINT_PATH": checkpoint["path"] or "",
         "CHECKPOINT_OWNER": checkpoint["owner"] or "",

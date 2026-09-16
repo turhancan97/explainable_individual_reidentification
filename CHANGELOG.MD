@@ -8,12 +8,34 @@ kept under Unreleased until a project version is assigned.
 
 ### Fixed
 
+- Restored safe handling of the legacy CzechLynx checkpoint environment
+  variables under `set -u`, so active custom Vismatch variants cannot abort the
+  launcher before Slurm submission. Profile-specific checkpoint paths remain
+  authoritative.
 - Classifier-mode linear and efficient probes now keep the frozen backbone in
 evaluation mode while training only the probe objective, preventing dropout and
 normalization-state changes in the extracted representation.
 
 ### Added
 
+- Added split-aware CzechLynx parallel probing. The launcher now supports the
+  `split-time_closed` and `split-time_open` profiles, with optional simultaneous
+  submission, explicit per-split custom checkpoint paths, split-tagged task logs,
+  and split provenance in manifests and task metadata.
+- Added split-aware paper-table discovery and export. Closed and open CzechLynx
+  protocols receive separate main/ablation LaTeX and CSV files, with an optional
+  `--split-protocol` filter; combined tables are intentionally not produced.
+- Configured the CzechLynx open-split profile with its validated epoch-299 LoMa
+  and RDD checkpoint roots under `czechlynx-time-open`; the paths remain
+  independently overridable per profile.
+
+- Added explicit wildlife and CzechLynx parallel-launcher support for linear
+  probing with `classifier`, `partial`, and `all` train modes. Active modes are
+  passed as Hydra overrides and recorded in task logs/metadata; redundant
+  candidate-budget repetitions are avoided for these non-shortlist probe variants.
+- Removed the CzechLynx dataset profile from `probe-parallel-wildlife.sh` so
+  CzechLynx parallel probing is available only through
+  `probe-parallel-czechlynx.sh`.
 - Added immutable submission manifests for parallel probe arrays, including copied Hydra configuration, explicit dataset profiles, checkpoint ownership, and SHA-256 provenance.
 - Added the active `ZindiTurtleRecall` dataset profile to `probe-parallel-wildlife.sh`, using its no-background metadata and matching custom LoMa/RDD checkpoint ownership.
 - Added `scripts/export_paper_tables.py` and dependency-light reporting helpers for per-animal CVPR LaTeX/CSV tables, fixed-budget comparisons, and candidate-budget ablations sourced directly from completed experiment artifacts.
@@ -33,6 +55,10 @@ normalization-state changes in the extracted representation.
   explicit handling of missing or incomplete runs.
 
 ### Changed
+
+- CzechLynx parallel tasks no longer use a single global animal/checkpoint
+  selection. Active profile entries define their own split and checkpoint
+  provenance, while the benchmark variants and candidate budgets remain shared.
 
 - Matcher-only timing excludes Stage-A selection, feature extraction, setup, calibration, cache I/O, and visualization; historical runs without the new fields require reruns for matcher-speed comparisons.
 - Clarified that `k` is the gallery-candidate budget for shortlist-based second-stage

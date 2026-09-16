@@ -7,7 +7,7 @@ dataset:
   mask_col: "mask"
   no_background: true # false | true
   image_variant: "no_background" # background | no_background; identifies the image tree used by feature caches
-  split_col: "split-time_closed" # split | split-time_closed
+  split_col: "split-time_closed" # split | split-time_closed | split-time_open
   database_split_value: "train"
   query_split_value: "test"
   calibration_size: 100

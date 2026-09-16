@@ -19,6 +19,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--root", type=Path, default=Path("experiments"), help="Experiment artifact root")
     parser.add_argument("--output-dir", type=Path, default=Path("reports/paper_tables"))
     parser.add_argument("--animal", action="append", help="Animal to export; repeat for multiple animals")
+    parser.add_argument(
+        "--split-protocol",
+        action="append",
+        dest="split_protocols",
+        help="Split protocol to export; repeat for multiple protocols",
+    )
     parser.add_argument("--main-candidate-k", type=int, default=50)
     parser.add_argument("--budgets", type=int, nargs="+", default=list(DEFAULT_ABLATION_BUDGETS))
     parser.add_argument(
@@ -35,6 +41,7 @@ def main() -> None:
         args.root,
         args.output_dir,
         animals=args.animal,
+        split_protocols=args.split_protocols,
         main_candidate_k=args.main_candidate_k,
         budgets=args.budgets,
         detailed_comments=args.detailed_comments,

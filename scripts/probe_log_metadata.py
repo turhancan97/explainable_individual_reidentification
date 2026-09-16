@@ -51,8 +51,10 @@ def init(args: argparse.Namespace) -> None:
         "task_id": int(args.task_id),
         "dataset": args.dataset,
         "animal": args.animal,
+        "split_protocol": args.split_protocol,
         "method": args.method,
         "matcher": args.matcher,
+        "train_mode": args.train_mode,
         "checkpoint": args.checkpoint,
         "checkpoint_path": None if args.checkpoint_path in {"", "-"} else args.checkpoint_path,
         "candidate_k": int(args.candidate_k),
@@ -100,8 +102,10 @@ def main() -> None:
     init_parser.add_argument("--task-id", required=True)
     init_parser.add_argument("--dataset", required=True)
     init_parser.add_argument("--animal", required=True)
+    init_parser.add_argument("--split-protocol", default="")
     init_parser.add_argument("--method", required=True)
     init_parser.add_argument("--matcher", required=True)
+    init_parser.add_argument("--train-mode", default="-")
     init_parser.add_argument("--checkpoint", required=True)
     init_parser.add_argument("--checkpoint-path", required=True)
     init_parser.add_argument("--candidate-k", required=True)

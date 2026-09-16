@@ -29,6 +29,8 @@ METHOD_ORDER = {
     "vismatch": 5,
 }
 TABLE_COLUMNS = (
+    "animal",
+    "split_protocol",
     "method",
     "matcher",
     "checkpoint",
@@ -109,6 +111,7 @@ def _record_from_manifest(manifest_path: Path) -> dict[str, Any] | None:
         total_runtime_sec = None if legacy_total_min is None else legacy_total_min * 60.0
     record = {
         "animal": animal,
+        "split_protocol": str(manifest.get("split_protocol") or manifest.get("split_col") or ""),
         "method_key": method,
         "method": METHOD_LABELS[method],
         "matcher": matcher,
@@ -143,9 +146,20 @@ def discover_animals(records: Iterable[Mapping[str, Any]]) -> list[str]:
     return sorted({str(record["animal"]) for record in records if record.get("animal")})
 
 
+def discover_splits(records: Iterable[Mapping[str, Any]], animal: str | None = None) -> list[str]:
+    return sorted(
+        {
+            str(record.get("split_protocol"))
+            for record in records
+            if record.get("split_protocol") and (animal is None or record.get("animal") == animal)
+        }
+    )
+
+
 def _selection_key(record: Mapping[str, Any]) -> tuple[Any, ...]:
     return (
         record["animal"],
+        record.get("split_protocol", ""),
         record["method_key"],
         record["matcher"],
         record["checkpoint"],
@@ -153,10 +167,14 @@ def _selection_key(record: Mapping[str, Any]) -> tuple[Any, ...]:
     )
 
 
-def select_latest_records(records: Iterable[Mapping[str, Any]], animal: str) -> list[dict[str, Any]]:
+def select_latest_records(
+    records: Iterable[Mapping[str, Any]], animal: str, split_protocol: str | None = None
+) -> list[dict[str, Any]]:
     selected: dict[tuple[Any, ...], dict[str, Any]] = {}
     for record in records:
         if record.get("animal") != animal:
+            continue
+        if split_protocol is not None and record.get("split_protocol", "") != split_protocol:
             continue
         key = _selection_key(record)
         candidate = dict(record)
@@ -184,6 +202,7 @@ def _placeholder(template: Mapping[str, Any], candidate_k: int | None) -> dict[s
     row.update(
         {
             "animal": template["animal"],
+            "split_protocol": template.get("split_protocol", ""),
             "method_key": template["method_key"],
             "method": template["method"],
             "matcher": template["matcher"],
@@ -197,8 +216,10 @@ def _placeholder(template: Mapping[str, Any], candidate_k: int | None) -> dict[s
     return row
 
 
-def build_main_rows(records: Iterable[Mapping[str, Any]], animal: str, candidate_k: int) -> list[dict[str, Any]]:
-    selected = select_latest_records(records, animal)
+def build_main_rows(
+    records: Iterable[Mapping[str, Any]], animal: str, candidate_k: int, split_protocol: str | None = None
+) -> list[dict[str, Any]]:
+    selected = select_latest_records(records, animal, split_protocol)
     rows: list[dict[str, Any]] = []
     groups: dict[tuple[str, str, str], list[dict[str, Any]]] = {}
     for record in selected:
@@ -215,9 +236,12 @@ def build_main_rows(records: Iterable[Mapping[str, Any]], animal: str, candidate
 
 
 def build_ablation_rows(
-    records: Iterable[Mapping[str, Any]], animal: str, budgets: Sequence[int]
+    records: Iterable[Mapping[str, Any]],
+    animal: str,
+    budgets: Sequence[int],
+    split_protocol: str | None = None,
 ) -> list[dict[str, Any]]:
-    selected = select_latest_records(records, animal)
+    selected = select_latest_records(records, animal, split_protocol)
     rows: list[dict[str, Any]] = []
     groups: dict[tuple[str, str, str], list[dict[str, Any]]] = {}
     for record in selected:
@@ -349,6 +373,7 @@ def _render_compact_ablation_latex(
     rows: Sequence[Mapping[str, Any]],
     *,
     animal: str,
+    split_protocol: str | None,
     table_name: str,
     candidate_k: int | None,
     generated_at: str,
@@ -379,13 +404,15 @@ def _render_compact_ablation_latex(
         "\\begin{table}[t]",
         "\\centering",
         (
-            f"\\caption{{{_latex_escape(animal)} results ({_latex_escape(table_name)}"
+            f"\\caption{{{_latex_escape(animal)}"
+            + (f" ({_latex_escape(split_protocol)})" if split_protocol else "")
+            + f" results ({_latex_escape(table_name)}"
             + (f", candidate budget $k={candidate_k}$" if candidate_k is not None else "")
             + "). Best values in each metric column are boldfaced. Default rows are light gray "
             "and fine-tuned rows are light green. Arrows show the change from the default "
             "checkpoint at the same $k$.}}"
         ),
-        f"\\label{{tab:{re.sub(r'[^A-Za-z0-9:.-]+', '-', animal.lower())}-{table_name}}}",
+        f"\\label{{tab:{re.sub(r'[^A-Za-z0-9:.-]+', '-', animal.lower())}-{re.sub(r'[^A-Za-z0-9:.-]+', '-', split_protocol.lower()) + '-' if split_protocol else ''}{table_name}}}",
         "\\resizebox{\\linewidth}{!}{%",
         "\\begin{tabular}{lll rrrrrr}",
         "\\toprule",
@@ -446,6 +473,7 @@ def render_latex(
     rows: Sequence[Mapping[str, Any]],
     *,
     animal: str,
+    split_protocol: str | None = None,
     table_name: str,
     candidate_k: int | None,
     generated_at: str | None = None,
@@ -457,6 +485,7 @@ def render_latex(
         return _render_compact_ablation_latex(
             rows,
             animal=animal,
+            split_protocol=split_protocol,
             table_name=table_name,
             candidate_k=candidate_k,
             generated_at=generated_at,
@@ -477,8 +506,10 @@ def render_latex(
     header.extend([
         "\\begin{table}[t]",
         "\\centering",
-        f"\\caption{{{_latex_escape(animal)} results ({_latex_escape(table_name)}).}}",
-        f"\\label{{tab:{re.sub(r'[^A-Za-z0-9:.-]+', '-', animal.lower())}-{table_name}}}",
+        f"\\caption{{{_latex_escape(animal)}"
+        + (f" ({_latex_escape(split_protocol)})" if split_protocol else "")
+        + f" results ({_latex_escape(table_name)}).}}",
+        f"\\label{{tab:{re.sub(r'[^A-Za-z0-9:.-]+', '-', animal.lower())}-{re.sub(r'[^A-Za-z0-9:.-]+', '-', split_protocol.lower()) + '-' if split_protocol else ''}{table_name}}}",
         "\\resizebox{\\linewidth}{!}{%",
         "\\begin{tabular}{lll rrrrrrrrr}",
         "\\toprule",
@@ -522,6 +553,7 @@ def write_animal_tables(
     records: Iterable[Mapping[str, Any]],
     *,
     animal: str,
+    split_protocol: str | None = None,
     output_dir: Path,
     main_candidate_k: int = 50,
     budgets: Sequence[int] = DEFAULT_ABLATION_BUDGETS,
@@ -530,13 +562,16 @@ def write_animal_tables(
 ) -> list[Path]:
     output_dir.mkdir(parents=True, exist_ok=True)
     records = list(records)
-    main_rows = build_main_rows(records, animal, main_candidate_k)
-    ablation_rows = build_ablation_rows(records, animal, budgets)
+    main_rows = build_main_rows(records, animal, main_candidate_k, split_protocol)
+    ablation_rows = build_ablation_rows(records, animal, budgets, split_protocol)
     stem = _safe_filename(animal)
+    if split_protocol:
+        stem = f"{stem}_{_safe_filename(split_protocol)}"
     outputs = {
         output_dir / f"{stem}_main.tex": render_latex(
             main_rows,
             animal=animal,
+            split_protocol=split_protocol,
             table_name="main",
             candidate_k=main_candidate_k,
             generated_at=generated_at,
@@ -547,6 +582,7 @@ def write_animal_tables(
         output_dir / f"{stem}_ablation.tex": render_latex(
             ablation_rows,
             animal=animal,
+            split_protocol=split_protocol,
             table_name="ablation",
             candidate_k=None,
             generated_at=generated_at,
@@ -565,6 +601,7 @@ def export_tables(
     output_dir: Path,
     *,
     animals: Sequence[str] | None = None,
+    split_protocols: Sequence[str] | None = None,
     main_candidate_k: int = 50,
     budgets: Sequence[int] = DEFAULT_ABLATION_BUDGETS,
     generated_at: str | None = None,
@@ -584,15 +621,31 @@ def export_tables(
         raise ValueError(f"no completed probe records found for animal(s): {', '.join(unknown)}")
     outputs: list[Path] = []
     for animal in selected_animals:
-        outputs.extend(
-            write_animal_tables(
-                records,
-                animal=animal,
-                output_dir=output_dir,
-                main_candidate_k=main_candidate_k,
-                budgets=budgets,
-                generated_at=generated_at,
-                detailed_comments=detailed_comments,
+        available_splits = discover_splits(records, animal)
+        if split_protocols is not None:
+            selected_splits = [split for split in split_protocols if split in available_splits]
+            unknown_splits = sorted(set(split_protocols) - set(available_splits))
+            if unknown_splits:
+                raise ValueError(
+                    f"no completed probe records found for split(s) of {animal}: {', '.join(unknown_splits)}"
+                )
+        else:
+            selected_splits = available_splits
+        # Preserve legacy animal-only filenames when artifacts have no split
+        # provenance; split-aware artifacts always get one output set per split.
+        if not selected_splits:
+            selected_splits = [None]
+        for split in selected_splits:
+            outputs.extend(
+                write_animal_tables(
+                    records,
+                    animal=animal,
+                    split_protocol=split,
+                    output_dir=output_dir,
+                    main_candidate_k=main_candidate_k,
+                    budgets=budgets,
+                    generated_at=generated_at,
+                    detailed_comments=detailed_comments,
+                )
             )
-        )
     return outputs

@@ -71,17 +71,37 @@ template points to `conf/finetune.yaml`.
 self-submitting Slurm launchers and must not modify or replace `probe.sh`. Each
 builds tasks from its explicit `VARIANTS` table and crosses them with the
 `CANDIDATE_K_VALUES` list. The active tables near the top of the selected launcher
-are the source of truth for its comparison grid. Run the launcher for the desired
-dataset; `MAX_CONCURRENT_JOBS` becomes the Slurm array `%` throttle.
+are the source of truth for its comparison grid. The CzechLynx launcher supports
+the independent `split-time_closed` and `split-time_open` profiles; either or
+both may be uncommented. The wildlife launcher remains reserved for one active
+WildlifeReID-10k animal profile. `MAX_CONCURRENT_JOBS` becomes the Slurm array `%`
+throttle.
+The CzechLynx launcher is the only parallel launcher for CzechLynx; the wildlife
+launcher is reserved for WildlifeReID-10k profiles and must not gain a CzechLynx
+profile.
 Launcher regression tests derive their expected candidate budgets from the active launcher table, so intentional budget edits do not require changing the launcher itself.
 `--list-tasks` and `PROBE_PARALLEL_DRY_RUN=1` are safe non-executing inspection
 modes. Custom Vismatch tasks explicitly use `checkpoint_components=matcher_only`;
 the selected launcher validates custom paths before submission and prints the
-complete Hydra command in each task log.
+complete Hydra command in each task log. CzechLynx custom checkpoint paths are
+stored per split; an open-split custom task fails closed if its path is missing or
+does not belong to the declared animal. The supplied open profile defaults to
+the `czechlynx-time-open` checkpoint root at epoch 299, using the
+`loma-b-finetuned-legacy` and `rdd-finetuned-legacy` subdirectories. Split names appear in task manifests,
+metadata, log directories, and task filenames.
+The legacy `LOMA_CUSTOM_CHECKPOINT_PATH` and `RDD_CUSTOM_CHECKPOINT_PATH`
+environment variables remain accepted as closed-profile aliases only.
+The wildlife and CzechLynx launchers support three explicit linear-probe variants:
+`classifier`, `partial`, and `all`; activate or comment the corresponding rows
+in the selected launcher’s `VARIANTS` table as needed. They pass
+`benchmark.methods.linear_probe.train_mode=<mode>` directly to Hydra and run
+once per active mode; linear probing does not need the full candidate-budget
+sweep, so each launcher uses the first configured candidate value only for the
+shared evaluation configuration. The mode is recorded in task names and metadata.
 Slurm's raw array stdout and stderr remain under `logs/parallel_run/`; keep that
 directory separate from single-run probe logs. After a task starts, the selected
 launcher also mirrors output into
-`logs/parallel_run/<dataset>/<animal>/job-<array_job>/task-<index>__<method>__<checkpoint>__k<candidate>/`.
+`logs/parallel_run/<dataset>/<animal>/<split_protocol>/job-<array_job>/task-<index>__<split_protocol>__<method>__<checkpoint>__k<candidate>/`.
 Each task-local record contains `.out`, `.err`, `.combined.log`, and JSON metadata
 with the resolved command, status, timestamps, concise failure summary, and the
 experiment run directory when probe finalization prints it. `logs/index.csv` is
@@ -108,9 +128,9 @@ and renders WildFusion plus default/fine-tuned LoMa and RDD-LightGlue series.
 Missing budgets are plotted as gaps; failed and incomplete runs are excluded.
 Paper tables are generated with `scripts/export_paper_tables.py` from completed
 run-local manifests under `experiments/`, never from the aggregate benchmark
-CSV. The exporter discovers animals and methods automatically, selects the
-newest completed run for each method/matcher/checkpoint/budget identity, and
-writes ignored generated files under `reports/paper_tables/`. Main tables use
+CSV. The exporter discovers animals, split protocols, and methods automatically,
+selects the newest completed run for each split/method/matcher/checkpoint/budget
+identity, and writes ignored generated files under `reports/paper_tables/`. Main tables use
 `candidate_k=50` and use the compact paired default/fine-tuned layout with
 same-budget gain arrows; ablation tables use `[10, 50, 100, 250, 500, 1000]` and show
 missing configurations as `--`. LaTeX displays percentage points and labels

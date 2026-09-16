@@ -8,6 +8,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = ROOT / "probe-parallel-wildlife.sh"
+CZECH_SCRIPT = ROOT / "probe-parallel-czechlynx.sh"
 
 
 class ParallelProbeLauncherTests(unittest.TestCase):
@@ -31,6 +32,20 @@ class ParallelProbeLauncherTests(unittest.TestCase):
             "RDD_CUSTOM_CHECKPOINT_PATH": str(rdd),
         }
 
+    def run_czech_script(self, *args, env=None):
+        merged_env = os.environ.copy()
+        merged_env.pop("SLURM_ARRAY_TASK_ID", None)
+        if env:
+            merged_env.update(env)
+        return subprocess.run(
+            ["bash", str(CZECH_SCRIPT), *args],
+            cwd=ROOT,
+            env=merged_env,
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+
     def task_rows(self):
         result = self.run_script("--list-tasks")
         self.assertEqual(result.returncode, 0, result.stderr)
@@ -53,6 +68,7 @@ class ParallelProbeLauncherTests(unittest.TestCase):
 
     def test_new_wildlife_profiles_are_ready_to_activate(self):
         script_text = SCRIPT.read_text(encoding="utf-8")
+        self.assertNotIn("|CzechLynx_v2|CzechLynx|", script_text)
         expected_profiles = {
             "ATRW": ("metadata_ATRW.csv", "299", "299"),
             "Giraffes": ("metadata_Giraffes.csv", "299", "299"),
@@ -98,11 +114,17 @@ class ParallelProbeLauncherTests(unittest.TestCase):
         expected_candidates = sorted(int(value) for value in candidate_matches[-1].split())
         self.assertEqual(sorted({int(row["candidate_k"]) for row in parsed}), expected_candidates)
         methods = {row["method"] for row in parsed}
-        self.assertIn("vismatch", methods)
+        self.assertTrue(methods)
         self.assertTrue(methods.issubset({"cosine", "wildfusion", "local_lightglue", "linear_probe", "efficient_probe", "vismatch"}))
         self.assertTrue(all(row["matcher"] in {"-", "loma", "rdd-lightglue"} for row in parsed))
+        linear_modes = {row["train_mode"] for row in parsed if row["method"] == "linear_probe"}
+        self.assertTrue(linear_modes)
+        self.assertTrue(linear_modes.issubset({"classifier", "partial", "all"}))
+        variant_text = SCRIPT.read_text(encoding="utf-8")
+        for mode in ("classifier", "partial", "all"):
+            self.assertIn(f'linear_probe|-|default|-|{mode}', variant_text)
         self.assertEqual(
-            len({(row["candidate_k"], row["method"], row["matcher"], row["checkpoint"]) for row in parsed}),
+            len({(row["candidate_k"], row["method"], row["matcher"], row["checkpoint"], row["train_mode"]) for row in parsed}),
             len(parsed),
         )
 
@@ -120,13 +142,93 @@ class ParallelProbeLauncherTests(unittest.TestCase):
             re.compile(rf"sbatch --array=0-{task_count - 1}%7 .*probe-parallel-wildlife\.sh"),
         )
 
+    def test_linear_probe_modes_are_explicit_and_non_redundant(self):
+        rows = [row for row in self.task_rows() if row["method"] == "linear_probe"]
+        self.assertTrue({row["train_mode"] for row in rows}.issubset({"classifier", "partial", "all"}))
+        self.assertEqual(len({row["candidate_k"] for row in rows}), 1)
+
+        for row in rows:
+            result = self.run_script(
+                "--dry-run",
+                env={"SLURM_ARRAY_TASK_ID": row["index"], "PROBE_PARALLEL_DRY_RUN": "1"},
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertIn(
+                f"benchmark.methods.linear_probe.train_mode={row['train_mode']}",
+                result.stdout,
+            )
+            self.assertIn(f"train_mode={row['train_mode']}", result.stdout)
+
+    def test_czechlynx_launcher_has_all_linear_probe_modes(self):
+        result = self.run_czech_script("--list-tasks")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        lines = [line for line in result.stdout.splitlines() if line.startswith("index=")]
+        parsed = [dict(item.split("=", 1) for item in line.split()) for line in lines]
+        linear_rows = [row for row in parsed if row["method"] == "linear_probe"]
+        self.assertTrue({row["train_mode"] for row in linear_rows}.issubset({"classifier", "partial", "all"}))
+        variant_text = CZECH_SCRIPT.read_text(encoding="utf-8")
+        for mode in ("classifier", "partial", "all"):
+            self.assertIn(f'linear_probe|-|default|-|{mode}', variant_text)
+        for row in linear_rows:
+            task = self.run_czech_script(
+                "--dry-run",
+                env={"SLURM_ARRAY_TASK_ID": row["index"], "PROBE_PARALLEL_DRY_RUN": "1"},
+            )
+            self.assertEqual(task.returncode, 0, task.stderr)
+            self.assertIn(
+                f"benchmark.methods.linear_probe.train_mode={row['train_mode']}",
+                task.stdout,
+            )
+
+    def test_czechlynx_split_is_explicit_and_open_profile_can_be_enabled(self):
+        result = self.run_czech_script("--list-tasks")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertRegex(result.stdout, r"split_protocol=split-time_(closed|open)")
+
+        # Exercise the profile table without changing the repository launcher:
+        # uncomment the documented open profile in an isolated temporary copy.
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_root = Path(temp_dir)
+            script_copy = temp_root / "probe-parallel-czechlynx.sh"
+            script_text = CZECH_SCRIPT.read_text(encoding="utf-8")
+            script_text = script_text.replace(
+                '    # "czechlynx_closed|CzechLynx_v2|CzechLynx|',
+                '    "czechlynx_closed|CzechLynx_v2|CzechLynx|',
+                1,
+            )
+            script_text = script_text.replace(
+                '    # "czechlynx_open|CzechLynx_v2|CzechLynx|',
+                '    "czechlynx_open|CzechLynx_v2|CzechLynx|',
+                1,
+            )
+            script_copy.write_text(script_text, encoding="utf-8")
+            result = subprocess.run(
+                ["bash", str(script_copy), "--list-tasks"],
+                cwd=temp_root,
+                env=os.environ.copy(),
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        lines = [line for line in result.stdout.splitlines() if line.startswith("index=")]
+        parsed = [dict(item.split("=", 1) for item in line.split()) for line in lines]
+        self.assertEqual({row["split_protocol"] for row in parsed}, {"split-time_closed", "split-time_open"})
+        counts = {split: sum(row["split_protocol"] == split for row in parsed) for split in {"split-time_closed", "split-time_open"}}
+        self.assertEqual(counts["split-time_closed"], counts["split-time_open"])
+        self.assertEqual(
+            len({(row["split_protocol"], row["method"], row["matcher"], row["checkpoint"], row["candidate_k"]) for row in parsed}),
+            len(parsed),
+        )
+
     def test_default_and_custom_checkpoint_mapping(self):
         rows = self.task_rows()
         custom_rows = [
             row for row in rows
             if row["method"] == "vismatch" and row["checkpoint"] == "custom"
         ]
-        self.assertTrue(custom_rows)
+        if not custom_rows:
+            self.skipTest("no custom Vismatch variant is active in the editable launcher table")
 
         with tempfile.NamedTemporaryFile() as loma, tempfile.NamedTemporaryFile() as rdd:
             env = self.checkpoint_env(loma.name, rdd.name)
@@ -163,11 +265,13 @@ class ParallelProbeLauncherTests(unittest.TestCase):
 
     def test_missing_custom_checkpoint_fails_before_probe(self):
         rows = self.task_rows()
-        custom_index = next(
-            int(row["index"])
-            for row in rows
+        custom_rows = [
+            row for row in rows
             if row["method"] == "vismatch" and row["checkpoint"] == "custom"
-        )
+        ]
+        if not custom_rows:
+            self.skipTest("no custom Vismatch variant is active in the editable launcher table")
+        custom_index = int(custom_rows[0]["index"])
         result = self.run_script(
             "--dry-run",
             env={

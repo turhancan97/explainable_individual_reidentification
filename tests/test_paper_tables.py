@@ -9,6 +9,7 @@ from reid.reporting.paper_tables import (
     build_ablation_rows,
     build_main_rows,
     discover_animals,
+    discover_splits,
     discover_records,
     export_tables,
     render_csv,
@@ -31,8 +32,12 @@ def write_run(
     map_at_k=0.3,
     primary_runtime_sec=None,
     total_runtime_sec=None,
+    split_protocol=None,
 ):
-    run_dir = root / "probe" / "Dataset" / animal / run_id
+    run_dir = root / "probe" / "Dataset" / animal
+    if split_protocol:
+        run_dir /= split_protocol
+    run_dir /= run_id
     run_dir.mkdir(parents=True)
     manifest = {
         "run_id": run_id,
@@ -40,6 +45,7 @@ def write_run(
         "workflow": "probe",
         "status": status,
         "animal": animal,
+        "split_protocol": split_protocol or "",
         "method": method,
         "variant": variant,
         "metrics": {
@@ -68,6 +74,27 @@ def write_run(
 
 
 class PaperTableTests(unittest.TestCase):
+    def test_split_protocol_is_part_of_selection_and_output_names(self):
+        with TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir) / "experiments"
+            output = Path(temp_dir) / "reports" / "paper_tables"
+            write_run(root, animal="Lynx", split_protocol="split-time_closed", run_id="20260101_closed", method="cosine", top_1=0.4)
+            write_run(root, animal="Lynx", split_protocol="split-time_open", run_id="20260102_open", method="cosine", top_1=0.8)
+            records = discover_records(root)
+
+            self.assertEqual(discover_splits(records, "Lynx"), ["split-time_closed", "split-time_open"])
+            closed = build_main_rows(records, "Lynx", 50, "split-time_closed")
+            opened = build_main_rows(records, "Lynx", 50, "split-time_open")
+            self.assertEqual(closed[0]["run_id"], "20260101_closed")
+            self.assertEqual(opened[0]["run_id"], "20260102_open")
+            self.assertNotEqual(closed[0]["_sort_token"], opened[0]["_sort_token"])
+
+            outputs = export_tables(root, output, animals=["Lynx"])
+            self.assertEqual(len(outputs), 8)
+            self.assertTrue((output / "Lynx_split-time_closed_main.tex").is_file())
+            self.assertTrue((output / "Lynx_split-time_open_ablation.csv").is_file())
+            self.assertIn(r"split-time\_closed", (output / "Lynx_split-time_closed_main.tex").read_text())
+            self.assertNotIn("Lynx_main.tex", {path.name for path in outputs})
     def test_discovery_filters_status_and_selects_newest_run(self):
         with TemporaryDirectory() as temp_dir:
             root = Path(temp_dir) / "experiments"

@@ -153,18 +153,31 @@ SeaStarReID2023 in addition to the existing WildlifeReID-10k animals. Activate
 exactly one profile at a time; each new profile expects the corresponding
 `legacy/epoch_299/model.safetensors` LoMa and RDD checkpoint paths.
 
+The CzechLynx launcher contains separate `split-time_closed` and
+`split-time_open` profiles. The closed profile is active by default; uncomment
+the open profile to run it as well in the same array. Both profiles use the same
+active `VARIANTS` and candidate grid, but each has independent custom LoMa/RDD
+checkpoint settings. The open profile defaults to
+`/shared/sets/datasets/vision/czechlynx/checkpoints/czechlynx-time-open`, epoch
+`299`, with `loma-b-finetuned-legacy/epoch_299/model.safetensors` and
+`rdd-finetuned-legacy/epoch_299/model.safetensors`. These paths can be overridden
+by the `CZECHLYNX_OPEN_*` variables, but are never inferred from the closed-split
+checkpoint root. Logs and task metadata
+include the split name, and the resulting experiment paths are split-specific.
+
 `probe-parallel-czechlynx.sh` and `probe-parallel-wildlife.sh` leave `probe.sh`
 unchanged and provide separate task tables for CzechLynx and WildlifeReID-10k.
 Each launcher crosses its active variants with the candidate budgets listed in
 `CANDIDATE_K_VALUES`; its `VARIANTS` table is the source of truth for which methods
-run. Exactly one dataset profile is active in each launcher. The concurrency cap is
+run. The CzechLynx launcher may have one or both split profiles active; the
+wildlife launcher uses one active animal profile. The concurrency cap is
 controlled by `MAX_CONCURRENT_JOBS` near the top of the selected file. Custom
 Vismatch checkpoint paths are editable there; custom variants use
 `checkpoint_components=matcher_only`, while default variants use Vismatch-managed
 weights. The selected launcher fails before submission if a custom checkpoint is
 missing. Slurm's raw stdout and stderr remain under `logs/parallel_run/`, while each task also creates descriptive copies under
-`logs/parallel_run/<dataset>/<animal>/job-<array_job>/`. Files are named with
-the task index, method, matcher, checkpoint, and candidate budget. Each task writes
+`logs/parallel_run/<dataset>/<animal>/<split_protocol>/job-<array_job>/`. Files are
+named with the task index, split, method, matcher, checkpoint, and candidate budget. Each task writes
 `.out`, `.err`, `.combined.log`, and a JSON metadata record containing
 its command, status, timestamps, error summary, and experiment-run link.
 `logs/index.csv` is updated atomically as tasks start and finish. The launcher uses
@@ -514,6 +527,7 @@ python scripts/summarize_runs.py --sort-by top_1 --format markdown
 # Generate per-animal CVPR-ready LaTeX and audit CSV tables
 python scripts/export_paper_tables.py
 python scripts/export_paper_tables.py --animal BelugaID
+python scripts/export_paper_tables.py --animal CzechLynx --split-protocol split-time_open
 python scripts/export_paper_tables.py --detailed-comments  # opt in to provenance comments
 
 # Generate CVPR-style accuracy-versus-candidate-budget figures
@@ -522,9 +536,13 @@ python scripts/plot_paper_figures.py --metric top_1
 python scripts/plot_paper_figures.py --animal BelugaID --metric top_5 --formats png pdf
 ```
 
-The paper-table exporter reads completed `experiments/` manifests directly. It
-creates `reports/paper_tables/<animal>_{main,ablation}.{tex,csv}` for each
-discovered animal. The main table uses `candidate_k=50` and presents default
+The paper-table exporter reads completed `experiments/` manifests directly. For
+split-aware artifacts it creates separate files such as
+`reports/paper_tables/CzechLynx_split-time_closed_main.tex` and
+`CzechLynx_split-time_open_main.tex`; no combined closed/open table is generated.
+For legacy artifacts without split provenance it retains the animal-only names.
+Use `--split-protocol` to export one protocol explicitly. The main table uses
+`candidate_k=50` and presents default
 and fine-tuned rows together with same-budget gain arrows; the ablation table
 uses `10, 50, 100, 250, 500, 1000`. Failed or incomplete runs are excluded,
 and missing configurations are shown as `--`. LaTeX values are percentage
