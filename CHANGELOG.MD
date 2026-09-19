@@ -8,6 +8,19 @@ kept under Unreleased until a project version is assigned.
 
 ### Added
 
+- Corrected the CzechLynx parallel launcher profiles to explicitly probe the
+  no-background image variant. Both closed and open profiles now pass
+  `dataset.no_background=true` and `dataset.image_variant=no_background`,
+  matching the probe configuration and preventing background/no-background
+  comparisons from being mixed.
+
+- Paper-table discovery now keeps `linear_probe` training modes separate. The
+  resolved `all`, `partial`, or `classifier` mode is included in run selection,
+  preventing the newest mode from replacing the other linear-probe results. The
+  paper-facing checkpoint column labels these modes as `full fine-tuned`,
+  `partial fine-tuned`, and `frozen`; older artifacts without a readable mode are
+  labeled `unknown`.
+
 - Added readable default W&B names for probe and finetune runs. Names include
   dataset, animal, split, model/mode, method-specific settings, checkpoint variant,
   linear-probe weighting where applicable, and a short run token. Explicit

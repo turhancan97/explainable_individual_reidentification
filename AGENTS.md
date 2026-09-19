@@ -89,6 +89,10 @@ does not belong to the declared animal. The supplied open profile defaults to
 the `czechlynx-time-open` checkpoint root at epoch 299, using the
 `loma-b-finetuned-legacy` and `rdd-finetuned-legacy` subdirectories. Split names appear in task manifests,
 metadata, log directories, and task filenames.
+Both CzechLynx profiles use `dataset.no_background=true` and
+`dataset.image_variant=no_background`, matching the shipped probe configuration;
+the launcher passes these values explicitly rather than inheriting them from a
+mutable configuration file.
 The legacy `LOMA_CUSTOM_CHECKPOINT_PATH` and `RDD_CUSTOM_CHECKPOINT_PATH`
 environment variables remain accepted as closed-profile aliases only.
 The wildlife and CzechLynx launchers support three explicit linear-probe variants:
@@ -134,14 +138,18 @@ Missing budgets are plotted as gaps; failed and incomplete runs are excluded.
 Paper tables are generated with `scripts/export_paper_tables.py` from completed
 run-local manifests under `experiments/`, never from the aggregate benchmark
 CSV. The exporter discovers animals, split protocols, and methods automatically,
-selects the newest completed run for each split/method/matcher/checkpoint/budget
+selects the newest completed run for each split/method/matcher/train-mode/checkpoint/budget
 identity, and writes ignored generated files under `reports/paper_tables/`. Main tables use
 `candidate_k=50` and use the compact paired default/fine-tuned layout with
 same-budget gain arrows; ablation tables use `[10, 50, 100, 250, 500, 1000]` and show
 missing configurations as `--`. LaTeX displays percentage points and labels
 custom checkpoints as `fine-tuned` for paper readability. Run IDs and manifest paths are included
 only with the exporter’s `--detailed-comments` option; companion CSV files always
-retain source fractions.
+retain source fractions. For `linear_probe`, the resolved `train_mode` (`all`,
+`partial`, or `classifier`) is part of the table identity, so these variants are
+never collapsed into one row. The paper-facing checkpoint column labels them as
+`full fine-tuned`, `partial fine-tuned`, and `frozen`, respectively. Older
+artifacts without a readable mode are labeled `unknown` rather than guessed.
 Full-gallery methods report `mAP`, while WildFusion and Vismatch report
 shortlist-aware `mAP@k`. Generated LaTeX wraps the wide tabular in
 `\resizebox{\linewidth}{!}{...}` and requires `graphicx` (normally already

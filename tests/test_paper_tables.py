@@ -33,6 +33,7 @@ def write_run(
     primary_runtime_sec=None,
     total_runtime_sec=None,
     split_protocol=None,
+    train_mode=None,
 ):
     run_dir = root / "probe" / "Dataset" / animal
     if split_protocol:
@@ -67,6 +68,11 @@ def write_run(
         manifest["timings"]["total_run_sec"] = total_runtime_sec
     if method == "vismatch":
         manifest["vismatch_checkpoint"] = {"source": variant}
+    if method == "linear_probe" and train_mode is not None:
+        (run_dir / "config.snapshot.yaml").write_text(
+            "benchmark:\n  methods:\n    linear_probe:\n      train_mode: " + train_mode + "\n",
+            encoding="utf-8",
+        )
     (run_dir / "run_manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
     (run_dir / "metrics.json").write_text(json.dumps(manifest["metrics"]), encoding="utf-8")
     (run_dir / "timings.json").write_text(json.dumps(manifest["timings"]), encoding="utf-8")
@@ -113,6 +119,43 @@ class PaperTableTests(unittest.TestCase):
             self.assertEqual(len(rows), 1)
             self.assertEqual(rows[0]["run_id"], "20260102_new")
             self.assertEqual(rows[0]["top_1"], 0.91)
+
+    def test_linear_probe_train_modes_are_separate_rows(self):
+        with TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir) / "experiments"
+            for index, mode in enumerate(("all", "partial", "classifier"), start=1):
+                write_run(
+                    root,
+                    animal="Lynx",
+                    run_id=f"2026010{index}_{mode}",
+                    method="linear_probe",
+                    train_mode=mode,
+                    top_1=0.4 + index / 100,
+                )
+            records = discover_records(root)
+            rows = build_main_rows(records, "Lynx", 50)
+
+            self.assertEqual({row["train_mode"] for row in rows}, {"all", "partial", "classifier"})
+            self.assertEqual(len(rows), 3)
+            csv_text = render_csv(rows)
+            self.assertNotIn("train_mode", csv_text.splitlines()[0])
+            self.assertIn("all", csv_text)
+            self.assertIn("partial", csv_text)
+            self.assertIn("classifier", csv_text)
+            self.assertIn("full fine-tuned", csv_text)
+            self.assertIn("partial fine-tuned", csv_text)
+            self.assertIn("frozen", csv_text)
+
+            latex = render_latex(
+                rows,
+                animal="Lynx",
+                table_name="main",
+                candidate_k=50,
+                compact_ablation=True,
+            )
+            self.assertIn("Linear Probe & - & full fine-tuned", latex)
+            self.assertIn("Linear Probe & - & partial fine-tuned", latex)
+            self.assertIn("Linear Probe & - & frozen", latex)
 
     def test_checkpoint_variants_and_shortlist_map_are_separate(self):
         with TemporaryDirectory() as temp_dir:

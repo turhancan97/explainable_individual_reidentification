@@ -85,6 +85,21 @@ def _load_json_mapping(path: Path, fallback: Any) -> Mapping[str, Any]:
     return value if isinstance(value, Mapping) else {}
 
 
+def _linear_probe_train_mode(manifest_path: Path, manifest: Mapping[str, Any]) -> str:
+    """Read the resolved linear-probe mode so distinct probes remain distinct."""
+    for source in (manifest, manifest.get("metrics", {}), manifest.get("timings", {})):
+        if isinstance(source, Mapping) and source.get("linear_probe_train_mode"):
+            return str(source["linear_probe_train_mode"]).lower()
+    try:
+        from omegaconf import OmegaConf
+
+        config = OmegaConf.load(manifest_path.with_name("config.snapshot.yaml"))
+        value = OmegaConf.select(config, "benchmark.methods.linear_probe.train_mode")
+    except (ImportError, OSError, ValueError):
+        value = None
+    return str(value).lower() if value else "unknown"
+
+
 def _record_from_manifest(manifest_path: Path) -> dict[str, Any] | None:
     try:
         manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
@@ -101,6 +116,7 @@ def _record_from_manifest(manifest_path: Path) -> dict[str, Any] | None:
     if not animal:
         return None
     matcher = str(manifest.get("variant") or "-") if method == "vismatch" else "-"
+    train_mode = _linear_probe_train_mode(manifest_path, manifest) if method == "linear_probe" else ""
     checkpoint = _checkpoint_source(manifest)
     run_id = str(manifest.get("run_id") or manifest_path.parent.name)
     candidate = _candidate_k(method, metrics, timings)
@@ -115,6 +131,7 @@ def _record_from_manifest(manifest_path: Path) -> dict[str, Any] | None:
         "method_key": method,
         "method": METHOD_LABELS[method],
         "matcher": matcher,
+        "train_mode": train_mode,
         "checkpoint": checkpoint,
         "candidate_k": candidate,
         "top_1": _finite_float(metrics.get("top_1")),
@@ -162,6 +179,7 @@ def _selection_key(record: Mapping[str, Any]) -> tuple[Any, ...]:
         record.get("split_protocol", ""),
         record["method_key"],
         record["matcher"],
+        record.get("train_mode", ""),
         record["checkpoint"],
         record["candidate_k"],
     )
@@ -191,6 +209,7 @@ def _sort_records(records: Iterable[Mapping[str, Any]]) -> list[dict[str, Any]]:
             METHOD_ORDER.get(record.get("method_key", ""), 99),
             record.get("method", ""),
             record.get("matcher", ""),
+            {"all": 0, "partial": 1, "classifier": 2}.get(record.get("train_mode", ""), 3),
             record.get("checkpoint", ""),
             -1 if record.get("candidate_k") is None else record["candidate_k"],
         ),
@@ -206,6 +225,7 @@ def _placeholder(template: Mapping[str, Any], candidate_k: int | None) -> dict[s
             "method_key": template["method_key"],
             "method": template["method"],
             "matcher": template["matcher"],
+            "train_mode": template.get("train_mode", ""),
             "checkpoint": template["checkpoint"],
             "candidate_k": candidate_k,
             "run_id": None,
@@ -221,9 +241,10 @@ def build_main_rows(
 ) -> list[dict[str, Any]]:
     selected = select_latest_records(records, animal, split_protocol)
     rows: list[dict[str, Any]] = []
-    groups: dict[tuple[str, str, str], list[dict[str, Any]]] = {}
+    groups: dict[tuple[str, str, str, str], list[dict[str, Any]]] = {}
     for record in selected:
-        groups.setdefault((record["method_key"], record["matcher"], record["checkpoint"]), []).append(record)
+        key = (record["method_key"], record["matcher"], record.get("train_mode", ""), record["checkpoint"])
+        groups.setdefault(key, []).append(record)
     for group in groups.values():
         budgeted = group[0]["method_key"] in SHORTLIST_METHODS
         match = (
@@ -243,9 +264,10 @@ def build_ablation_rows(
 ) -> list[dict[str, Any]]:
     selected = select_latest_records(records, animal, split_protocol)
     rows: list[dict[str, Any]] = []
-    groups: dict[tuple[str, str, str], list[dict[str, Any]]] = {}
+    groups: dict[tuple[str, str, str, str], list[dict[str, Any]]] = {}
     for record in selected:
-        groups.setdefault((record["method_key"], record["matcher"], record["checkpoint"]), []).append(record)
+        key = (record["method_key"], record["matcher"], record.get("train_mode", ""), record["checkpoint"])
+        groups.setdefault(key, []).append(record)
     for group in groups.values():
         if group[0]["method_key"] in SHORTLIST_METHODS:
             by_budget = {record.get("candidate_k"): record for record in group}
@@ -298,9 +320,21 @@ def _checkpoint_display(value: Any) -> Any:
     return "fine-tuned" if str(value).lower() == "custom" else value
 
 
+def _paper_checkpoint_display(row: Mapping[str, Any]) -> Any:
+    """Display linear-probe training scope in the checkpoint column."""
+    if row.get("method_key") == "linear_probe":
+        labels = {
+            "classifier": "frozen",
+            "partial": "partial fine-tuned",
+            "all": "full fine-tuned",
+        }
+        return labels.get(str(row.get("train_mode") or "").lower(), "unknown")
+    return _checkpoint_display(row.get("checkpoint"))
+
+
 def _row_csv(row: Mapping[str, Any]) -> dict[str, Any]:
     rendered = {column: row.get(column) for column in TABLE_COLUMNS}
-    rendered["checkpoint"] = _checkpoint_display(rendered.get("checkpoint"))
+    rendered["checkpoint"] = _paper_checkpoint_display(row)
     return rendered
 
 
@@ -336,7 +370,7 @@ def _ablation_delta_suffix(
 ) -> str:
     if str(row.get("checkpoint") or "").lower() not in {"custom", "fine-tuned"}:
         return ""
-    key = (row.get("method_key"), row.get("matcher"), row.get("candidate_k"))
+    key = (row.get("method_key"), row.get("matcher"), row.get("train_mode", ""), row.get("candidate_k"))
     baseline = baselines.get(key)
     if baseline is None:
         return ""
@@ -362,6 +396,7 @@ def _sort_ablation_records(records: Iterable[Mapping[str, Any]]) -> list[dict[st
             METHOD_ORDER.get(record.get("method_key", ""), 99),
             record.get("method", ""),
             record.get("matcher", ""),
+            {"all": 0, "partial": 1, "classifier": 2}.get(record.get("train_mode", ""), 3),
             -1 if budget is None else budget,
             checkpoint_order,
         )
@@ -385,7 +420,7 @@ def _render_compact_ablation_latex(
     baselines: dict[tuple[Any, ...], Mapping[str, Any]] = {}
     for row in ordered_rows:
         if str(row.get("checkpoint") or "").lower() not in {"custom", "fine-tuned"}:
-            key = (row.get("method_key"), row.get("matcher"), row.get("candidate_k"))
+            key = (row.get("method_key"), row.get("matcher"), row.get("train_mode", ""), row.get("candidate_k"))
             baselines[key] = row
 
     header: list[str] = []
@@ -439,7 +474,7 @@ def _render_compact_ablation_latex(
         cells = [
             _latex_escape(row.get("method")),
             _latex_escape(row.get("matcher")),
-            _latex_escape(_checkpoint_display(row.get("checkpoint"))),
+            _latex_escape(_paper_checkpoint_display(row)),
             _latex_escape(row.get("candidate_k")),
         ]
         for column in ABLATION_LATEX_METRIC_COLUMNS:
@@ -521,7 +556,7 @@ def render_latex(
         cells = [
             _latex_escape(row.get("method")),
             _latex_escape(row.get("matcher")),
-            _latex_escape(_checkpoint_display(row.get("checkpoint"))),
+            _latex_escape(_paper_checkpoint_display(row)),
             _latex_escape(row.get("candidate_k")),
         ]
         for column in METRIC_COLUMNS:

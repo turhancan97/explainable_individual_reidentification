@@ -24,15 +24,15 @@ LOMA_CUSTOM_CHECKPOINT_PATH="${LOMA_CUSTOM_CHECKPOINT_PATH:-}"
 RDD_CUSTOM_CHECKPOINT_PATH="${RDD_CUSTOM_CHECKPOINT_PATH:-}"
 CZECHLYNX_CLOSED_CHECKPOINT_ROOT="${CZECHLYNX_CLOSED_CHECKPOINT_ROOT:-${CHECKPOINT_ROOT:-/shared/sets/datasets/vision/czechlynx/checkpoints/czechlynx-time-closed}}"
 CZECHLYNX_CLOSED_CHECKPOINT_EPOCH="${CZECHLYNX_CLOSED_CHECKPOINT_EPOCH:-${CHECKPOINT_EPOCH:-299}}"
-CZECHLYNX_CLOSED_LOMA_CHECKPOINT="${CZECHLYNX_CLOSED_LOMA_CHECKPOINT:-${LOMA_CUSTOM_CHECKPOINT_PATH:-${CZECHLYNX_CLOSED_CHECKPOINT_ROOT}/loma-b-finetuned-trainval-4gpu/epoch_${CZECHLYNX_CLOSED_CHECKPOINT_EPOCH}/model.safetensors}}"
-CZECHLYNX_CLOSED_RDD_CHECKPOINT="${CZECHLYNX_CLOSED_RDD_CHECKPOINT:-${RDD_CUSTOM_CHECKPOINT_PATH:-${CZECHLYNX_CLOSED_CHECKPOINT_ROOT}/rdd-finetuned-legacy-rdd-mined/epoch_${CZECHLYNX_CLOSED_CHECKPOINT_EPOCH}/model.safetensors}}"
+CZECHLYNX_CLOSED_LOMA_CHECKPOINT="${CZECHLYNX_CLOSED_LOMA_CHECKPOINT:-${LOMA_CUSTOM_CHECKPOINT_PATH:-${CZECHLYNX_CLOSED_CHECKPOINT_ROOT}/loma-b-finetuned-loma-mined-legacy/epoch_${CZECHLYNX_CLOSED_CHECKPOINT_EPOCH}/model.safetensors}}"
+CZECHLYNX_CLOSED_RDD_CHECKPOINT="${CZECHLYNX_CLOSED_RDD_CHECKPOINT:-${RDD_CUSTOM_CHECKPOINT_PATH:-${CZECHLYNX_CLOSED_CHECKPOINT_ROOT}/rdd-finetuned-loma-mined-legacy/epoch_${CZECHLYNX_CLOSED_CHECKPOINT_EPOCH}/model.safetensors}}"
 
 # Open-split checkpoints must be supplied explicitly. A '-' value is allowed
 # for default-only runs and fails closed if a custom Vismatch row is active.
 CZECHLYNX_OPEN_CHECKPOINT_ROOT="${CZECHLYNX_OPEN_CHECKPOINT_ROOT:-/shared/sets/datasets/vision/czechlynx/checkpoints/czechlynx-time-open}"
 CZECHLYNX_OPEN_CHECKPOINT_EPOCH="${CZECHLYNX_OPEN_CHECKPOINT_EPOCH:-299}"
-CZECHLYNX_OPEN_LOMA_CHECKPOINT="${CZECHLYNX_OPEN_LOMA_CHECKPOINT:-${CZECHLYNX_OPEN_CHECKPOINT_ROOT}/loma-b-finetuned-legacy/epoch_${CZECHLYNX_OPEN_CHECKPOINT_EPOCH}/model.safetensors}"
-CZECHLYNX_OPEN_RDD_CHECKPOINT="${CZECHLYNX_OPEN_RDD_CHECKPOINT:-${CZECHLYNX_OPEN_CHECKPOINT_ROOT}/rdd-finetuned-legacy/epoch_${CZECHLYNX_OPEN_CHECKPOINT_EPOCH}/model.safetensors}"
+CZECHLYNX_OPEN_LOMA_CHECKPOINT="${CZECHLYNX_OPEN_LOMA_CHECKPOINT:-${CZECHLYNX_OPEN_CHECKPOINT_ROOT}/loma-b-finetuned-loma-mined-legacy/epoch_${CZECHLYNX_OPEN_CHECKPOINT_EPOCH}/model.safetensors}"
+CZECHLYNX_OPEN_RDD_CHECKPOINT="${CZECHLYNX_OPEN_RDD_CHECKPOINT:-${CZECHLYNX_OPEN_CHECKPOINT_ROOT}/rdd-finetuned-loma-mined-legacy/epoch_${CZECHLYNX_OPEN_CHECKPOINT_EPOCH}/model.safetensors}"
 
 SCRIPT_SOURCE_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 SCRIPT_DIR="${SLURM_SUBMIT_DIR:-$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)}"
@@ -48,10 +48,10 @@ LAUNCHER_PATH="${SCRIPT_DIR}/${LAUNCHER_NAME}"
 
 # profile|dataset|animal|root|metadata|label|mask|no_background|image_variant|split_col|database_split|query_split|calibration_size|checkpoint_root|checkpoint_epoch|loma_checkpoint|rdd_checkpoint
 DATASET_PROFILES=(
-    "czechlynx_closed|CzechLynx_v2|CzechLynx|/shared/sets/datasets/vision/czechlynx/CzechLynx_v2|CzechLynxDataset-Metadata-Real.csv|unique_name|mask|false|background|split-time_closed|train|test|100|${CZECHLYNX_CLOSED_CHECKPOINT_ROOT}|${CZECHLYNX_CLOSED_CHECKPOINT_EPOCH}|${CZECHLYNX_CLOSED_LOMA_CHECKPOINT}|${CZECHLYNX_CLOSED_RDD_CHECKPOINT}"
+    # "czechlynx_closed|CzechLynx_v2|CzechLynx|/shared/sets/datasets/vision/czechlynx/CzechLynx_v2|CzechLynxDataset-Metadata-Real.csv|unique_name|mask|true|no_background|split-time_closed|train|test|100|${CZECHLYNX_CLOSED_CHECKPOINT_ROOT}|${CZECHLYNX_CLOSED_CHECKPOINT_EPOCH}|${CZECHLYNX_CLOSED_LOMA_CHECKPOINT}|${CZECHLYNX_CLOSED_RDD_CHECKPOINT}"
     # Uncomment to run the open protocol in the same submission. Its custom
     # checkpoint paths are defined independently above.
-    # "czechlynx_open|CzechLynx_v2|CzechLynx|/shared/sets/datasets/vision/czechlynx/CzechLynx_v2|CzechLynxDataset-Metadata-Real.csv|unique_name|mask|false|background|split-time_open|train|test|100|${CZECHLYNX_OPEN_CHECKPOINT_ROOT}|${CZECHLYNX_OPEN_CHECKPOINT_EPOCH}|${CZECHLYNX_OPEN_LOMA_CHECKPOINT}|${CZECHLYNX_OPEN_RDD_CHECKPOINT}"
+    "czechlynx_open|CzechLynx_v2|CzechLynx|/shared/sets/datasets/vision/czechlynx/CzechLynx_v2|CzechLynxDataset-Metadata-Real.csv|unique_name|mask|true|no_background|split-time_open|train|test|100|${CZECHLYNX_OPEN_CHECKPOINT_ROOT}|${CZECHLYNX_OPEN_CHECKPOINT_EPOCH}|${CZECHLYNX_OPEN_LOMA_CHECKPOINT}|${CZECHLYNX_OPEN_RDD_CHECKPOINT}"
 )
 
 # method|matcher|checkpoint_label|checkpoint_path|train_mode|class_weighting
@@ -60,11 +60,11 @@ VARIANTS=(
     # "wildfusion|-|default|-|-"
     # "local_lightglue|-|default|-|-"
     "linear_probe|-|default|-|classifier|weighted"
-    # "linear_probe|-|default|-|classifier|unweighted"
-    # "linear_probe|-|default|-|partial|weighted"
-    # "linear_probe|-|default|-|partial|unweighted"
+    "linear_probe|-|default|-|classifier|unweighted"
+    "linear_probe|-|default|-|partial|weighted"
+    "linear_probe|-|default|-|partial|unweighted"
     "linear_probe|-|default|-|all|weighted"
-    # "linear_probe|-|default|-|all|unweighted"
+    "linear_probe|-|default|-|all|unweighted"
     # "efficient_probe|-|default|-|-"
     # "vismatch|loma|default|-|-"
     # "vismatch|loma|custom|${LOMA_CUSTOM_CHECKPOINT_PATH}|-"
