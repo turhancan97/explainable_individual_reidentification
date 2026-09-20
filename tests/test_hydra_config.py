@@ -32,6 +32,9 @@ class HydraConfigurationTests(unittest.TestCase):
         self.assertEqual(probe.benchmark.method, "vismatch")
         self.assertEqual(probe.benchmark.methods.vismatch.matcher, "rdd-lightglue")
         self.assertEqual(probe.benchmark.candidate_k, 100)
+        self.assertEqual(probe.benchmark.classifier_evaluation.open_set_policy, "open")
+        self.assertFalse(probe.benchmark.classifier_evaluation.embedding_retrieval)
+        self.assertTrue(probe.safety_checks.enabled)
         self.assertNotIn("map_at_k", probe.benchmark)
         self.assertNotIn("B", probe.benchmark.methods.wildfusion)
         self.assertNotIn("candidate_k", probe.benchmark.methods.vismatch)
@@ -42,6 +45,9 @@ class HydraConfigurationTests(unittest.TestCase):
         self.assertEqual(probe.benchmark.methods.linear_probe.class_weighting, "inverse_frequency")
         self.assertTrue(probe.benchmark.methods.linear_probe.class_weight_normalize)
         self.assertEqual(probe.benchmark.methods.linear_probe.class_weight_max, 5.0)
+        self.assertEqual(probe.benchmark.methods.efficient_probe.class_weighting, "inverse_frequency")
+        self.assertTrue(probe.benchmark.methods.efficient_probe.class_weight_normalize)
+        self.assertEqual(probe.benchmark.methods.efficient_probe.class_weight_max, 5.0)
         self.assertEqual(probe.dataset.image_variant, "no_background")
         self.assertEqual(finetune.model.type, "megadescriptor-l")
         self.assertEqual(finetune.dataset.image_variant, "background")
@@ -78,6 +84,29 @@ class HydraConfigurationTests(unittest.TestCase):
         )
         self.assertEqual(cfg.benchmark.methods.linear_probe.class_weighting, "none")
         self.assertEqual(cfg.benchmark.methods.linear_probe.class_weight_max, 3.0)
+
+    def test_efficient_probe_weighting_override(self):
+        cfg = compose_config(
+            "probe",
+            [
+                "benchmark.method=efficient_probe",
+                "benchmark.methods.efficient_probe.class_weighting=none",
+                "benchmark.methods.efficient_probe.class_weight_max=3.0",
+            ],
+        )
+        self.assertEqual(cfg.benchmark.methods.efficient_probe.class_weighting, "none")
+        self.assertEqual(cfg.benchmark.methods.efficient_probe.class_weight_max, 3.0)
+
+    def test_classifier_evaluation_override_converts_types(self):
+        cfg = compose_config(
+            "probe",
+            [
+                "benchmark.classifier_evaluation.open_set_policy=closed",
+                "benchmark.classifier_evaluation.embedding_retrieval=true",
+            ],
+        )
+        self.assertEqual(cfg.benchmark.classifier_evaluation.open_set_policy, "closed")
+        self.assertTrue(cfg.benchmark.classifier_evaluation.embedding_retrieval)
 
     def test_unknown_override_is_rejected(self):
         with self.assertRaises(ConfigCompositionException):

@@ -95,18 +95,18 @@ the launcher passes these values explicitly rather than inheriting them from a
 mutable configuration file.
 The legacy `LOMA_CUSTOM_CHECKPOINT_PATH` and `RDD_CUSTOM_CHECKPOINT_PATH`
 environment variables remain accepted as closed-profile aliases only.
-The wildlife and CzechLynx launchers support three explicit linear-probe variants:
-`classifier`, `partial`, and `all`; activate or comment the corresponding rows
-in the selected launcher’s `VARIANTS` table as needed. They pass
-`benchmark.methods.linear_probe.train_mode=<mode>` directly to Hydra and run
-once per active mode; linear probing does not need the full candidate-budget
-sweep, so each launcher uses the first configured candidate value only for the
-shared evaluation configuration. Each mode can be paired with a `weighted` or
-`unweighted` launcher row. These map to
-`class_weighting=inverse_frequency` or `class_weighting=none`; the weighting
-label is recorded in task names, commands, manifests, metadata, and logs. The
-active launcher table remains the source of truth, so uncomment both rows when
-a paired comparison is wanted.
+The wildlife and CzechLynx launchers support three explicit classifier-probe
+variants for both `linear_probe` and `efficient_probe`: `classifier`, `partial`,
+and `all`; activate or comment the corresponding rows in the selected launcher’s
+`VARIANTS` table as needed. They pass the method-specific
+`benchmark.methods.<method>.train_mode=<mode>` directly to Hydra and run once per
+active mode; classifier probes do not need the full candidate-budget sweep, so
+each launcher uses the first configured candidate value only for the shared
+evaluation configuration. Each mode can be paired with a `weighted` or
+`unweighted` launcher row. These map to `class_weighting=inverse_frequency` or
+`class_weighting=none`; the weighting label is recorded in task names, commands,
+manifests, metadata, and logs. The active launcher table remains the source of
+truth, so uncomment both rows when a paired comparison is wanted.
 Slurm's raw array stdout and stderr remain under `logs/parallel_run/`; keep that
 directory separate from single-run probe logs. After a task starts, the selected
 launcher also mirrors output into
@@ -135,19 +135,27 @@ from the same completed run artifacts. It writes PNG/PDF figures under
 `reports/figures/`, uses categorical budgets `[10, 50, 100, 250, 500, 1000]`,
 and renders WildFusion plus default/fine-tuned LoMa and RDD-LightGlue series.
 Missing budgets are plotted as gaps; failed and incomplete runs are excluded.
+The default metric set includes Top-1, Top-5, Top-10, and balanced Top-1;
+`--metric` can select a subset.
+Split-aware artifacts are grouped by `split_protocol`, so CzechLynx
+`split-time_closed` and `split-time_open` are rendered as separate figures with
+split-specific filenames. Use `--split-protocol` to select one or more splits;
+never combine closed/open panels for a scientific comparison. Legacy artifacts
+without split provenance retain the unsuffixed output names.
 Paper tables are generated with `scripts/export_paper_tables.py` from completed
 run-local manifests under `experiments/`, never from the aggregate benchmark
 CSV. The exporter discovers animals, split protocols, and methods automatically,
-selects the newest completed run for each split/method/matcher/train-mode/checkpoint/budget
+selects the newest completed run for each split/method/matcher/train-mode/weighting/checkpoint/budget
 identity, and writes ignored generated files under `reports/paper_tables/`. Main tables use
 `candidate_k=50` and use the compact paired default/fine-tuned layout with
 same-budget gain arrows; ablation tables use `[10, 50, 100, 250, 500, 1000]` and show
 missing configurations as `--`. LaTeX displays percentage points and labels
 custom checkpoints as `fine-tuned` for paper readability. Run IDs and manifest paths are included
 only with the exporter’s `--detailed-comments` option; companion CSV files always
-retain source fractions. For `linear_probe`, the resolved `train_mode` (`all`,
-`partial`, or `classifier`) is part of the table identity, so these variants are
-never collapsed into one row. The paper-facing checkpoint column labels them as
+retain source fractions. For `linear_probe` and `efficient_probe`, the resolved
+`train_mode` (`all`, `partial`, or `classifier`) and weighted/unweighted policy
+are part of the table identity, so these variants are never collapsed into one
+row. The paper-facing checkpoint column labels them as
 `full fine-tuned`, `partial fine-tuned`, and `frozen`, respectively. Older
 artifacts without a readable mode are labeled `unknown` rather than guessed.
 Full-gallery methods report `mAP`, while WildFusion and Vismatch report
@@ -209,20 +217,27 @@ megadescriptor-t, megadescriptor-l, lynx_megadescriptorV3,
 lynx_megadescriptorV4, miewid, dinov2, and dinov3. The legacy identifier
 megadescriptor is intentionally unsupported.
 
-Classifier probes are closed-set methods: query identities must occur in the
-database identities. Retrieval methods may evaluate unseen identities, but the
-safety-check output must be considered before interpreting metrics.
+Classifier probes support open-world evaluation across all datasets. The shipped
+default is `benchmark.classifier_evaluation.open_set_policy: open`: query identities
+absent from the database/training identity mapping are encoded as `-1`, remain in
+predictions, receive zero classification credit, and contribute zero recall to
+balanced Top-1. Their validation loss is skipped because no classifier target exists.
+`warn` preserves the legacy seen-only `classification_top_*` fields while also
+emitting `classification_open_*`; `closed` fails before model construction. The
+policy, seen/unseen image and identity counts, and coverage are persisted in run
+metrics and reporting records. `embedding_retrieval: true` enables a separate,
+optional cosine diagnostic under `embedding_*`; it does not add an unknown class.
 
 Linear-probe training uses identity-weighted cross-entropy by default. Weights
 are computed from database/training labels only, in deterministic label-index
 order: raw `1 / n_identity`, optional mean-one normalization, then an optional
 maximum cap (default `5.0`) without renormalizing after the cap.
 `class_weighting=none` restores the unweighted training loss for paired
-comparisons. The policy applies equally to `classifier`, `partial`, and `all`;
-query/test loss and all metrics remain unweighted. Efficient probe and all
-retrieval methods remain unchanged. Singleton identities are upweighted in the
-formula but receive no additional visual information, so weighted and
-unweighted results must be reported separately.
+comparisons. The policy applies equally to `classifier`, `partial`, and `all` in
+both `linear_probe` and `efficient_probe`; query/test loss and all metrics remain
+unweighted. Retrieval methods remain unchanged. Singleton identities are
+upweighted in the formula but receive no additional visual information, so
+weighted and unweighted results must be reported separately.
 
 W&B run names are generated when `wandb.name` is null. Probe names identify the
 workflow, dataset, animal, split, backbone and pretrained/finetuned backbone
@@ -310,11 +325,6 @@ reproduction, and the measured impact so it can be picked up without re-investig
   shortlist-constrained methods, so sorting runs by `mAP` now yields a meaningless order
   with no error. Sort NaN to the end explicitly.
 
-- **Dead 1.33 GB allocation per probe epoch.**
-  `reid/engine/probe_runner.py:913` and `:1129` assign `similarity_epoch` and never read
-  it. At CzechLynx scale that is an `11924 x 27836` float32 matrix built and discarded
-  every epoch in both `linear_probe` and `efficient_probe`. Delete the statement.
-
 - **Per-epoch image-level metrics dominate probe runtime.**
   `_probe_retrieval_metrics` rebuilds the same `11924 x 27836` matrix and ranks it in full
   every epoch: measured about 1 minute and 2.7 GB of transient allocation per epoch, so
@@ -360,8 +370,9 @@ reproduction, and the measured impact so it can be picked up without re-investig
   selection still needs an all-unscored guard, tracked under Known issues.
 - [ ] Make `sort_run_rows` total: coerce unparseable cells and order `NaN` last, so
   `scripts/summarize_runs.py --sort-by` works on mixed and gated metric columns.
-- [ ] Reduce probe per-epoch metric cost: drop the unused `similarity_epoch` allocation
-  and compute `image_*` diagnostics once after training rather than every epoch.
+- [x] Remove the unused per-epoch `similarity_epoch` allocation from classifier probes.
+  The remaining per-epoch retrieval cost is tracked separately below and still needs
+  optimization.
 - [ ] Give the probes a validation split distinct from the query/test split, or stop
   logging per-epoch test metrics, so epoch and hyperparameter choices cannot use it.
 - [ ] Make legacy checkpoint discovery recursive for the existing nested no-manifest
@@ -476,8 +487,8 @@ applied at load time.
   images of an identity share it and any maximum over them is a no-op; masking the class
   axis with an image-length mask raised `IndexError` and blocked both probes entirely.
   Database label indices outside the classifier head are rejected rather than silently
-  reindexed. Probe classification results remain closed-set and are not directly
-  comparable to the retrieval methods.
+  reindexed. Probe classification results include explicit open-world coverage; do not
+  interpret seen-only diagnostics as all-query performance.
 - Vismatch and WildFusion use shortlist-constrained ranking. Vismatch overwrites only
   shortlisted candidates in a matrix initialized to `-inf`; invalid candidate scores
   also become `-inf`. It reports candidate hit/recall and scored/unscored pair counts.
@@ -490,10 +501,12 @@ applied at load time.
   stale digest and silently break content-addressed cache identities. Entries are keyed on
   device/inode/size/mtime so the safety-check, dataset-digest, and Vismatch cache-key paths
   share them despite constructing paths differently.
-- Unseen query identities are always reported by split safety checks. `require_b_labels_in_a`
-  selects the response: closed-set classifier probes fail, open-set retrieval warns and
-  continues. There is no warn-while-required mode; the old `warn_only_unseen` flag was
-  unreachable and has been removed.
+- Unseen query identities are always reported by split safety checks. Classifier probes
+  resolve `benchmark.classifier_evaluation.open_set_policy`: `closed` fails before model
+  construction, while `open` and `warn` continue and serialize coverage. Retrieval
+  methods continue with their existing open-set ranking semantics. There is no
+  warn-while-required mode; the old `warn_only_unseen` flag was unreachable and has
+  been removed.
 - Vismatch preprocessing runs exactly once per image. `prepare_image()` returns a
   `PreparedImage` (tensor plus source and processed sizes) that supplies the batch-bucketing
   shape and is consumed directly by `extract_prepared`/`extract_prepared_batch`. Do not

@@ -184,9 +184,10 @@ its command, status, timestamps, error summary, and experiment-run link.
 Slurm's `SLURM_SUBMIT_DIR`, so it remains valid even though Slurm executes a copied
 script from its private spool directory. Use
 `MAX_CONCURRENT_JOBS=2 bash probe-parallel-wildlife.sh` to change the throttle.
-For linear-probe comparisons, add launcher rows ending in `|weighted` or
-`|unweighted`. These become `inverse_frequency` and `none` Hydra overrides,
-respectively, and are included in task names, commands, manifests, and logs.
+For `linear_probe` and `efficient_probe` comparisons, add launcher rows ending in
+`|weighted` or `|unweighted`. These become `inverse_frequency` and `none` Hydra
+overrides, respectively, and are included in task names, commands, manifests, and
+logs.
 
 To inspect the organized logs:
 
@@ -291,6 +292,11 @@ Key blocks:
 - `benchmark.candidate_k`: single comparison budget (default `100`) used for Vismatch
   candidates, WildFusion refinement, and the `mAP_at_k`, `rerank_mAP_at_k`, and
   `recall_at_k` evaluation cutoff.
+- `benchmark.classifier_evaluation.open_set_policy`: `open` (default), `warn`, or
+  `closed`, controlling how `linear_probe` and `efficient_probe` handle query
+  identities absent from the training/database mapping.
+- `benchmark.classifier_evaluation.embedding_retrieval`: optional `false`/`true`
+  cosine retrieval diagnostic from the final backbone representations.
 - Here, `k` is the number of gallery candidates retained for the expensive second
   stage. A larger `k` can recover identities missed by a smaller shortlist, but
   increases computation. In the paper tables, `k=--` means the method uses the
@@ -318,7 +324,23 @@ Artifacts are saved under each run folder:
 - `safety_checks/class_counts.csv`
 - `safety_checks/class_count_histogram.png`
 
-Classifier-based probe methods (`linear_probe`, `efficient_probe`) enforce closed-set identity coverage (query identities must exist in database identities).
+Classifier-based probe methods (`linear_probe`, `efficient_probe`) support open-world
+evaluation. The default `benchmark.classifier_evaluation.open_set_policy: open`
+maps query identities absent from the training/database identity set to an internal
+sentinel: they remain in the predictions, count as incorrect classification results,
+and contribute zero recall to balanced Top-1. Their samples are skipped only for
+validation loss because there is no classifier target for them. Set the policy to
+`warn` to retain the legacy seen-only `classification_top_*` fields while also
+emitting all-query `classification_open_*` fields, or to `closed` to fail before
+model construction. Safety checks are enabled by default and report the coverage
+gap in every case.
+
+The classifier coverage fields include seen/unseen query images and identities plus
+`classification_query_seen_coverage`. When
+`benchmark.classifier_evaluation.embedding_retrieval: true`, an optional cosine
+retrieval diagnostic is reported under `embedding_*`; it is separate from the
+classifier-head metrics and is disabled by default. No unknown classifier class is
+added.
 
 #### Linear Probe Settings
 
@@ -342,17 +364,20 @@ Core options:
 
 Reported metrics for `linear_probe`:
 - Retrieval: `top_k`, `mAP` (same benchmark path as other methods)
-- Classification: `classification_top_1`, `classification_top_5`, `classification_top_10`
+- Classification: policy-selected `classification_top_1`, `classification_top_5`,
+  `classification_top_10`, and `classification_balanced_top_1`; explicit
+  `classification_seen_*` and `classification_open_*` diagnostics are also saved.
 
 By default, the training cross-entropy is identity-weighted using only the
 database/training split: each identity receives raw weight `1 / n_identity`,
 weights are optionally normalized to mean one, and then capped at `5.0`.
 Evaluation loss and all reported metrics remain unweighted. Set
 `class_weighting: "none"` for a paired unweighted run. This policy applies to
-`classifier`, `partial`, and `all` modes; `efficient_probe` is intentionally
-unchanged. Singleton identities are mathematically upweighted, but weighting
-cannot create additional visual information for them. Report weighted and
-unweighted results separately.
+`classifier`, `partial`, and `all` modes for both `linear_probe` and
+`efficient_probe`. Singleton identities are mathematically upweighted, but
+weighting cannot create additional visual information for them. Report weighted
+and unweighted results separately. Validation loss and all reported metrics remain
+unweighted for both probe heads.
 
 Example snippet:
 
@@ -386,6 +411,9 @@ Config path:
 
 Core options:
 - `train_mode`, `epochs`, `log_every`
+- `class_weighting`: `inverse_frequency` (default) | `none`
+- `class_weight_normalize`: normalize inverse-frequency weights to mean 1 (default `true`)
+- `class_weight_max`: cap after normalization (default `5.0`; no second normalization)
 - `batch_size`, `num_workers`, `accumulation_steps`
 - `optimizer`, `lr`, `momentum`, `weight_decay`, `eta_min_scale`
 - `dropout_rate`, `num_queries`, `d_out`
@@ -553,6 +581,7 @@ python scripts/export_paper_tables.py --detailed-comments  # opt in to provenanc
 python scripts/plot_paper_figures.py
 python scripts/plot_paper_figures.py --metric top_1
 python scripts/plot_paper_figures.py --animal BelugaID --metric top_5 --formats png pdf
+python scripts/plot_paper_figures.py --animal CzechLynx --split-protocol split-time_closed
 ```
 
 The paper-table exporter reads completed `experiments/` manifests directly. For
@@ -589,8 +618,15 @@ use equally spaced categorical candidate budgets `10, 50, 100, 250, 500, 1000`,
 matching the paper-style plots. The default series are WildFusion, LoMa
 default/fine-tuned, and RDD-LightGlue default/fine-tuned. Missing runs are left
 as gaps; failed or incomplete runs are ignored. Use `--metric balanced_top_1`
-when a balanced-accuracy figure is needed, or `--metric all` for every supported
-metric.
+when a balanced-accuracy-only figure is needed, or `--metric all` for every
+supported metric. Balanced Top-1 is included in the default metric set, so a
+normal invocation also writes `balanced_top_1_vs_k` figures. Split-aware artifacts
+are plotted separately: for example,
+`split-time_closed` and `split-time_open` produce
+`top_1_vs_k_split-time_closed.png` and `top_1_vs_k_split-time_open.png` rather
+than being combined in one panel. Use `--split-protocol` to restrict the output
+to one split; repeat it to request selected splits. Legacy artifacts without
+split provenance retain the unsuffixed filenames.
 
 Paper-table runtime uses the primary compute phase: pairwise matcher time for
 Vismatch, WildFusion, and Local LightGlue, and method-computation time for
@@ -714,10 +750,11 @@ The reported retrieval metrics now follow a documented primary/diagnostic split:
   across methods, and cannot be recomputed because those runs did not persist scores.
 - Linear and efficient probes report identity-level retrieval as primary. Their
   image-level metrics remain available as `image_top_1`, `image_top_5`, `image_top_10`,
-  and `image_mAP` diagnostics. Identity scores are read directly from the classifier's
+-  and `image_mAP` diagnostics. Identity scores are read directly from the classifier's
   per-identity output columns, so a gallery holding many images per identity no longer
-  fails metric computation. Both probes stay closed-set and are not directly comparable
-  to the retrieval methods.
+  fails metric computation. Open-world classification fields make unseen query
+  identities explicit; use the policy and coverage fields when comparing these probes
+  with retrieval methods.
 - All ranking and visualization paths use deterministic descending score order with
   original database index as the tie-breaker, including the run-local
   `visualizations/index.csv`, so the index resolves ties identically to the prediction

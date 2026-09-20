@@ -126,6 +126,8 @@ class ParallelProbeLauncherTests(unittest.TestCase):
             self.assertIn(f'linear_probe|-|default|-|{mode}', variant_text)
             self.assertIn(f'linear_probe|-|default|-|{mode}|weighted', variant_text)
             self.assertIn(f'linear_probe|-|default|-|{mode}|unweighted', variant_text)
+            self.assertIn(f'efficient_probe|-|default|-|{mode}|weighted', variant_text)
+            self.assertIn(f'efficient_probe|-|default|-|{mode}|unweighted', variant_text)
         self.assertEqual(
             len({(row["candidate_k"], row["method"], row["matcher"], row["checkpoint"], row["train_mode"], row["class_weighting"]) for row in parsed}),
             len(parsed),
@@ -167,6 +169,27 @@ class ParallelProbeLauncherTests(unittest.TestCase):
             )
             self.assertIn(f"train_mode={row['train_mode']}", result.stdout)
 
+    def test_efficient_probe_modes_emit_method_specific_weighting_overrides(self):
+        rows = [row for row in self.task_rows() if row["method"] == "efficient_probe"]
+        self.assertTrue({row["train_mode"] for row in rows}.issubset({"classifier", "partial", "all"}))
+        if not rows:
+            self.skipTest("efficient-probe rows are opt-in in the launcher")
+        for row in rows:
+            result = self.run_script(
+                "--dry-run",
+                env={"SLURM_ARRAY_TASK_ID": row["index"], "PROBE_PARALLEL_DRY_RUN": "1"},
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            expected_weighting = "inverse_frequency" if row["class_weighting"] == "weighted" else "none"
+            self.assertIn(
+                f"benchmark.methods.efficient_probe.train_mode={row['train_mode']}",
+                result.stdout,
+            )
+            self.assertIn(
+                f"benchmark.methods.efficient_probe.class_weighting={expected_weighting}",
+                result.stdout,
+            )
+
     def test_czechlynx_launcher_has_all_linear_probe_modes(self):
         result = self.run_czech_script("--list-tasks")
         self.assertEqual(result.returncode, 0, result.stderr)
@@ -177,6 +200,8 @@ class ParallelProbeLauncherTests(unittest.TestCase):
         variant_text = CZECH_SCRIPT.read_text(encoding="utf-8")
         for mode in ("classifier", "partial", "all"):
             self.assertIn(f'linear_probe|-|default|-|{mode}', variant_text)
+            self.assertIn(f'efficient_probe|-|default|-|{mode}|weighted', variant_text)
+            self.assertIn(f'efficient_probe|-|default|-|{mode}|unweighted', variant_text)
         for row in linear_rows:
             task = self.run_czech_script(
                 "--dry-run",

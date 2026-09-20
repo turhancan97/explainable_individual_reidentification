@@ -6,7 +6,7 @@ from reid.training.class_weights import compute_identity_class_weights
 
 try:
     import torch
-    from models.objective import SoftmaxLoss
+    from models.objective import SoftmaxLoss, SoftmaxLossEP
     HAS_TORCH_OBJECTIVE = True
 except (ImportError, ModuleNotFoundError):
     HAS_TORCH_OBJECTIVE = False
@@ -62,6 +62,22 @@ class IdentityClassWeightTests(unittest.TestCase):
         objective = SoftmaxLoss(num_classes=2, embedding_size=2, class_weights=weights)
         self.assertTrue(torch.equal(objective.criterion.weight, weights))
         self.assertTrue(torch.isfinite(objective.unweighted_loss(torch.ones(1, 2), torch.tensor([0]))))
+
+    @unittest.skipUnless(HAS_TORCH_OBJECTIVE, "torch objective dependencies are not available")
+    def test_efficient_probe_loss_uses_weights_but_evaluates_unweighted(self):
+        weights = torch.tensor([1.0, 2.0])
+        objective = SoftmaxLossEP(
+            num_classes=2,
+            embedding_size=4,
+            num_queries=1,
+            d_out=2,
+            class_weights=weights,
+        )
+        self.assertTrue(torch.equal(objective.criterion.weight, weights))
+        tokens = torch.ones(1, 2, 4)
+        labels = torch.tensor([0])
+        self.assertTrue(torch.isfinite(objective(tokens, labels)))
+        self.assertTrue(torch.isfinite(objective.unweighted_loss(tokens, labels)))
 
 
 if __name__ == "__main__":

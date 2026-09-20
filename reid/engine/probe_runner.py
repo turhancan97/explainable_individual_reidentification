@@ -114,6 +114,23 @@ PROBE_CSV_METRIC_COLUMNS = [
     "classification_top_5",
     "classification_top_10",
     "classification_balanced_top_1",
+    "classification_seen_top_1",
+    "classification_seen_top_5",
+    "classification_seen_top_10",
+    "classification_seen_balanced_top_1",
+    "classification_open_top_1",
+    "classification_open_top_5",
+    "classification_open_top_10",
+    "classification_open_balanced_top_1",
+    "classification_num_query_images",
+    "classification_num_seen_query_images",
+    "classification_num_unseen_query_images",
+    "classification_num_query_identities",
+    "classification_num_seen_query_identities",
+    "classification_num_unseen_query_identities",
+    "classification_query_seen_coverage",
+    "classifier_open_set_policy",
+    "classification_embedding_retrieval_enabled",
     "vismatch_avg_matches",
     "num_candidate_pairs",
     "num_unscored_pairs",
@@ -129,6 +146,16 @@ PROBE_CSV_METRIC_COLUMNS = [
     "linear_probe_class_weight_median",
     "linear_probe_class_weight_num_identities",
     "linear_probe_class_weight_stats",
+    "efficient_probe_class_weighting",
+    "efficient_probe_class_weight_formula",
+    "efficient_probe_class_weight_normalize",
+    "efficient_probe_class_weight_cap",
+    "efficient_probe_class_weight_min",
+    "efficient_probe_class_weight_max",
+    "efficient_probe_class_weight_mean",
+    "efficient_probe_class_weight_median",
+    "efficient_probe_class_weight_num_identities",
+    "efficient_probe_class_weight_stats",
 ]
 
 PROBE_CSV_TIMING_COLUMNS = [
@@ -471,9 +498,10 @@ class FeatureCache:
 
 
 class EncodedLabelDataset(Dataset):
-    def __init__(self, dataset: Any, label_to_index: Dict[str, int]):
+    def __init__(self, dataset: Any, label_to_index: Dict[str, int], allow_unknown: bool = False):
         self.dataset = dataset
         self.label_to_index = label_to_index
+        self.allow_unknown = bool(allow_unknown)
         self.df = dataset.df
         self.metadata = dataset.metadata
         self.col_label = dataset.col_label
@@ -489,6 +517,8 @@ class EncodedLabelDataset(Dataset):
         raw_label = item[1]
         label_str = str(raw_label)
         if label_str not in self.label_to_index:
+            if self.allow_unknown:
+                return image, -1
             raise ValueError(f"Label '{label_str}' not found in label mapping")
         return image, self.label_to_index[label_str]
 
@@ -497,6 +527,85 @@ def _build_label_mapping(dataset_database: Any, label_col: str) -> Dict[str, int
     labels = dataset_database.df[label_col].astype(str).tolist()
     unique_labels = sorted(set(labels))
     return {label: idx for idx, label in enumerate(unique_labels)}
+
+
+CLASSIFIER_OPEN_SET_POLICIES = {"open", "warn", "closed"}
+
+
+def resolve_classifier_evaluation(cfg: DictConfig) -> Tuple[str, bool]:
+    """Resolve the shared classifier-probe open-set policy and diagnostics flag."""
+    settings = getattr(cfg.benchmark, "classifier_evaluation", {})
+    if isinstance(settings, dict):
+        policy = str(settings.get("open_set_policy", "open")).lower()
+        embedding_retrieval = bool(settings.get("embedding_retrieval", False))
+    else:
+        policy = str(getattr(settings, "open_set_policy", "open")).lower()
+        embedding_retrieval = bool(getattr(settings, "embedding_retrieval", False))
+    if policy not in CLASSIFIER_OPEN_SET_POLICIES:
+        allowed = ", ".join(sorted(CLASSIFIER_OPEN_SET_POLICIES))
+        raise ValueError(f"benchmark.classifier_evaluation.open_set_policy must be one of: {allowed}")
+    return policy, embedding_retrieval
+
+
+def _label_indices(labels: Any, label_to_index: Dict[str, int]) -> np.ndarray:
+    """Map labels to classifier indices, using -1 for identities unseen in training."""
+    return np.asarray(
+        [label_to_index.get(str(label), -1) for label in list(labels)],
+        dtype=np.int64,
+    )
+
+
+def classifier_open_set_coverage(
+    query_labels: Any,
+    query_labels_idx: np.ndarray,
+    label_to_index: Dict[str, int],
+    policy: str,
+) -> Dict[str, Any]:
+    """Return auditable seen/unseen query counts for classifier probes."""
+    labels = [str(label) for label in list(query_labels)]
+    unique_labels = set(labels)
+    seen_unique = {label for label in unique_labels if label in label_to_index}
+    num_query = len(labels)
+    num_seen = int(np.count_nonzero(np.asarray(query_labels_idx) >= 0))
+    num_unseen = num_query - num_seen
+    return {
+        "classifier_open_set_policy": policy,
+        "classification_num_query_images": float(num_query),
+        "classification_num_seen_query_images": float(num_seen),
+        "classification_num_unseen_query_images": float(num_unseen),
+        "classification_num_query_identities": float(len(unique_labels)),
+        "classification_num_seen_query_identities": float(len(seen_unique)),
+        "classification_num_unseen_query_identities": float(len(unique_labels - seen_unique)),
+        "classification_query_seen_coverage": float(num_seen / num_query) if num_query else float("nan"),
+    }
+
+
+def validate_classifier_open_set_labels(
+    dataset_database: Any,
+    dataset_query: Any,
+    label_col: str,
+    policy: str,
+    emit_warning: bool = True,
+) -> None:
+    """Fail early only for strict classifier mode and warn for open modes."""
+    database_labels = set(dataset_database.df[label_col].astype(str).tolist())
+    query_labels = set(dataset_query.df[label_col].astype(str).tolist())
+    unseen = sorted(query_labels - database_labels)
+    if not unseen:
+        return
+    detail = (
+        f"{len(unseen)} query identities are absent from the training/database identity set"
+    )
+    if policy == "closed":
+        raise ValueError(
+            f"Closed-set classifier evaluation failed: {detail}. "
+            "Use open_set_policy=open to score unseen queries as incorrect."
+        )
+    if emit_warning:
+        print(
+            f"[classifier][warning] {detail}; unseen query samples will not contribute to "
+            "validation loss and will receive zero classification credit."
+        )
 
 
 def _set_trainable_params(model: Any, cfg: DictConfig, method_key: str) -> None:
@@ -553,20 +662,52 @@ def _build_optimizer(params, method_cfg: DictConfig, method_key: str):
     raise ValueError(f"{method_key}.optimizer must be one of: sgd, adam, adamw")
 
 
-def _classification_topk_accuracy(probs: np.ndarray, query_labels_idx: np.ndarray, topk_values: List[int]) -> Dict[str, float]:
+def _classification_topk_accuracy(
+    probs: np.ndarray,
+    query_labels_idx: np.ndarray,
+    topk_values: List[int],
+    prefix: str = "classification",
+) -> Dict[str, float]:
     metrics: Dict[str, float] = {}
     ranked = stable_rank_indices(probs)
     num_classes = probs.shape[1]
     for k in topk_values:
         kk = min(int(k), num_classes)
-        hits = []
-        for i in range(len(query_labels_idx)):
-            hits.append(int(query_labels_idx[i]) in ranked[i, :kk])
-        metrics[f"classification_top_{k}"] = float(np.mean(hits))
-    metrics["classification_balanced_top_1"] = _balanced_accuracy_top1_idx(
+        hits = [int(query_labels_idx[i]) in ranked[i, :kk] for i in range(len(query_labels_idx))]
+        metrics[f"{prefix}_top_{k}"] = float(np.mean(hits)) if hits else float("nan")
+    metrics[f"{prefix}_balanced_top_1"] = _balanced_accuracy_top1_idx(
         query_labels_idx=query_labels_idx,
         predicted_top1_labels=ranked[:, 0],
     )
+    return metrics
+
+
+def _classifier_metrics(
+    probs: np.ndarray,
+    query_labels_idx: np.ndarray,
+    query_labels: Any,
+    label_to_index: Dict[str, int],
+    policy: str,
+) -> Dict[str, Any]:
+    """Build open-world, seen-only, and policy-selected classifier metrics."""
+    probs = np.asarray(probs)
+    query_labels_idx = np.asarray(query_labels_idx, dtype=np.int64)
+    open_metrics = _classification_topk_accuracy(
+        probs, query_labels_idx, [1, 5, 10], prefix="classification_open"
+    )
+    seen_mask = np.asarray(query_labels_idx) >= 0
+    seen_metrics = _classification_topk_accuracy(
+        probs[seen_mask], query_labels_idx[seen_mask], [1, 5, 10], prefix="classification_seen"
+    )
+    metrics: Dict[str, Any] = {
+        **open_metrics,
+        **seen_metrics,
+        **classifier_open_set_coverage(query_labels, query_labels_idx, label_to_index, policy),
+        "classification_embedding_retrieval_enabled": False,
+    }
+    selected_prefix = "classification_open" if policy == "open" else "classification_seen"
+    for suffix in ("top_1", "top_5", "top_10", "balanced_top_1"):
+        metrics[f"classification_{suffix}"] = metrics[f"{selected_prefix}_{suffix}"]
     return metrics
 
 
@@ -667,6 +808,71 @@ def _forward_patch_tokens(model: Any, x: torch.Tensor, number_of_patches: int) -
             f"number_of_patches ({number_of_patches}) exceeds token count ({hidden.shape[1]})"
         )
     return hidden[:, -number_of_patches:, :]
+
+
+def _collect_probe_embeddings(
+    model: Any,
+    dataset: Any,
+    device: torch.device,
+    batch_size: int,
+    num_workers: int,
+    number_of_patches: Optional[int] = None,
+) -> np.ndarray:
+    """Collect final backbone representations for the optional open-world diagnostic."""
+    loader = DataLoader(dataset, batch_size=int(batch_size), num_workers=int(num_workers), shuffle=False)
+    chunks: List[np.ndarray] = []
+    with torch.no_grad():
+        for x, _ in loader:
+            x = x.to(device)
+            if number_of_patches is None:
+                representation = model(x)
+            else:
+                representation = _forward_patch_tokens(model, x, number_of_patches).mean(dim=1)
+            chunks.append(representation.detach().float().cpu().numpy())
+    if not chunks:
+        return np.empty((0, 0), dtype=np.float32)
+    return np.concatenate(chunks, axis=0)
+
+
+def _cosine_similarity_matrix(query_features: np.ndarray, database_features: np.ndarray) -> np.ndarray:
+    query_features = np.asarray(query_features, dtype=np.float32)
+    database_features = np.asarray(database_features, dtype=np.float32)
+    if query_features.ndim != 2 or database_features.ndim != 2:
+        raise ValueError("Embedding arrays must have shape (N, D)")
+    query_norm = np.linalg.norm(query_features, axis=1, keepdims=True)
+    database_norm = np.linalg.norm(database_features, axis=1, keepdims=True)
+    query_normalized = query_features / np.maximum(query_norm, 1e-12)
+    database_normalized = database_features / np.maximum(database_norm, 1e-12)
+    return query_normalized @ database_normalized.T
+
+
+def _embedding_retrieval_diagnostic(
+    cfg: DictConfig,
+    model: Any,
+    dataset_query: Any,
+    dataset_database: Any,
+    device: torch.device,
+    batch_size: int,
+    num_workers: int,
+    number_of_patches: Optional[int] = None,
+) -> Tuple[Dict[str, Any], float]:
+    started = time.perf_counter()
+    query_features = _collect_probe_embeddings(
+        model, dataset_query, device, batch_size, num_workers, number_of_patches
+    )
+    database_features = _collect_probe_embeddings(
+        model, dataset_database, device, batch_size, num_workers, number_of_patches
+    )
+    similarity = _cosine_similarity_matrix(query_features, database_features)
+    metrics = compute_metrics(
+        dataset_query=dataset_query,
+        dataset_database=dataset_database,
+        similarity=similarity,
+        top_k_values=[int(k) for k in cfg.benchmark.top_k],
+        compute_map=bool(cfg.benchmark.compute_map),
+        map_at_k=resolve_map_at_k(cfg, len(dataset_database)),
+    )
+    return {f"embedding_{key}": value for key, value in metrics.items()}, time.perf_counter() - started
 
 
 def _sample_query_indices(total: int, num_examples: int, seed: int) -> Set[int]:
@@ -917,12 +1123,14 @@ def run_linear_probe(
     method_metrics: Dict[str, Any] = {}
     t0 = time.perf_counter()
 
+    open_set_policy, embedding_retrieval = resolve_classifier_evaluation(cfg)
     label_to_index = _build_label_mapping(dataset_database, cfg.dataset.label_col)
     db_labels_idx = dataset_database.df[cfg.dataset.label_col].astype(str).map(label_to_index).to_numpy(dtype=np.int64)
-    query_labels_idx = dataset_query.df[cfg.dataset.label_col].astype(str).map(label_to_index).to_numpy(dtype=np.int64)
+    query_labels_raw = dataset_query.df[cfg.dataset.label_col].astype(str).tolist()
+    query_labels_idx = _label_indices(query_labels_raw, label_to_index)
 
     train_ds = EncodedLabelDataset(dataset_database, label_to_index)
-    query_ds = EncodedLabelDataset(dataset_query, label_to_index)
+    query_ds = EncodedLabelDataset(dataset_query, label_to_index, allow_unknown=open_set_policy != "closed")
 
     _set_trainable_params(model, cfg, method_key="linear_probe")
     lp_cfg = cfg.benchmark.methods.linear_probe
@@ -1044,17 +1252,21 @@ def run_linear_probe(
                 yq = yq.to(device)
                 emb = model(xq)
                 probs = _predict_class_probabilities(objective, emb)
-                val_loss = objective.unweighted_loss(emb, yq)
-                val_losses.append(float(val_loss.detach().cpu()))
+                known = yq >= 0
+                if bool(known.any()):
+                    val_loss = objective.unweighted_loss(emb[known], yq[known])
+                    val_losses.append(float(val_loss.detach().cpu()))
                 probs_list.append(probs.detach().cpu().numpy())
-                val_iter.set_postfix(loss=f"{val_losses[-1]:.4f}")
+                displayed_loss = val_losses[-1] if val_losses else float("nan")
+                val_iter.set_postfix(loss=f"{displayed_loss:.4f}")
         probs_query = np.concatenate(probs_list, axis=0)
         probs_train = np.concatenate(train_probs_list, axis=0)
         train_targets = np.concatenate(train_targets_list, axis=0)
 
         train_cls_metrics = _classification_topk_accuracy(probs_train, train_targets, [1, 5, 10])
-        cls_metrics = _classification_topk_accuracy(probs_query, query_labels_idx, [1, 5, 10])
-        similarity_epoch = _similarity_from_class_probs(probs_query, db_labels_idx)
+        cls_metrics = _classifier_metrics(
+            probs_query, query_labels_idx, query_labels_raw, label_to_index, open_set_policy
+        )
         retrieval_metrics = _probe_retrieval_metrics(cfg, dataset_query, dataset_database, probs_query, db_labels_idx, query_labels_idx)
 
         if wandb_run is not None:
@@ -1122,7 +1334,22 @@ def run_linear_probe(
     timings["linear_probe_eval_sec"] = time.perf_counter() - t_eval
 
     similarity = _similarity_from_class_probs(probs_query, db_labels_idx)
-    method_metrics.update(_classification_topk_accuracy(probs_query, query_labels_idx, [1, 5, 10]))
+    method_metrics.update(
+        _classifier_metrics(probs_query, query_labels_idx, query_labels_raw, label_to_index, open_set_policy)
+    )
+    method_metrics["classification_embedding_retrieval_enabled"] = bool(embedding_retrieval)
+    if embedding_retrieval:
+        embedding_metrics, embedding_sec = _embedding_retrieval_diagnostic(
+            cfg=cfg,
+            model=model,
+            dataset_query=query_ds,
+            dataset_database=train_ds,
+            device=device,
+            batch_size=int(lp_cfg.eval_batch_size),
+            num_workers=int(lp_cfg.eval_num_workers),
+        )
+        method_metrics.update(embedding_metrics)
+        timings["linear_probe_embedding_retrieval_sec"] = float(embedding_sec)
     method_metrics.update(_probe_retrieval_metrics(cfg, dataset_query, dataset_database, probs_query, db_labels_idx, query_labels_idx))
 
     if bool(lp_cfg.save_checkpoint):
@@ -1156,26 +1383,58 @@ def run_efficient_probe(
     method_artifacts: Optional[Dict[str, Any]] = None,
 ) -> Tuple[np.ndarray, Dict[str, float], Dict[str, float]]:
     timings: Dict[str, float] = {}
-    method_metrics: Dict[str, float] = {}
+    method_metrics: Dict[str, Any] = {}
     t0 = time.perf_counter()
 
+    open_set_policy, embedding_retrieval = resolve_classifier_evaluation(cfg)
     label_to_index = _build_label_mapping(dataset_database, cfg.dataset.label_col)
     db_labels_idx = dataset_database.df[cfg.dataset.label_col].astype(str).map(label_to_index).to_numpy(dtype=np.int64)
-    query_labels_idx = dataset_query.df[cfg.dataset.label_col].astype(str).map(label_to_index).to_numpy(dtype=np.int64)
+    query_labels_raw = dataset_query.df[cfg.dataset.label_col].astype(str).tolist()
+    query_labels_idx = _label_indices(query_labels_raw, label_to_index)
 
     train_ds = EncodedLabelDataset(dataset_database, label_to_index)
-    query_ds = EncodedLabelDataset(dataset_query, label_to_index)
+    query_ds = EncodedLabelDataset(dataset_query, label_to_index, allow_unknown=open_set_policy != "closed")
 
     ep_cfg = cfg.benchmark.methods.efficient_probe
     _set_trainable_params(model, cfg, method_key="efficient_probe")
+    class_order = [label for label, _ in sorted(label_to_index.items(), key=lambda item: item[1])]
+    class_weights_np, class_weight_metadata = compute_identity_class_weights(
+        dataset_database.df[cfg.dataset.label_col].astype(str).tolist(),
+        class_order,
+        weighting=str(getattr(ep_cfg, "class_weighting", "none")),
+        normalize=bool(getattr(ep_cfg, "class_weight_normalize", True)),
+        max_weight=float(getattr(ep_cfg, "class_weight_max", 5.0)),
+    )
+    class_weights = (
+        torch.as_tensor(class_weights_np, dtype=torch.float32, device=device)
+        if class_weights_np is not None
+        else None
+    )
     objective = SoftmaxLossEP(
         num_classes=len(label_to_index),
         embedding_size=embedding_size,
         dropout_rate=float(ep_cfg.dropout_rate),
         num_queries=int(ep_cfg.num_queries),
         d_out=int(ep_cfg.d_out),
+        class_weights=class_weights,
     )
     objective.to(device)
+    method_metrics.update(
+        {
+            "efficient_probe_class_weighting": class_weight_metadata["mode"],
+            "efficient_probe_class_weight_formula": class_weight_metadata["formula"],
+            "efficient_probe_class_weight_normalize": class_weight_metadata["normalize_to_mean_one"],
+            "efficient_probe_class_weight_cap": class_weight_metadata["max_weight"],
+            "efficient_probe_class_weight_min": class_weight_metadata["min"],
+            "efficient_probe_class_weight_max": class_weight_metadata["max"],
+            "efficient_probe_class_weight_mean": class_weight_metadata["mean"],
+            "efficient_probe_class_weight_median": class_weight_metadata["median"],
+            "efficient_probe_class_weight_num_identities": class_weight_metadata["num_identities"],
+            "efficient_probe_class_weight_stats": class_weight_metadata,
+        }
+    )
+    if method_artifacts is not None:
+        method_artifacts["efficient_probe_class_weighting"] = class_weight_metadata
 
     trainable_backbone = [p for p in model.parameters() if p.requires_grad]
     params = list(trainable_backbone) + list(objective.parameters())
@@ -1259,17 +1518,21 @@ def run_efficient_probe(
                 yq = yq.to(device)
                 patch_tokens = _forward_patch_tokens(model, xq, number_of_patches=number_of_patches)
                 probs = _predict_class_probabilities(objective, patch_tokens)
-                val_loss = objective(patch_tokens, yq)
-                val_losses.append(float(val_loss.detach().cpu()))
+                known = yq >= 0
+                if bool(known.any()):
+                    val_loss = objective.unweighted_loss(patch_tokens[known], yq[known])
+                    val_losses.append(float(val_loss.detach().cpu()))
                 probs_list.append(probs.detach().cpu().numpy())
-                val_iter.set_postfix(loss=f"{val_losses[-1]:.4f}")
+                displayed_loss = val_losses[-1] if val_losses else float("nan")
+                val_iter.set_postfix(loss=f"{displayed_loss:.4f}")
         probs_query = np.concatenate(probs_list, axis=0)
         probs_train = np.concatenate(train_probs_list, axis=0)
         train_targets = np.concatenate(train_targets_list, axis=0)
 
         train_cls_metrics = _classification_topk_accuracy(probs_train, train_targets, [1, 5, 10])
-        cls_metrics = _classification_topk_accuracy(probs_query, query_labels_idx, [1, 5, 10])
-        similarity_epoch = _similarity_from_class_probs(probs_query, db_labels_idx)
+        cls_metrics = _classifier_metrics(
+            probs_query, query_labels_idx, query_labels_raw, label_to_index, open_set_policy
+        )
         retrieval_metrics = _probe_retrieval_metrics(cfg, dataset_query, dataset_database, probs_query, db_labels_idx, query_labels_idx)
 
         if wandb_run is not None:
@@ -1363,7 +1626,23 @@ def run_efficient_probe(
     timings["efficient_probe_eval_sec"] = time.perf_counter() - t_eval
 
     similarity = _similarity_from_class_probs(probs_query, db_labels_idx)
-    method_metrics.update(_classification_topk_accuracy(probs_query, query_labels_idx, [1, 5, 10]))
+    method_metrics.update(
+        _classifier_metrics(probs_query, query_labels_idx, query_labels_raw, label_to_index, open_set_policy)
+    )
+    method_metrics["classification_embedding_retrieval_enabled"] = bool(embedding_retrieval)
+    if embedding_retrieval:
+        embedding_metrics, embedding_sec = _embedding_retrieval_diagnostic(
+            cfg=cfg,
+            model=model,
+            dataset_query=query_ds,
+            dataset_database=train_ds,
+            device=device,
+            batch_size=int(ep_cfg.eval_batch_size),
+            num_workers=int(ep_cfg.eval_num_workers),
+            number_of_patches=number_of_patches,
+        )
+        method_metrics.update(embedding_metrics)
+        timings["efficient_probe_embedding_retrieval_sec"] = float(embedding_sec)
     method_metrics.update(_probe_retrieval_metrics(cfg, dataset_query, dataset_database, probs_query, db_labels_idx, query_labels_idx))
 
     if bool(ep_cfg.save_checkpoint):
@@ -1425,7 +1704,7 @@ def run_method(
             "benchmark.methods.vismatch.matcher='rdd-lightglue'."
         )
     timings: Dict[str, float] = {}
-    method_metrics: Dict[str, float] = {}
+    method_metrics: Dict[str, Any] = {}
     t0 = time.perf_counter()
 
     def _call_similarity(matcher_obj, query_ds, database_ds, b_value):
@@ -1771,12 +2050,23 @@ def _run_probe(cfg: DictConfig, context: Any) -> None:
     validate_evaluation_cutoffs(cfg, method)
 
     dataset, dataset_database_raw, dataset_query_raw = load_dataset_splits(cfg)
+    classifier_methods = {"linear_probe", "efficient_probe"}
+    classifier_active = method in classifier_methods
+    if method == "vismatch":
+        classifier_active = str(cfg.benchmark.methods.vismatch.stage_a_method) in classifier_methods
+    classifier_policy = "open"
+    if classifier_active:
+        classifier_policy, _ = resolve_classifier_evaluation(cfg)
+        safety_enabled = bool(getattr(cfg, "safety_checks", {}).get("enabled", True))
+        validate_classifier_open_set_labels(
+            dataset_database_raw,
+            dataset_query_raw,
+            str(cfg.dataset.label_col),
+            classifier_policy,
+            emit_warning=not safety_enabled,
+        )
     if bool(getattr(cfg, "safety_checks", {}).get("enabled", True)):
-        classifier_methods = {"linear_probe", "efficient_probe"}
-        require_closed_set = method in classifier_methods
-        if method == "vismatch":
-            stage_a_method = str(cfg.benchmark.methods.vismatch.stage_a_method)
-            require_closed_set = stage_a_method in classifier_methods
+        require_closed_set = classifier_active and classifier_policy == "closed"
         run_split_safety_checks(
             df_a=dataset_database_raw.df,
             df_b=dataset_query_raw.df,
@@ -1990,6 +2280,13 @@ def _run_probe(cfg: DictConfig, context: Any) -> None:
         "cache_fingerprints": list(cache.used_keys),
         "vismatch_checkpoint": method_artifacts.get("vismatch_checkpoint"),
         "linear_probe_class_weighting": method_artifacts.get("linear_probe_class_weighting"),
+        "efficient_probe_class_weighting": method_artifacts.get("efficient_probe_class_weighting"),
+        "classifier_open_set_policy": metrics.get("classifier_open_set_policy"),
+        "classifier_evaluation": {
+            key: value
+            for key, value in metrics.items()
+            if key.startswith("classification_") or key == "classifier_open_set_policy"
+        },
     }
     with output_json.open("w", encoding="utf-8") as f:
         json.dump(result, f, indent=2)
@@ -2017,6 +2314,13 @@ def _run_probe(cfg: DictConfig, context: Any) -> None:
             "cache_fingerprints": list(cache.used_keys),
             "vismatch_checkpoint": method_artifacts.get("vismatch_checkpoint"),
             "linear_probe_class_weighting": method_artifacts.get("linear_probe_class_weighting"),
+            "efficient_probe_class_weighting": method_artifacts.get("efficient_probe_class_weighting"),
+            "classifier_open_set_policy": metrics.get("classifier_open_set_policy"),
+            "classifier_evaluation": {
+                key: value
+                for key, value in metrics.items()
+                if key.startswith("classification_") or key == "classifier_open_set_policy"
+            },
             "calibration": method_artifacts.get("wildfusion_calibration", method_artifacts.get("local_calibration")),
             "status": "completed",
         },

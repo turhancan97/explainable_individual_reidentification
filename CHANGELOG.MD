@@ -8,6 +8,31 @@ kept under Unreleased until a project version is assigned.
 
 ### Added
 
+- Added identity-weighted cross-entropy to `efficient_probe`, matching the existing
+  `linear_probe` policy. Efficient probes now default to training-only normalized
+  inverse-frequency weights capped at `5.0`, retain `class_weighting=none` for
+  paired comparisons, and keep validation loss and reported metrics unweighted.
+  Both parallel launchers support weighted/unweighted efficient-probe rows for all
+  three train modes; task provenance and W&B names include the weighting policy.
+
+- Added open-world evaluation for `linear_probe` and `efficient_probe` across all
+  datasets. The default `benchmark.classifier_evaluation.open_set_policy: open`
+  preserves unseen query samples, gives them zero classification credit, skips them
+  only for validation loss, and records image/identity coverage. `warn` retains
+  seen-only compatibility fields alongside all-query diagnostics, while `closed`
+  fails before model construction. Added the optional disabled-by-default
+  `embedding_retrieval` diagnostic and enabled probe safety checks by default.
+
+- Added balanced Top-1 accuracy to the default paper-figure metric set. Standard
+  plotting now emits a `balanced_top_1_vs_k` figure alongside Top-1, Top-5, and
+  Top-10; explicit `--metric` selections remain supported.
+
+- Made paper figures split-aware. `scripts/plot_paper_figures.py` now renders
+  separate figures for each discovered `split_protocol`, including distinct
+  CzechLynx closed/open output filenames, and supports an optional repeated
+  `--split-protocol` filter. Closed and open split results are no longer
+  silently collapsed into one plot.
+
 - Corrected the CzechLynx parallel launcher profiles to explicitly probe the
   no-background image variant. Both closed and open profiles now pass
   `dataset.no_background=true` and `dataset.image_variant=no_background`,
@@ -31,8 +56,12 @@ kept under Unreleased until a project version is assigned.
   5.0 after normalization without a second renormalization. Explicit
   `class_weighting=none` runs remain available for paired comparisons; query
   loss and reported metrics stay unweighted. Parallel launcher task identities
-  now distinguish `weighted` and `unweighted` linear-probe variants. Efficient
-  probe, retrieval methods, and historical artifacts are unchanged.
+  now distinguish `weighted` and `unweighted` linear-probe variants.
+
+- Efficient probes now use the same configurable identity-weighted training loss
+  policy as linear probes. Their validation loss and reported metrics remain
+  unweighted, and efficient weighted/unweighted modes are kept separate in
+  launcher tasks, W&B names, manifests, and paper-table audit records.
 
 
 ### Fixed
@@ -244,7 +273,8 @@ normalization-state changes in the extracted representation.
 - Fixed the unreachable `warn_only_unseen` branch in split safety checks. It was only ever
   passed as `not require_closed_set`, so it was `True` exactly when the guarded block was
   skipped. Unseen identities are now always reported, with `require_b_labels_in_a` choosing
-  the response: closed-set classification fails, open-set retrieval warns and continues.
+  the response: strict closed-set classification fails, while open-set evaluation warns
+  and continues.
   The dead parameter was removed from the signature and both call sites.
 - Fixed a `NameError` when a finetune resumed from a checkpoint with no epochs left to run.
   `range(start_epoch, train.epochs)` was empty, so the post-loop code read the unbound epoch
@@ -346,10 +376,10 @@ normalization-state changes in the extracted representation.
     23 rows have an empty `top_1`. The command documented in README fails today.
   - The same sorter leaves rows unordered when a value is `NaN` and reports no error, which
     became reachable once `mAP` started reporting `nan` for shortlist-constrained methods.
-  - Both probes allocate an unused `11924 x 27836` similarity matrix each epoch, and
-    recompute full image-level retrieval metrics each epoch: about 1 minute and 2.7 GB of
-    transient allocation per epoch, roughly 50 minutes at the shipped `epochs: 50`. This
-    was previously unreachable because the probes crashed at epoch 1.
+  - Both probes recompute full image-level retrieval metrics each epoch: about 1 minute
+    and 2.7 GB of transient allocation per epoch, roughly 50 minutes at the shipped
+    `epochs: 50`. The unused similarity-matrix allocation was removed, but this remaining
+    per-epoch metric cost was previously unreachable because the probes crashed at epoch 1.
   - Probe per-epoch validation runs on the query/test split. Reported metrics are
     unaffected because they come from the post-loop final-epoch evaluation with no
     best-epoch selection, but per-epoch test curves invite selection on test.

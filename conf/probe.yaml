@@ -32,6 +32,9 @@ benchmark:
   # Shared comparison budget: Vismatch shortlist, WildFusion refinement, and
   # mAP_at_k / rerank_mAP_at_k / recall_at_k evaluation cutoff.
   candidate_k: 100
+  classifier_evaluation:
+    open_set_policy: "open"  # open | warn | closed
+    embedding_retrieval: false
   calibration:
     exclude_self_pairs: true
     official_same_set: false
@@ -79,6 +82,9 @@ benchmark:
         lynx_megadescriptorV4: ["layers.3", "norm"]
     efficient_probe:
       train_mode: "classifier"  # all | partial | classifier (frozen backbone)
+      class_weighting: "inverse_frequency"  # inverse_frequency | none
+      class_weight_normalize: true
+      class_weight_max: 5.0
       epochs: 50
       log_every: 1
       batch_size: 64
@@ -136,7 +142,7 @@ output:
   csv_path: "benchmark_runs/benchmark_results.csv"
 
 safety_checks:
-  enabled: false
+  enabled: true
 
 reporting:
   enabled: true

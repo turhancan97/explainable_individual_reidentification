@@ -70,7 +70,7 @@ def probe_wandb_name(cfg: Any, run_id: str) -> str:
         )
     elif method in {"wildfusion", "local_lightglue"}:
         parts.append(f"k{_get(benchmark, 'candidate_k', '')}")
-    elif method == "linear_probe":
+    elif method in {"linear_probe", "efficient_probe"}:
         weighting = str(_get(method_cfg, "class_weighting", "inverse_frequency"))
         parts.extend(
             [

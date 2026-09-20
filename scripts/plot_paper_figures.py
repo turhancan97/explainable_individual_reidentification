@@ -25,6 +25,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--output-dir", type=Path, default=Path("reports/figures"))
     parser.add_argument("--animal", action="append", help="Animal to plot; repeat for multiple animals")
     parser.add_argument(
+        "--split-protocol",
+        action="append",
+        help="Split protocol to plot; repeat for multiple splits (default: all discovered splits)",
+    )
+    parser.add_argument(
         "--metric",
         action="append",
         choices=[*PLOT_METRICS, "all"],
@@ -41,6 +46,7 @@ def main() -> None:
         args.root,
         args.output_dir,
         animals=args.animal,
+        split_protocols=args.split_protocol,
         metrics=tuple(args.metric or DEFAULT_PLOT_METRICS),
         budgets=args.budgets,
         formats=args.formats,

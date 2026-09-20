@@ -35,6 +35,7 @@ TABLE_COLUMNS = (
     "matcher",
     "checkpoint",
     "candidate_k",
+    "class_weighting",
     "top_1",
     "top_5",
     "top_10",
@@ -43,6 +44,38 @@ TABLE_COLUMNS = (
     "mAP_at_k",
     "runtime_min",
     "total_runtime_min",
+    "classifier_open_set_policy",
+    "classification_seen_top_1",
+    "classification_seen_top_5",
+    "classification_seen_top_10",
+    "classification_seen_balanced_top_1",
+    "classification_open_top_1",
+    "classification_open_top_5",
+    "classification_open_top_10",
+    "classification_open_balanced_top_1",
+    "classification_top_1",
+    "classification_top_5",
+    "classification_top_10",
+    "classification_balanced_top_1",
+    "classification_num_query_images",
+    "classification_num_seen_query_images",
+    "classification_num_unseen_query_images",
+    "classification_num_query_identities",
+    "classification_num_seen_query_identities",
+    "classification_num_unseen_query_identities",
+    "classification_query_seen_coverage",
+    "classification_embedding_retrieval_enabled",
+    "embedding_top_1",
+    "embedding_top_5",
+    "embedding_top_10",
+    "embedding_balanced_top_1",
+    "embedding_mAP",
+    "embedding_mAP_at_k",
+    "embedding_num_queries",
+    "embedding_num_queries_with_gallery_match",
+    "embedding_num_queries_without_gallery_match",
+    "embedding_mAP_query_coverage",
+    "embedding_score_coverage",
     "run_id",
     "manifest_path",
 )
@@ -85,19 +118,34 @@ def _load_json_mapping(path: Path, fallback: Any) -> Mapping[str, Any]:
     return value if isinstance(value, Mapping) else {}
 
 
-def _linear_probe_train_mode(manifest_path: Path, manifest: Mapping[str, Any]) -> str:
-    """Read the resolved linear-probe mode so distinct probes remain distinct."""
+def _classifier_probe_train_mode(manifest_path: Path, manifest: Mapping[str, Any], method: str) -> str:
+    """Read a classifier-probe mode so distinct training scopes remain distinct."""
     for source in (manifest, manifest.get("metrics", {}), manifest.get("timings", {})):
-        if isinstance(source, Mapping) and source.get("linear_probe_train_mode"):
-            return str(source["linear_probe_train_mode"]).lower()
+        if not isinstance(source, Mapping):
+            continue
+        for key in (f"{method}_train_mode", "train_mode"):
+            if source.get(key):
+                return str(source[key]).lower()
     try:
         from omegaconf import OmegaConf
 
         config = OmegaConf.load(manifest_path.with_name("config.snapshot.yaml"))
-        value = OmegaConf.select(config, "benchmark.methods.linear_probe.train_mode")
+        value = OmegaConf.select(config, f"benchmark.methods.{method}.train_mode")
     except (ImportError, OSError, ValueError):
         value = None
     return str(value).lower() if value else "unknown"
+
+
+def _classifier_probe_weighting(manifest: Mapping[str, Any], metrics: Mapping[str, Any], method: str) -> str:
+    key = f"{method}_class_weighting"
+    value = metrics.get(key, manifest.get(key))
+    if isinstance(value, Mapping):
+        value = value.get("mode")
+    if value in {"inverse_frequency", "weighted"}:
+        return "weighted"
+    if value in {"none", "unweighted"}:
+        return "unweighted"
+    return "unknown" if method in {"linear_probe", "efficient_probe"} else ""
 
 
 def _record_from_manifest(manifest_path: Path) -> dict[str, Any] | None:
@@ -116,8 +164,16 @@ def _record_from_manifest(manifest_path: Path) -> dict[str, Any] | None:
     if not animal:
         return None
     matcher = str(manifest.get("variant") or "-") if method == "vismatch" else "-"
-    train_mode = _linear_probe_train_mode(manifest_path, manifest) if method == "linear_probe" else ""
+    train_mode = (
+        _classifier_probe_train_mode(manifest_path, manifest, method)
+        if method in {"linear_probe", "efficient_probe"}
+        else ""
+    )
+    class_weighting = _classifier_probe_weighting(manifest, metrics, method)
     checkpoint = _checkpoint_source(manifest)
+    classifier_payload = manifest.get("classifier_evaluation")
+    if not isinstance(classifier_payload, Mapping):
+        classifier_payload = {}
     run_id = str(manifest.get("run_id") or manifest_path.parent.name)
     candidate = _candidate_k(method, metrics, timings)
     primary_runtime_sec = _finite_float(timings.get("primary_compute_runtime_sec"))
@@ -134,6 +190,7 @@ def _record_from_manifest(manifest_path: Path) -> dict[str, Any] | None:
         "train_mode": train_mode,
         "checkpoint": checkpoint,
         "candidate_k": candidate,
+        "class_weighting": class_weighting,
         "top_1": _finite_float(metrics.get("top_1")),
         "top_5": _finite_float(metrics.get("top_5")),
         "top_10": _finite_float(metrics.get("top_10")),
@@ -146,6 +203,48 @@ def _record_from_manifest(manifest_path: Path) -> dict[str, Any] | None:
         "manifest_path": manifest_path.as_posix(),
         "_sort_token": (str(manifest.get("run_utc") or ""), run_id),
     }
+    classifier_fields = (
+        "classification_seen_top_1",
+        "classification_seen_top_5",
+        "classification_seen_top_10",
+        "classification_seen_balanced_top_1",
+        "classification_open_top_1",
+        "classification_open_top_5",
+        "classification_open_top_10",
+        "classification_open_balanced_top_1",
+        "classification_top_1",
+        "classification_top_5",
+        "classification_top_10",
+        "classification_balanced_top_1",
+        "classification_num_query_images",
+        "classification_num_seen_query_images",
+        "classification_num_unseen_query_images",
+        "classification_num_query_identities",
+        "classification_num_seen_query_identities",
+        "classification_num_unseen_query_identities",
+        "classification_query_seen_coverage",
+        "embedding_top_1",
+        "embedding_top_5",
+        "embedding_top_10",
+        "embedding_balanced_top_1",
+        "embedding_mAP",
+        "embedding_mAP_at_k",
+        "embedding_num_queries",
+        "embedding_num_queries_with_gallery_match",
+        "embedding_num_queries_without_gallery_match",
+        "embedding_mAP_query_coverage",
+        "embedding_score_coverage",
+    )
+    for field in classifier_fields:
+        record[field] = _finite_float(metrics.get(field, classifier_payload.get(field)))
+    record["classifier_open_set_policy"] = metrics.get(
+        "classifier_open_set_policy",
+        manifest.get("classifier_open_set_policy", classifier_payload.get("classifier_open_set_policy")),
+    )
+    record["classification_embedding_retrieval_enabled"] = metrics.get(
+        "classification_embedding_retrieval_enabled",
+        manifest.get("classification_embedding_retrieval_enabled"),
+    )
     return record
 
 
@@ -180,6 +279,7 @@ def _selection_key(record: Mapping[str, Any]) -> tuple[Any, ...]:
         record["method_key"],
         record["matcher"],
         record.get("train_mode", ""),
+        record.get("class_weighting", ""),
         record["checkpoint"],
         record["candidate_k"],
     )
@@ -210,6 +310,7 @@ def _sort_records(records: Iterable[Mapping[str, Any]]) -> list[dict[str, Any]]:
             record.get("method", ""),
             record.get("matcher", ""),
             {"all": 0, "partial": 1, "classifier": 2}.get(record.get("train_mode", ""), 3),
+            record.get("class_weighting", ""),
             record.get("checkpoint", ""),
             -1 if record.get("candidate_k") is None else record["candidate_k"],
         ),
@@ -226,6 +327,7 @@ def _placeholder(template: Mapping[str, Any], candidate_k: int | None) -> dict[s
             "method": template["method"],
             "matcher": template["matcher"],
             "train_mode": template.get("train_mode", ""),
+            "class_weighting": template.get("class_weighting", ""),
             "checkpoint": template["checkpoint"],
             "candidate_k": candidate_k,
             "run_id": None,
@@ -241,9 +343,15 @@ def build_main_rows(
 ) -> list[dict[str, Any]]:
     selected = select_latest_records(records, animal, split_protocol)
     rows: list[dict[str, Any]] = []
-    groups: dict[tuple[str, str, str, str], list[dict[str, Any]]] = {}
+    groups: dict[tuple[str, str, str, str, str], list[dict[str, Any]]] = {}
     for record in selected:
-        key = (record["method_key"], record["matcher"], record.get("train_mode", ""), record["checkpoint"])
+        key = (
+            record["method_key"],
+            record["matcher"],
+            record.get("train_mode", ""),
+            record.get("class_weighting", ""),
+            record["checkpoint"],
+        )
         groups.setdefault(key, []).append(record)
     for group in groups.values():
         budgeted = group[0]["method_key"] in SHORTLIST_METHODS
@@ -264,9 +372,15 @@ def build_ablation_rows(
 ) -> list[dict[str, Any]]:
     selected = select_latest_records(records, animal, split_protocol)
     rows: list[dict[str, Any]] = []
-    groups: dict[tuple[str, str, str, str], list[dict[str, Any]]] = {}
+    groups: dict[tuple[str, str, str, str, str], list[dict[str, Any]]] = {}
     for record in selected:
-        key = (record["method_key"], record["matcher"], record.get("train_mode", ""), record["checkpoint"])
+        key = (
+            record["method_key"],
+            record["matcher"],
+            record.get("train_mode", ""),
+            record.get("class_weighting", ""),
+            record["checkpoint"],
+        )
         groups.setdefault(key, []).append(record)
     for group in groups.values():
         if group[0]["method_key"] in SHORTLIST_METHODS:
@@ -370,7 +484,13 @@ def _ablation_delta_suffix(
 ) -> str:
     if str(row.get("checkpoint") or "").lower() not in {"custom", "fine-tuned"}:
         return ""
-    key = (row.get("method_key"), row.get("matcher"), row.get("train_mode", ""), row.get("candidate_k"))
+    key = (
+        row.get("method_key"),
+        row.get("matcher"),
+        row.get("train_mode", ""),
+        row.get("class_weighting", ""),
+        row.get("candidate_k"),
+    )
     baseline = baselines.get(key)
     if baseline is None:
         return ""
@@ -397,6 +517,7 @@ def _sort_ablation_records(records: Iterable[Mapping[str, Any]]) -> list[dict[st
             record.get("method", ""),
             record.get("matcher", ""),
             {"all": 0, "partial": 1, "classifier": 2}.get(record.get("train_mode", ""), 3),
+            record.get("class_weighting", ""),
             -1 if budget is None else budget,
             checkpoint_order,
         )
@@ -420,7 +541,13 @@ def _render_compact_ablation_latex(
     baselines: dict[tuple[Any, ...], Mapping[str, Any]] = {}
     for row in ordered_rows:
         if str(row.get("checkpoint") or "").lower() not in {"custom", "fine-tuned"}:
-            key = (row.get("method_key"), row.get("matcher"), row.get("train_mode", ""), row.get("candidate_k"))
+            key = (
+                row.get("method_key"),
+                row.get("matcher"),
+                row.get("train_mode", ""),
+                row.get("class_weighting", ""),
+                row.get("candidate_k"),
+            )
             baselines[key] = row
 
     header: list[str] = []

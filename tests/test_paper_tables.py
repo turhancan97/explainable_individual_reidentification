@@ -240,6 +240,8 @@ class PaperTableTests(unittest.TestCase):
             audit_csv = render_csv(rows)
             self.assertIn("mAP_at_k", audit_csv)
             self.assertIn("total_runtime_min", audit_csv)
+            self.assertIn("classifier_open_set_policy", audit_csv)
+            self.assertIn("classification_num_unseen_query_images", audit_csv)
 
     def test_main_table_uses_fixed_k_and_gain_layout(self):
         with TemporaryDirectory() as temp_dir:

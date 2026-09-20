@@ -36,6 +36,17 @@ class WandbNamingTests(unittest.TestCase):
         name = finetune_wandb_name(finetune_cfg, "20260916T120000Z_12345678")
         self.assertIn("finetune-czechlynx-v2-czechlynx-split-time-closed-megadescriptor-l-30ep-lr0.0001", name)
 
+    def test_efficient_weighting_name(self):
+        probe_cfg = {
+            "dataset": {"name": "Dataset", "animal": "Animal", "split_col": "split"},
+            "model": {"type": "model", "mode": "pretrained"},
+            "benchmark": {
+                "method": "efficient_probe",
+                "methods": {"efficient_probe": {"train_mode": "partial", "class_weighting": "inverse_frequency"}},
+            },
+        }
+        self.assertIn("efficient-probe-partial-weighted-background", probe_wandb_name(probe_cfg, "run_1"))
+
 
 if __name__ == "__main__":
     unittest.main()

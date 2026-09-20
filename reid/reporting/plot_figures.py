@@ -6,10 +6,15 @@ import math
 from pathlib import Path
 from typing import Any, Iterable, Mapping, Sequence
 
-from reid.reporting.paper_tables import discover_animals, discover_records, select_latest_records
+from reid.reporting.paper_tables import (
+    discover_animals,
+    discover_records,
+    discover_splits,
+    select_latest_records,
+)
 
 DEFAULT_PLOT_BUDGETS = (10, 50, 100, 250, 500, 1000)
-DEFAULT_PLOT_METRICS = ("top_1", "top_5", "top_10")
+DEFAULT_PLOT_METRICS = ("top_1", "top_5", "top_10", "balanced_top_1")
 PLOT_METRICS = {
     "top_1": "Top-1 accuracy",
     "top_5": "Top-5 accuracy",
@@ -95,8 +100,14 @@ def prepare_series_data(
     animal: str,
     metric: str,
     budgets: Sequence[int] = DEFAULT_PLOT_BUDGETS,
+    split_protocol: str | None = None,
 ) -> list[dict[str, Any]]:
-    """Return plotting-ready series with missing budgets represented by ``None``."""
+    """Return plotting-ready series for one animal and split.
+
+    ``split_protocol`` is part of the selection identity.  Without this
+    filter, closed and open split records with the same method and budget
+    could overwrite one another while preparing the plot.
+    """
     if metric not in PLOT_METRICS:
         valid = ", ".join(PLOT_METRICS)
         raise ValueError(f"unsupported metric {metric!r}; choose one of: {valid}")
@@ -104,7 +115,7 @@ def prepare_series_data(
     if not budgets or any(budget <= 0 for budget in budgets):
         raise ValueError("budgets must contain positive integers")
 
-    selected = select_latest_records(records, animal)
+    selected = select_latest_records(records, animal, split_protocol)
     by_key = {
         (
             str(record.get("method_key") or ""),
@@ -144,6 +155,7 @@ def render_metric_figure(
     animals: Sequence[str],
     metric: str,
     budgets: Sequence[int] = DEFAULT_PLOT_BUDGETS,
+    split_protocol: str | None = None,
 ):
     """Build a matplotlib figure without saving it.
 
@@ -174,7 +186,13 @@ def render_metric_figure(
     x_values = list(range(len(budget_values)))
     for index, animal in enumerate(animals):
         axis = axes_flat[index]
-        series_data = prepare_series_data(records, animal=animal, metric=metric, budgets=budget_values)
+        series_data = prepare_series_data(
+            records,
+            animal=animal,
+            metric=metric,
+            budgets=budget_values,
+            split_protocol=split_protocol,
+        )
         for series in series_data:
             plotted_x = [x for x, value in zip(x_values, series["values"]) if value is not None]
             plotted_y = [value * 100.0 for value in series["values"] if value is not None]
@@ -208,7 +226,10 @@ def render_metric_figure(
 
     for axis in axes_flat[len(animals):]:
         axis.set_visible(False)
-    figure.suptitle(f"{PLOT_METRICS[metric]} versus k", fontsize=16, fontweight="bold")
+    title = f"{PLOT_METRICS[metric]} versus k"
+    if split_protocol:
+        title += f" ({split_protocol})"
+    figure.suptitle(title, fontsize=16, fontweight="bold")
     if handles:
         figure.legend(
             handles,
@@ -227,6 +248,7 @@ def plot_metrics(
     output_dir: Path,
     *,
     animals: Sequence[str] | None = None,
+    split_protocols: Sequence[str] | None = None,
     metrics: Sequence[str] = DEFAULT_PLOT_METRICS,
     budgets: Sequence[int] = DEFAULT_PLOT_BUDGETS,
     formats: Sequence[str] = ("png", "pdf"),
@@ -250,21 +272,86 @@ def plot_metrics(
     if unknown_formats:
         raise ValueError(f"unsupported output format(s): {', '.join(unknown_formats)}")
     output_dir.mkdir(parents=True, exist_ok=True)
-    outputs: list[Path] = []
-    for metric in selected_metrics:
-        figure = render_metric_figure(
-            records,
-            animals=selected_animals,
-            metric=metric,
-            budgets=budgets,
-        )
-        try:
-            for fmt in formats:
-                output_path = output_dir / f"{metric}_vs_k.{fmt}"
-                figure.savefig(output_path, dpi=300, bbox_inches="tight")
-                outputs.append(output_path)
-        finally:
-            import matplotlib.pyplot as plt
 
-            plt.close(figure)
+    available_splits = discover_splits(records)
+    if split_protocols is not None:
+        unknown_splits = sorted(set(split_protocols) - set(available_splits))
+        if unknown_splits:
+            raise ValueError(
+                f"no completed probe records found for split(s): {', '.join(unknown_splits)}"
+            )
+        plot_groups: list[tuple[str | None, list[str]]] = [
+            (
+                split,
+                [
+                    animal
+                    for animal in selected_animals
+                    if any(
+                        record.get("animal") == animal
+                        and record.get("split_protocol") == split
+                        for record in records
+                    )
+                ],
+            )
+            for split in split_protocols
+        ]
+    elif available_splits:
+        # Split-aware artifacts get one figure per split.  This is essential
+        # for CzechLynx, where closed and open protocols must never share a
+        # panel or overwrite one another.
+        plot_groups = [
+            (
+                split,
+                [
+                    animal
+                    for animal in selected_animals
+                    if any(
+                        record.get("animal") == animal
+                        and record.get("split_protocol") == split
+                        for record in records
+                    )
+                ],
+            )
+            for split in available_splits
+        ]
+        # Keep old artifacts without split provenance visible when they are
+        # present alongside split-aware runs.
+        legacy_animals = [
+            animal
+            for animal in selected_animals
+            if any(
+                record.get("animal") == animal and not record.get("split_protocol")
+                for record in records
+            )
+        ]
+        if legacy_animals:
+            plot_groups.append((None, legacy_animals))
+    else:
+        plot_groups = [(None, selected_animals)]
+
+    plot_groups = [(split, group) for split, group in plot_groups if group]
+    if not plot_groups:
+        raise ValueError("no completed probe records found for the requested split(s)")
+    outputs: list[Path] = []
+    for split_protocol, group_animals in plot_groups:
+        suffix = "" if split_protocol is None and not available_splits else (
+            f"_{split_protocol}" if split_protocol else "_unspecified"
+        )
+        for metric in selected_metrics:
+            figure = render_metric_figure(
+                records,
+                animals=group_animals,
+                metric=metric,
+                budgets=budgets,
+                split_protocol=split_protocol,
+            )
+            try:
+                for fmt in formats:
+                    output_path = output_dir / f"{metric}_vs_k{suffix}.{fmt}"
+                    figure.savefig(output_path, dpi=300, bbox_inches="tight")
+                    outputs.append(output_path)
+            finally:
+                import matplotlib.pyplot as plt
+
+                plt.close(figure)
     return outputs

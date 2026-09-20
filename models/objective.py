@@ -101,6 +101,7 @@ class SoftmaxLossEP(nn.Module):
         dropout_rate: float = 0.0,
         num_queries: int = 4,
         d_out: int = 2,
+        class_weights: torch.Tensor | None = None,
     ):
         super().__init__()
         if d_out <= 0:
@@ -124,7 +125,7 @@ class SoftmaxLossEP(nn.Module):
         self.attn_drop = nn.Dropout(dropout_rate)
         self.proj_drop = nn.Dropout(dropout_rate)
         self.linear = nn.Linear(embedding_size // d_out, num_classes)
-        self.criterion = nn.CrossEntropyLoss()
+        self.criterion = nn.CrossEntropyLoss(weight=class_weights)
 
     def _pooled(self, x: torch.Tensor) -> torch.Tensor:
         if x.ndim != 3:
@@ -152,6 +153,10 @@ class SoftmaxLossEP(nn.Module):
 
     def forward(self, x: torch.Tensor, y: torch.Tensor) -> torch.Tensor:
         return self.criterion(self._logits(x), y)
+
+    def unweighted_loss(self, x: torch.Tensor, y: torch.Tensor) -> torch.Tensor:
+        """Compute evaluation loss without changing the training criterion."""
+        return F.cross_entropy(self._logits(x), y)
 
     def predict_probabilities(self, x: torch.Tensor) -> torch.Tensor:
         return torch.softmax(self._logits(x), dim=1)

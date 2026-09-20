@@ -3,9 +3,9 @@
 #SBATCH --gpus=1
 #SBATCH --qos=batch
 #SBATCH --cpus-per-task=10
-#SBATCH --mem=256G
+#SBATCH --mem=64G
 #SBATCH --ntasks=1
-#SBATCH --exclude=c22,c11,c13,c15,dgx1
+#SBATCH --exclude=c13,c22,c15,dgx1
 #SBATCH --job-name=probe_czechlynx
 #SBATCH --time=24:00:00
 #SBATCH --output=logs/parallel_run/%x_%A_%a.out
@@ -65,7 +65,12 @@ VARIANTS=(
     "linear_probe|-|default|-|partial|unweighted"
     "linear_probe|-|default|-|all|weighted"
     "linear_probe|-|default|-|all|unweighted"
-    # "efficient_probe|-|default|-|-"
+    # "efficient_probe|-|default|-|classifier|weighted"
+    # "efficient_probe|-|default|-|classifier|unweighted"
+    # "efficient_probe|-|default|-|partial|weighted"
+    # "efficient_probe|-|default|-|partial|unweighted"
+    # "efficient_probe|-|default|-|all|weighted"
+    # "efficient_probe|-|default|-|all|unweighted"
     # "vismatch|loma|default|-|-"
     # "vismatch|loma|custom|${LOMA_CUSTOM_CHECKPOINT_PATH}|-"
     # "vismatch|rdd-lightglue|default|-|-"
@@ -85,23 +90,23 @@ for profile in "${DATASET_PROFILES[@]}"; do
     for candidate_k in "${CANDIDATE_K_VALUES[@]}"; do
         for variant in "${VARIANTS[@]}"; do
             IFS='|' read -r METHOD MATCHER CHECKPOINT_LABEL CHECKPOINT_PATH TRAIN_MODE CLASS_WEIGHTING <<< "${variant}"
-            if [[ "${METHOD}" == linear_probe && "${candidate_k}" != "${CANDIDATE_K_VALUES[0]}" ]]; then
+            if [[ ( "${METHOD}" == linear_probe || "${METHOD}" == efficient_probe ) && "${candidate_k}" != "${CANDIDATE_K_VALUES[0]}" ]]; then
                 continue
             fi
             CHECKPOINT_PATH=-; CHECKPOINT_OWNER=-; CHECKPOINT_COMPONENTS=-; LOMA_ARCH=-
             [[ -n "${TRAIN_MODE}" ]] || TRAIN_MODE=-
             [[ -n "${CLASS_WEIGHTING}" ]] || CLASS_WEIGHTING=-
-            if [[ "${METHOD}" == linear_probe && "${TRAIN_MODE}" != classifier && "${TRAIN_MODE}" != partial && "${TRAIN_MODE}" != all ]]; then
-                die "linear_probe variant must use train_mode classifier, partial, or all"
+            if [[ ( "${METHOD}" == linear_probe || "${METHOD}" == efficient_probe ) && "${TRAIN_MODE}" != classifier && "${TRAIN_MODE}" != partial && "${TRAIN_MODE}" != all ]]; then
+                die "${METHOD} variant must use train_mode classifier, partial, or all"
             fi
-            if [[ "${METHOD}" == linear_probe && "${CLASS_WEIGHTING}" != weighted && "${CLASS_WEIGHTING}" != unweighted ]]; then
-                die "linear_probe variant must specify class_weighting weighted or unweighted"
+            if [[ ( "${METHOD}" == linear_probe || "${METHOD}" == efficient_probe ) && "${CLASS_WEIGHTING}" != weighted && "${CLASS_WEIGHTING}" != unweighted ]]; then
+                die "${METHOD} variant must specify class_weighting weighted or unweighted"
             fi
-            if [[ "${METHOD}" != linear_probe && "${TRAIN_MODE}" != - ]]; then
-                die "only linear_probe variants may specify train_mode; got '${TRAIN_MODE}' for ${METHOD}"
+            if [[ "${METHOD}" != linear_probe && "${METHOD}" != efficient_probe && "${TRAIN_MODE}" != - ]]; then
+                die "only classifier-probe variants may specify train_mode; got '${TRAIN_MODE}' for ${METHOD}"
             fi
-            if [[ "${METHOD}" != linear_probe && "${CLASS_WEIGHTING}" != - ]]; then
-                die "only linear_probe variants may specify class_weighting; got '${CLASS_WEIGHTING}' for ${METHOD}"
+            if [[ "${METHOD}" != linear_probe && "${METHOD}" != efficient_probe && "${CLASS_WEIGHTING}" != - ]]; then
+                die "only classifier-probe variants may specify class_weighting; got '${CLASS_WEIGHTING}' for ${METHOD}"
             fi
             if [[ "${CHECKPOINT_LABEL}" == custom ]]; then
                 CHECKPOINT_COMPONENTS=matcher_only
@@ -167,7 +172,7 @@ else
     eval "$(python "${MANIFEST_HELPER}" emit-shell --manifest "${PROBE_PARALLEL_MANIFEST}" --index "${TASK_INDEX}")"
     if ! VALIDATION_OUTPUT="$(python "${MANIFEST_HELPER}" validate --manifest "${PROBE_PARALLEL_MANIFEST}" --index "${TASK_INDEX}" 2>&1)"; then
         LOG_DATASET="$(sanitize_component "${DATASET_NAME}")"; LOG_ANIMAL="$(sanitize_component "${ANIMAL}")"; LOG_SPLIT="$(sanitize_component "${SPLIT_COL}")"
-        ARRAY_JOB_ID="${SLURM_ARRAY_JOB_ID:-${SLURM_JOB_ID:-local}}"; TASK_SLUG="${METHOD}-${MATCHER}"; [[ "${METHOD}" == linear_probe ]] && TASK_SLUG="${TASK_SLUG}-${TRAIN_MODE}-${CLASS_WEIGHTING}"; TASK_SLUG="$(sanitize_component "${TASK_SLUG}")"; TASK_CHECKPOINT="$(sanitize_component "${CHECKPOINT_LABEL}")"
+        ARRAY_JOB_ID="${SLURM_ARRAY_JOB_ID:-${SLURM_JOB_ID:-local}}"; TASK_SLUG="${METHOD}-${MATCHER}"; [[ "${METHOD}" == linear_probe || "${METHOD}" == efficient_probe ]] && TASK_SLUG="${TASK_SLUG}-${TRAIN_MODE}-${CLASS_WEIGHTING}"; TASK_SLUG="$(sanitize_component "${TASK_SLUG}")"; TASK_CHECKPOINT="$(sanitize_component "${CHECKPOINT_LABEL}")"
         TASK_LOG_DIR="${LOG_ROOT}/${LOG_DATASET}/${LOG_ANIMAL}/${LOG_SPLIT}/job-${ARRAY_JOB_ID}"; TASK_STEM="task-$(printf '%03d' "${TASK_INDEX}")__${LOG_SPLIT}__${TASK_SLUG}__${TASK_CHECKPOINT}__k${CANDIDATE_K}"
         TASK_OUT_PATH="${TASK_LOG_DIR}/${TASK_STEM}.out"; TASK_ERR_PATH="${TASK_LOG_DIR}/${TASK_STEM}.err"; TASK_COMBINED_PATH="${TASK_LOG_DIR}/${TASK_STEM}.combined.log"; TASK_METADATA_PATH="${TASK_LOG_DIR}/${TASK_STEM}.json"; mkdir -p "${TASK_LOG_DIR}"
         printf '[launcher] immutable task validation failed: %s\n' "${VALIDATION_OUTPUT}" | tee -a "${TASK_ERR_PATH}" "${TASK_COMBINED_PATH}" >&2
@@ -189,10 +194,10 @@ PROBE_ARGS=(--config-dir "$(dirname -- "${CONFIG_SNAPSHOT_PATH}")" --config-name
     "dataset.label_col=${LABEL_COL}" "dataset.mask_col=${MASK_COL}" "dataset.no_background=${NO_BACKGROUND}" "dataset.image_variant=${IMAGE_VARIANT}"
     "dataset.split_col=${SPLIT_COL}" "dataset.database_split_value=${DATABASE_SPLIT_VALUE}" "dataset.query_split_value=${QUERY_SPLIT_VALUE}" "dataset.calibration_size=${CALIBRATION_SIZE}"
     "benchmark.method=${METHOD}" "benchmark.candidate_k=${CANDIDATE_K}")
-if [[ "${METHOD}" == linear_probe ]]; then
-    PROBE_ARGS+=("benchmark.methods.linear_probe.train_mode=${TRAIN_MODE}")
-    [[ "${CLASS_WEIGHTING}" == weighted ]] && PROBE_ARGS+=("benchmark.methods.linear_probe.class_weighting=inverse_frequency")
-    [[ "${CLASS_WEIGHTING}" == unweighted ]] && PROBE_ARGS+=("benchmark.methods.linear_probe.class_weighting=none")
+if [[ "${METHOD}" == linear_probe || "${METHOD}" == efficient_probe ]]; then
+    PROBE_ARGS+=("benchmark.methods.${METHOD}.train_mode=${TRAIN_MODE}")
+    [[ "${CLASS_WEIGHTING}" == weighted ]] && PROBE_ARGS+=("benchmark.methods.${METHOD}.class_weighting=inverse_frequency")
+    [[ "${CLASS_WEIGHTING}" == unweighted ]] && PROBE_ARGS+=("benchmark.methods.${METHOD}.class_weighting=none")
 fi
 if [[ "${METHOD}" == vismatch ]]; then
     PROBE_ARGS+=("benchmark.methods.vismatch.matcher=${MATCHER}")
@@ -205,7 +210,7 @@ printf 'Submission ID: %s\nManifest: %s\nConfig snapshot: %s\nCheckpoint owner: 
 printf 'python train/probe.py'; printf ' %q' "${PROBE_ARGS[@]}"; printf '\n'
 if [[ "${PROBE_PARALLEL_DRY_RUN:-0}" == 1 || "${1:-}" == --dry-run ]]; then exit 0; fi
 
-ARRAY_JOB_ID="${SLURM_ARRAY_JOB_ID:-${SLURM_JOB_ID:-local}}"; TASK_SLUG="${METHOD}"; [[ "${MATCHER}" != - ]] && TASK_SLUG="${TASK_SLUG}-${MATCHER}"; [[ "${METHOD}" == linear_probe ]] && TASK_SLUG="${TASK_SLUG}-${TRAIN_MODE}-${CLASS_WEIGHTING}"; TASK_SLUG="$(sanitize_component "${TASK_SLUG}")"; TASK_CHECKPOINT="$(sanitize_component "${CHECKPOINT_LABEL}")"
+ARRAY_JOB_ID="${SLURM_ARRAY_JOB_ID:-${SLURM_JOB_ID:-local}}"; TASK_SLUG="${METHOD}"; [[ "${MATCHER}" != - ]] && TASK_SLUG="${TASK_SLUG}-${MATCHER}"; [[ "${METHOD}" == linear_probe || "${METHOD}" == efficient_probe ]] && TASK_SLUG="${TASK_SLUG}-${TRAIN_MODE}-${CLASS_WEIGHTING}"; TASK_SLUG="$(sanitize_component "${TASK_SLUG}")"; TASK_CHECKPOINT="$(sanitize_component "${CHECKPOINT_LABEL}")"
 TASK_LOG_DIR="${LOG_ROOT}/${LOG_DATASET}/${LOG_ANIMAL}/${LOG_SPLIT}/job-${ARRAY_JOB_ID}"; TASK_STEM="task-$(printf '%03d' "${TASK_INDEX}")__${LOG_SPLIT}__${TASK_SLUG}__${TASK_CHECKPOINT}__k${CANDIDATE_K}"
 TASK_OUT_PATH="${TASK_LOG_DIR}/${TASK_STEM}.out"; TASK_ERR_PATH="${TASK_LOG_DIR}/${TASK_STEM}.err"; TASK_COMBINED_PATH="${TASK_LOG_DIR}/${TASK_STEM}.combined.log"; TASK_METADATA_PATH="${TASK_LOG_DIR}/${TASK_STEM}.json"; mkdir -p "${TASK_LOG_DIR}"
 exec > >(tee -a "${TASK_OUT_PATH}" "${TASK_COMBINED_PATH}") 2> >(tee -a "${TASK_ERR_PATH}" "${TASK_COMBINED_PATH}" >&2)

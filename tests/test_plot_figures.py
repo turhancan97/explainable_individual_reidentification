@@ -7,6 +7,7 @@ from tempfile import TemporaryDirectory
 from reid.reporting.paper_tables import discover_records
 from reid.reporting.plot_figures import (
     DEFAULT_PLOT_BUDGETS,
+    DEFAULT_PLOT_METRICS,
     prepare_series_data,
     plot_metrics,
     render_metric_figure,
@@ -22,6 +23,7 @@ def write_plot_run(
     matcher: str = "-",
     checkpoint: str = "default",
     candidate_k: int | None = 10,
+    split_protocol: str = "",
     top_1: float = 0.5,
     top_5: float = 0.6,
     top_10: float = 0.7,
@@ -35,6 +37,7 @@ def write_plot_run(
         "workflow": "probe",
         "status": "completed",
         "animal": animal,
+        "split_protocol": split_protocol,
         "method": method,
         "variant": matcher if method == "vismatch" else checkpoint,
         "metrics": {
@@ -53,6 +56,9 @@ def write_plot_run(
 
 
 class PlotFigureTests(unittest.TestCase):
+    def test_default_plot_metrics_include_balanced_accuracy(self):
+        self.assertIn("balanced_top_1", DEFAULT_PLOT_METRICS)
+
     def test_prepare_series_data_maps_runs_and_leaves_missing_budgets(self):
         with TemporaryDirectory() as temp_dir:
             root = Path(temp_dir) / "experiments"
@@ -73,6 +79,44 @@ class PlotFigureTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "unsupported metric"):
             prepare_series_data([], animal="Lynx", metric="mAP")
 
+    def test_split_protocols_are_selected_independently(self):
+        with TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir) / "experiments"
+            write_plot_run(
+                root,
+                animal="CzechLynx",
+                run_id="20260101_closed",
+                method="vismatch",
+                matcher="loma",
+                split_protocol="split-time_closed",
+                top_1=0.25,
+            )
+            write_plot_run(
+                root,
+                animal="CzechLynx",
+                run_id="20260102_open",
+                method="vismatch",
+                matcher="loma",
+                split_protocol="split-time_open",
+                top_1=0.75,
+            )
+            records = discover_records(root)
+
+            closed = prepare_series_data(
+                records,
+                animal="CzechLynx",
+                metric="top_1",
+                split_protocol="split-time_closed",
+            )
+            opened = prepare_series_data(
+                records,
+                animal="CzechLynx",
+                metric="top_1",
+                split_protocol="split-time_open",
+            )
+            self.assertEqual(next(item for item in closed if item["name"] == "LoMa default")["values"][0], 0.25)
+            self.assertEqual(next(item for item in opened if item["name"] == "LoMa default")["values"][0], 0.75)
+
     @unittest.skipUnless(importlib.util.find_spec("matplotlib"), "matplotlib is optional for dependency-light tests")
     def test_render_and_save_figures(self):
         with TemporaryDirectory() as temp_dir:
@@ -87,6 +131,33 @@ class PlotFigureTests(unittest.TestCase):
             outputs = plot_metrics(root, output, metrics=("top_1",), formats=("png", "pdf"))
             self.assertEqual({path.suffix for path in outputs}, {".png", ".pdf"})
             self.assertTrue(all(path.stat().st_size > 0 for path in outputs))
+
+    @unittest.skipUnless(importlib.util.find_spec("matplotlib"), "matplotlib is optional for dependency-light tests")
+    def test_split_plots_have_separate_output_names(self):
+        with TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir) / "experiments"
+            output = Path(temp_dir) / "reports" / "figures"
+            for split, run_id, score in (
+                ("split-time_closed", "20260101_closed", 0.25),
+                ("split-time_open", "20260102_open", 0.75),
+            ):
+                write_plot_run(
+                    root,
+                    animal="CzechLynx",
+                    run_id=run_id,
+                    method="vismatch",
+                    matcher="loma",
+                    split_protocol=split,
+                    top_1=score,
+                )
+            outputs = plot_metrics(root, output, metrics=("top_1",), formats=("png",))
+            self.assertEqual(
+                {path.name for path in outputs},
+                {
+                    "top_1_vs_k_split-time_closed.png",
+                    "top_1_vs_k_split-time_open.png",
+                },
+            )
 
 
 if __name__ == "__main__":

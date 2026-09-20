@@ -27,9 +27,14 @@ from reid.utils.fingerprints import file_digest_cache, hash_state_dict, sha256_f
 try:
     from omegaconf import OmegaConf
     from reid.engine.probe_runner import (
+        _classifier_metrics,
+        _cosine_similarity_matrix,
         _format_metric_value,
+        _label_indices,
         _set_probe_training_mode,
+        classifier_open_set_coverage,
         extract_deep_features_with_cache,
+        validate_classifier_open_set_labels,
     )
     HAS_PROBE_CACHE_DEPS = True
 except ModuleNotFoundError:
@@ -210,6 +215,77 @@ class ResearchValidityTests(unittest.TestCase):
                 np.array([[0.4, 0.6]]), np.array([0, 5]), np.array([1]),
             )
         self.assertIn("outside the classifier", str(ctx.exception))
+
+    @unittest.skipUnless(HAS_PROBE_CACHE_DEPS, "probe runner dependencies are not available")
+    def test_open_world_classifier_metrics_map_unseen_queries_to_zero_credit(self):
+        from reid.engine.probe_runner import _classifier_metrics
+
+        labels = ["seen_a", "unseen", "seen_b"]
+        mapping = {"seen_a": 0, "seen_b": 1}
+        label_indices = _label_indices(labels, mapping)
+        probs = np.asarray(
+            [
+                [0.9, 0.1],
+                [0.9, 0.1],
+                [0.1, 0.9],
+            ],
+            dtype=np.float32,
+        )
+        metrics = _classifier_metrics(probs, label_indices, labels, mapping, "open")
+
+        self.assertEqual(label_indices.tolist(), [0, -1, 1])
+        self.assertEqual(metrics["classification_num_unseen_query_images"], 1.0)
+        self.assertEqual(metrics["classification_num_unseen_query_identities"], 1.0)
+        self.assertEqual(metrics["classification_query_seen_coverage"], 2.0 / 3.0)
+        self.assertEqual(metrics["classification_open_top_1"], 2.0 / 3.0)
+        self.assertEqual(metrics["classification_open_balanced_top_1"], 2.0 / 3.0)
+        self.assertEqual(metrics["classification_seen_top_1"], 1.0)
+        self.assertEqual(metrics["classification_top_1"], metrics["classification_open_top_1"])
+
+    @unittest.skipUnless(HAS_PROBE_CACHE_DEPS, "probe runner dependencies are not available")
+    def test_warn_policy_keeps_legacy_fields_seen_only(self):
+        from reid.engine.probe_runner import _classifier_metrics
+
+        labels = ["seen", "unseen"]
+        mapping = {"seen": 0}
+        indices = _label_indices(labels, mapping)
+        metrics = _classifier_metrics(
+            np.asarray([[1.0], [1.0]], dtype=np.float32), indices, labels, mapping, "warn"
+        )
+        self.assertEqual(metrics["classification_seen_top_1"], 1.0)
+        self.assertEqual(metrics["classification_open_top_1"], 0.5)
+        self.assertEqual(metrics["classification_top_1"], 1.0)
+
+    @unittest.skipUnless(HAS_PROBE_CACHE_DEPS, "probe runner dependencies are not available")
+    def test_closed_policy_fails_before_classifier_execution(self):
+        database = _LabelledFrame(["seen"])
+        query = _LabelledFrame(["unseen"])
+        with self.assertRaisesRegex(ValueError, "Closed-set classifier evaluation failed"):
+            validate_classifier_open_set_labels(database, query, "label", "closed")
+
+    @unittest.skipUnless(HAS_PROBE_CACHE_DEPS, "probe runner dependencies are not available")
+    def test_all_unseen_classifier_metrics_are_defined(self):
+        from reid.engine.probe_runner import _classifier_metrics
+
+        labels = ["unseen_a", "unseen_b"]
+        mapping = {"seen": 0}
+        indices = _label_indices(labels, mapping)
+        metrics = _classifier_metrics(
+            np.asarray([[1.0], [1.0]], dtype=np.float32), indices, labels, mapping, "open"
+        )
+        self.assertEqual(metrics["classification_open_top_1"], 0.0)
+        self.assertEqual(metrics["classification_open_balanced_top_1"], 0.0)
+        self.assertTrue(np.isnan(metrics["classification_seen_top_1"]))
+
+    @unittest.skipUnless(HAS_PROBE_CACHE_DEPS, "probe runner dependencies are not available")
+    def test_embedding_similarity_diagnostic_is_dependency_light(self):
+        from reid.engine.probe_runner import _cosine_similarity_matrix
+
+        result = _cosine_similarity_matrix(
+            np.asarray([[1.0, 0.0], [0.0, 1.0]], dtype=np.float32),
+            np.asarray([[1.0, 0.0], [1.0, 1.0]], dtype=np.float32),
+        )
+        np.testing.assert_allclose(result, [[1.0, 2 ** -0.5], [0.0, 2 ** -0.5]], atol=1e-6)
 
     def test_full_matrix_map_is_suppressed_on_a_shortlist_matrix(self):
         labels = np.array(["a", "b", "c", "d"])

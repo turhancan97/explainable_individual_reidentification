@@ -217,6 +217,9 @@ def run_split_safety_checks(
             raise ValueError(
                 f"Safety check failed: {detail} This violates closed-set classification assumptions."
             )
-        print(f"[safety][warning] {detail} Open-set retrieval is expected to rank these as misses.")
+        print(
+            f"[safety][warning] {detail} Open-set evaluation will continue; "
+            "retrieval/classifier metrics must account for the coverage gap."
+        )
 
     return summary
