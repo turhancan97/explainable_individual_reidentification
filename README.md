@@ -183,6 +183,67 @@ python scripts/summarize_logs.py --method vismatch --matcher loma --format csv
 Historical log files are not moved or rewritten; the descriptive layout applies to
 future parallel tasks.
 
+### Few-shot views (WildlifeReID-10k)
+
+`probe-fewshot-wildlife.sh <animal> <fraction ...>` benchmarks the few-shot training views
+built by `rdd-parallel-benchmark/scripts/wildlife_fewshot.py`: the dataset profile points at
+`metadata_fewshot/metadata_<animal>.csv` with `split_col=split_frac<f>_seed<s>` (kept training
+rows are the gallery, `test` is unchanged) and the fine-tuned checkpoints come from
+`$FEWSHOT_ROOT/checkpoints/<animal>/<protocol>/frac<f>-seed<s>/`. It submits one
+`probe-parallel-wildlife.sh` array per fraction through the launcher's `PROBE_PROFILE`,
+`PROBE_VARIANTS`, `PROBE_CANDIDATE_K` and `PROBE_SBATCH_ARGS` overrides (default variants:
+cosine, WildFusion, LoMa default, RDD-LightGlue default and fine-tuned; k=50; dgxh100).
+Paths (`FEWSHOT_ROOT`, `PROBE_CACHE_ROOT`, conda) come from `env.sh`.
+
+```bash
+bash probe-fewshot-wildlife.sh CowDataset 0.125 0.25 0.5 1.0                 # reduced gallery
+bash probe-fewshot-wildlife.sh CowDataset 0.125 0.25 0.5 1.0 --full-gallery  # whole training split as database
+bash probe-fewshot-wildlife.sh NyalaData 0.25 0.5 1.0 --dry-run               # inspect only
+python scripts/fewshot_results.py --animal CowDataset                         # collect + plot
+```
+
+Variants that already have a completed run (same split column and budget) are skipped
+(`PROBE_SKIP_EXISTING=0` re-runs them). Descriptor fine-tuning checkpoints of a view
+(`<view>/rdd-descriptor-finetuned`, `rdd-lg-descriptor-finetuned`, `loma-descriptor-finetuned`,
+`loma-descriptor-matcher-finetuned`, see the benchmark repository's CZECHLYNX.md) are picked up
+as the variants `custom-descriptor`, `custom-lg-descriptor` and `custom-descriptor-matcher`
+(`PROBE_FEWSHOT_COMPONENTS` selects them): a `custom-*` label makes the launchers pass the
+variant's own path with `checkpoint_components=auto`, so the probe loads the RDD extractor,
+LightGlue, LoMa descriptor and/or matcher weights a file or epoch directory holds and keeps the
+pretrained weights for the rest; the report labels them `… (fine-tuned descriptor)` etc. `slurm/fewshot_probe_chain.sh <animal> <fractions>`
+runs both settings and then `slurm/fewshot_collect.sh <animal>` as CPU jobs chained with
+Slurm dependencies; `rdd-parallel-benchmark/slurm_scripts/fewshot/pipeline_dataset.sh`
+submits that chain after the fine-tuning jobs of a dataset.
+
+`scripts/fewshot_results.py` joins the completed probe runs with the view descriptions
+(`fewshot.json`: images kept per identity, effective fraction) and the benchmark-repository
+evaluations, and writes `reports/fewshot/<animal>/fewshot_results.csv`, `fewshot_summary.md`
+and `fewshot_<metric>.{png,pdf}` (metric vs. training images per individual, one line per
+method/checkpoint).
+
+`--k-sweep` adds the other view of the same runs: accuracy as a function of the candidate
+budget k, for the full gallery, as `fewshot_fullgallery_k_<metric>_<rdd|loma>.{png,pdf}` — six
+metrics (top-1/5/10 and their identity-balanced counterparts) per matcher, each figure holding
+one line per fine-tuned fraction, the matcher's default checkpoint, WildFusion and cosine (the
+latter has no shortlist, so it is a flat reference). It needs runs at several budgets, which
+`PROBE_CANDIDATE_K="10 50 100 250"` submits (one array per budget, so budgets that already ran
+are skipped on their own), and the balanced top-5/top-10 of runs made before those metrics
+existed come from `scripts/fewshot_backfill_balanced.py`, which recomputes them from each run's
+stored `scores.npz` and only writes when it reproduces the metrics the run already reports.
+Cosine runs keep no score matrix (it is dense), so their balanced top-5/top-10 need one cheap
+re-probe with `PROBE_SKIP_EXISTING=0`.
+
+```bash
+python scripts/fewshot_backfill_balanced.py --animal CzechLynx --dry-run
+PROBE_CANDIDATE_K="10 50 100 250" bash probe-fewshot-wildlife.sh CzechLynx 0.125 0.25 0.5 1.0 --full-gallery
+python scripts/fewshot_results.py --animal CzechLynx --k-sweep
+```
+
+`--fallback-checkpoint <dir>` lets a stand-in training run (the single-GPU
+`loma-finetuned-gpu1` of the benchmark repository's `train_czechlynx_loma_1gpu.sh`) fill the
+fraction whose regular checkpoint has no probe yet; the regular run wins as soon as it is
+probed, and dropping the argument restores it as well.
+
 ### Kaggle Jaguar Re-ID (new standalone pipeline)
 
 This repository now includes a dedicated competition pipeline that keeps existing `train/probe` behavior unchanged:

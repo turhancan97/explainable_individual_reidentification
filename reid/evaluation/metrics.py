@@ -23,6 +23,20 @@ def _balanced_accuracy_top1(query_labels: np.ndarray, predicted_top1_labels: np.
     return float(np.mean(recalls)) if recalls else float("nan")
 
 
+def _balanced_hit_rate(query_labels: np.ndarray, hits: np.ndarray) -> float:
+    """Macro-average of the per-identity top-k hit rate.
+
+    The plain ``top_k`` averages over queries, so identities with many query images
+    dominate it; this averages the hit rate per identity first, which is what
+    ``balanced_top_1`` does for k=1 (a top-1 hit is exactly a correct top-1 label).
+    """
+    classes = np.unique(query_labels)
+    if classes.size == 0:
+        return float("nan")
+    recalls = [float(hits[query_labels == cls].mean()) for cls in classes if int((query_labels == cls).sum())]
+    return float(np.mean(recalls)) if recalls else float("nan")
+
+
 def _average_precision(relevant: np.ndarray) -> float:
     relevant = np.asarray(relevant, dtype=np.float32)
     n_relevant = int(relevant.sum())
@@ -104,19 +118,24 @@ def _label_retrieval_metrics(
         )
 
     for k in top_k_values:
-        hits = [
-            query_labels[q_idx] in database_labels[ranked_idx[q_idx, :k]]
-            for q_idx in range(len(query_labels))
-        ]
-        metrics[f"top_{k}"] = float(np.mean(hits)) if hits else float("nan")
-
-    if len(query_labels):
-        top1_pred_labels = database_labels[ranked_idx[:, 0]]
-        metrics["balanced_top_1"] = _balanced_accuracy_top1(
-            query_labels, top1_pred_labels
+        hits = np.asarray(
+            [
+                query_labels[q_idx] in database_labels[ranked_idx[q_idx, :k]]
+                for q_idx in range(len(query_labels))
+            ],
+            dtype=bool,
         )
-    else:
-        metrics["balanced_top_1"] = float("nan")
+        metrics[f"top_{k}"] = float(hits.mean()) if hits.size else float("nan")
+        metrics[f"balanced_top_{k}"] = (
+            _balanced_hit_rate(query_labels, hits) if hits.size else float("nan")
+        )
+
+    if 1 not in top_k_values:  # balanced_top_1 is reported even when top-1 is not requested
+        metrics["balanced_top_1"] = (
+            _balanced_accuracy_top1(query_labels, database_labels[ranked_idx[:, 0]])
+            if len(query_labels)
+            else float("nan")
+        )
 
     cutoff = min(int(map_at_k), len(database_labels)) if map_at_k else 0
     relevant_counts = np.zeros(len(query_labels), dtype=np.int64)

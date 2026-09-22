@@ -243,3 +243,6 @@ cache/
 
 # dataset
 dataset/
+
+# site configuration; env.example.sh is the tracked template
+env.sh

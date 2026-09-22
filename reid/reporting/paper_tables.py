@@ -118,6 +118,10 @@ def _record_from_manifest(manifest_path: Path) -> dict[str, Any] | None:
         "top_5": _finite_float(metrics.get("top_5")),
         "top_10": _finite_float(metrics.get("top_10")),
         "balanced_top_1": _finite_float(metrics.get("balanced_top_1")),
+        # balanced_top_5/10 exist only in runs made after they were added to
+        # reid.evaluation.metrics (and in older runs backfilled from scores.npz)
+        "balanced_top_5": _finite_float(metrics.get("balanced_top_5")),
+        "balanced_top_10": _finite_float(metrics.get("balanced_top_10")),
         "mAP": _finite_float(metrics.get("mAP")) if method not in SHORTLIST_METHODS else None,
         "mAP_at_k": _finite_float(metrics.get("mAP_at_k")) if method in SHORTLIST_METHODS else None,
         "runtime_min": None if primary_runtime_sec is None else primary_runtime_sec / 60.0,

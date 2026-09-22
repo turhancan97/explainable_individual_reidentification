@@ -5,7 +5,7 @@
 #SBATCH --cpus-per-task=10
 #SBATCH --mem=256G
 #SBATCH --ntasks=1
-#SBATCH --exclude=c22,c11,c15,dgx1
+#SBATCH --exclude=c11,c15,c22,dgx1
 #SBATCH --job-name=probe_czechlynx
 #SBATCH --time=24:00:00
 #SBATCH --output=logs/parallel_run/%x_%A_%a.out
@@ -14,6 +14,8 @@
 
 set -euo pipefail
 
+source "${EXREID_ROOT:-${SLURM_SUBMIT_DIR:-$PWD}}/env.sh"
+
 MAX_CONCURRENT_JOBS="${MAX_CONCURRENT_JOBS:-12}"
 # CANDIDATE_K_VALUES=(10)
 CANDIDATE_K_VALUES=(50 100 250 500 1000)
@@ -21,7 +23,7 @@ CANDIDATE_K_VALUES=(50 100 250 500 1000)
 # Leave empty to derive paths from the single active dataset profile. Explicit
 # overrides remain supported, but must belong to that profile's animal.
 animal_name="${animal_name:-CzechLynx}"
-CHECKPOINT_ROOT="${CHECKPOINT_ROOT:-/shared/sets/datasets/vision/czechlynx/checkpoints/czechlynx-time-closed}"
+CHECKPOINT_ROOT="${CHECKPOINT_ROOT:-${CHECKPOINTS_ROOT}/czechlynx-time-closed}"
 CHECKPOINT_EPOCH="${CHECKPOINT_EPOCH:-299}"
 LOMA_CUSTOM_CHECKPOINT_PATH="${LOMA_CUSTOM_CHECKPOINT_PATH:-}"
 RDD_CUSTOM_CHECKPOINT_PATH="${RDD_CUSTOM_CHECKPOINT_PATH:-}"
@@ -56,6 +58,14 @@ VARIANTS=(
     "vismatch|rdd-lightglue|custom|${RDD_CUSTOM_CHECKPOINT_PATH}"
 )
 
+# Programmatic overrides (used by probe-fewshot-wildlife.sh): PROBE_PROFILE replaces the
+# single active profile, PROBE_VARIANTS ("method|matcher|label|path;...") the variant table
+# and PROBE_CANDIDATE_K ("50 100") the candidate budgets. They are baked into the submission
+# manifest, so array tasks do not depend on them.
+if [[ -n "${PROBE_PROFILE:-}" ]]; then DATASET_PROFILES=("${PROBE_PROFILE}"); fi
+if [[ -n "${PROBE_VARIANTS:-}" ]]; then IFS=';' read -r -a VARIANTS <<< "${PROBE_VARIANTS}"; fi
+if [[ -n "${PROBE_CANDIDATE_K:-}" ]]; then read -r -a CANDIDATE_K_VALUES <<< "${PROBE_CANDIDATE_K}"; fi
+
 die() { echo "${LAUNCHER_NAME}: $*" >&2; exit 1; }
 sanitize_component() { local value="${1:-unknown}"; value="${value//[^a-zA-Z0-9_.-]/_}"; [[ -n "${value}" ]] || value=unknown; printf '%s' "${value:0:96}"; }
 validate_positive_integer() { [[ "$2" =~ ^[1-9][0-9]*$ ]] || die "$1 must be a positive integer; got '$2'"; }
@@ -86,6 +96,14 @@ for profile in "${DATASET_PROFILES[@]}"; do
                 CHECKPOINT_COMPONENTS=matcher_only
                 if [[ "${MATCHER}" == loma ]]; then CHECKPOINT_OWNER="${LOMA_OWNER}"; CHECKPOINT_PATH="${LOMA_PROFILE_CHECKPOINT}"; LOMA_ARCH=LoMa-B; fi
                 if [[ "${MATCHER}" == rdd-lightglue ]]; then CHECKPOINT_OWNER="${RDD_OWNER}"; CHECKPOINT_PATH="${RDD_PROFILE_CHECKPOINT}"; fi
+            elif [[ "${CHECKPOINT_LABEL}" == custom-* ]]; then
+                # a fine-tuned checkpoint with its own path and label (few-shot component runs:
+                # custom-descriptor, custom-lg-descriptor, custom-descriptor-matcher); the probe
+                # loads whatever components the file/directory holds (RDD extractor, LightGlue,
+                # LoMa descriptor and/or matcher), the rest stays pretrained
+                CHECKPOINT_COMPONENTS=auto; CHECKPOINT_OWNER="${ANIMAL}"
+                [[ -n "${CHECKPOINT_PATH}" && "${CHECKPOINT_PATH}" != - ]] || die "variant ${variant}: a custom-* label needs a checkpoint path"
+                [[ "${MATCHER}" == loma ]] && LOMA_ARCH=LoMa-B
             elif [[ "${MATCHER}" == loma ]]; then
                 LOMA_ARCH=LoMa-B
             fi
@@ -123,11 +141,13 @@ if [[ -z "${SLURM_ARRAY_TASK_ID:-}" ]]; then
     echo "Immutable submission manifest: ${MANIFEST_PATH}"
     if [[ "${PROBE_PARALLEL_DRY_RUN:-0}" == 1 || "${1:-}" == --dry-run ]]; then
         echo "Dry run: no Slurm array submitted."
-        echo "sbatch --array=${ARRAY_SPEC} --export=ALL,PROBE_PARALLEL_MANIFEST=${MANIFEST_PATH} ${LAUNCHER_PATH}"
+        echo "sbatch ${PROBE_SBATCH_ARGS:-} --array=${ARRAY_SPEC} --export=ALL,PROBE_PARALLEL_MANIFEST=${MANIFEST_PATH} ${LAUNCHER_PATH}"
         for index in "${!TASKS[@]}"; do print_task "${index}" "${TASKS[index]}"; done
         exit 0
     fi
-    exec sbatch --array="${ARRAY_SPEC}" --export="ALL,PROBE_PARALLEL_MANIFEST=${MANIFEST_PATH}" "${LAUNCHER_PATH}"
+    # PROBE_SBATCH_ARGS overrides the #SBATCH header (e.g. "-p rtx4090_batch --qos=batch").
+    # shellcheck disable=SC2086
+    exec sbatch ${PROBE_SBATCH_ARGS:-} --array="${ARRAY_SPEC}" --export="ALL,PROBE_PARALLEL_MANIFEST=${MANIFEST_PATH}" "${LAUNCHER_PATH}"
 fi
 
 TASK_INDEX="${SLURM_ARRAY_TASK_ID}"
@@ -137,7 +157,7 @@ if [[ -z "${PROBE_PARALLEL_MANIFEST:-}" ]]; then
     (( TASK_INDEX < ${#TASKS[@]} )) || die "array task index ${TASK_INDEX} is outside 0..$((${#TASKS[@]} - 1))"
     CURRENT_TASK="${TASKS[${TASK_INDEX}]}"
     IFS='|' read -r PROFILE_ID DATASET_NAME ANIMAL DATASET_ROOT METADATA_FILE LABEL_COL MASK_COL NO_BACKGROUND IMAGE_VARIANT SPLIT_COL DATABASE_SPLIT_VALUE QUERY_SPLIT_VALUE CALIBRATION_SIZE METHOD MATCHER CHECKPOINT_LABEL CHECKPOINT_PATH CHECKPOINT_OWNER CHECKPOINT_COMPONENTS LOMA_ARCH CANDIDATE_K <<< "${CURRENT_TASK}"
-    CHECKPOINT_SOURCE=default; [[ "${CHECKPOINT_LABEL}" == custom ]] && CHECKPOINT_SOURCE=custom
+    CHECKPOINT_SOURCE=default; [[ "${CHECKPOINT_LABEL}" == custom || "${CHECKPOINT_LABEL}" == custom-* ]] && CHECKPOINT_SOURCE=custom
     if [[ "${CHECKPOINT_SOURCE}" == custom && ! -e "${CHECKPOINT_PATH}" ]]; then CHECKPOINT_DISPLAY="${MATCHER}"; [[ "${MATCHER}" == rdd-lightglue ]] && CHECKPOINT_DISPLAY="RDD-LightGlue"; [[ "${MATCHER}" == loma ]] && CHECKPOINT_DISPLAY="LoMa"; die "${CHECKPOINT_DISPLAY} custom checkpoint does not exist: ${CHECKPOINT_PATH}"; fi
     CONFIG_SNAPSHOT_PATH="${CONFIG_FILE}"; SUBMISSION_ID=local-dry-run; CHECKPOINT_SHA256=
 else
@@ -194,6 +214,5 @@ finalize_task() {
 }
 trap finalize_task EXIT
 nvidia-smi -L
-source /shared/results/common/kargin/tck_miniconda3/etc/profile.d/conda.sh
-conda activate ex-reid
+activate_conda_env "${CONDA_ENV_EXREID}"
 python train/probe.py "${PROBE_ARGS[@]}"

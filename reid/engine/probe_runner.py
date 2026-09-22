@@ -108,6 +108,8 @@ PROBE_CSV_METRIC_COLUMNS = [
     "top_10",
     "mAP",
     "balanced_top_1",
+    "balanced_top_5",
+    "balanced_top_10",
     "classification_top_1",
     "classification_top_5",
     "classification_top_10",

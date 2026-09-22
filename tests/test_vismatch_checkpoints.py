@@ -137,6 +137,79 @@ class VismatchCheckpointTests(unittest.TestCase):
             for name, value in source.state_dict().items():
                 self.assertTrue(torch.equal(value, target.lightglue.state_dict()[name]))
 
+    @staticmethod
+    def _fake_loma():
+        class FakeLoMa(nn.Module):
+            def __init__(self):
+                super().__init__()
+                self.input_proj = nn.Linear(2, 2, bias=False)
+                self.posenc = nn.Linear(2, 2, bias=False)
+                self.transformers = nn.ModuleList([nn.Linear(2, 2, bias=False)])
+                self.log_assignment = nn.ModuleList([nn.Linear(2, 2, bias=False)])
+                self._detector = nn.Linear(2, 2, bias=False)
+                self._descriptor = nn.Linear(2, 2, bias=False)
+
+        class FakeModel(nn.Module):
+            def __init__(self):
+                super().__init__()
+                self.matcher = FakeLoMa()
+
+        return FakeModel()
+
+    def _assert_loma_partial_load(self, saved_keys, expected_changed, mode="auto"):
+        source = self._fake_loma().matcher
+        with torch.no_grad():
+            for parameter in source.parameters():
+                parameter.fill_(7.0)
+        state = {key: value for key, value in source.state_dict().items() if key.startswith(saved_keys)}
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            self._save(root / "model.pth", state)
+            self._save(root / "rng_state.pt", {"torch": torch.zeros(3)})  # lynx-finetuning bundle extra
+            resolution = resolve_vismatch_checkpoint("loma", "custom", root, mode)
+            self.assertEqual([item.component for item in resolution.files], ["loma_model"])
+            target = self._fake_loma()
+            apply_vismatch_checkpoint(target, resolution)
+        for name, value in target.matcher.state_dict().items():
+            changed = bool((value == 7.0).all())
+            self.assertEqual(changed, name.startswith(expected_changed), name)
+
+    def test_loma_descriptor_only_checkpoint_loads_the_descriptor_and_keeps_the_rest(self):
+        self._assert_loma_partial_load(("_descriptor.",), ("_descriptor.",))
+
+    def test_loma_descriptor_plus_matcher_checkpoint_loads_both(self):
+        self._assert_loma_partial_load(
+            ("_descriptor.", "input_proj.", "posenc.", "transformers.", "log_assignment."),
+            ("_descriptor.", "input_proj.", "posenc.", "transformers.", "log_assignment."),
+        )
+
+    def test_loma_matcher_only_mode_ignores_descriptor_weights(self):
+        self._assert_loma_partial_load(
+            ("_descriptor.", "input_proj.", "posenc.", "transformers.", "log_assignment."),
+            ("input_proj.", "posenc.", "transformers.", "log_assignment."),
+            mode="matcher_only",
+        )
+
+    def test_loma_descriptor_checkpoint_rejected_in_matcher_only_and_full_modes(self):
+        source = self._fake_loma().matcher
+        state = {key: value for key, value in source.state_dict().items() if key.startswith("_descriptor.")}
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / "model.pth"
+            self._save(path, state)
+            with self.assertRaises(ValueError):
+                resolve_vismatch_checkpoint("loma", "custom", path, "full")
+            resolution = resolve_vismatch_checkpoint("loma", "custom", path, "matcher_only")
+            with self.assertRaises(RuntimeError):
+                apply_vismatch_checkpoint(self._fake_loma(), resolution)
+
+    def test_loma_incomplete_descriptor_checkpoint_is_rejected(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / "model.pth"
+            self._save(path, {"_descriptor.missing_half.weight": torch.zeros(2, 2)})
+            resolution = resolve_vismatch_checkpoint("loma", "custom", path)
+            with self.assertRaises(RuntimeError):
+                apply_vismatch_checkpoint(self._fake_loma(), resolution)
+
 
 if __name__ == "__main__":
     unittest.main()

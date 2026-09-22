@@ -11,7 +11,7 @@ import hashlib
 import json
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, Mapping, Optional, Sequence, Tuple
+from typing import Any, Dict, Iterable, Mapping, Optional, Sequence, Tuple
 
 from reid.utils.fingerprints import sha256_file
 
@@ -20,7 +20,13 @@ SUPPORTED_CHECKPOINT_SOURCES = {"default", "custom"}
 SUPPORTED_COMPONENT_MODES = {"auto", "matcher_only", "extractor_only", "full"}
 SUPPORTED_LOMA_ARCHITECTURES = {"LoMa-B", "LoMa-L", "LoMa-G", "LoMa-B128", "LoMa-R"}
 SUPPORTED_CHECKPOINT_SUFFIXES = {".safetensors", ".pth", ".pt", ".bin"}
-_IGNORED_NAME_TOKENS = ("optimizer", "scheduler", "random_state", "random-states", "scaler")
+_IGNORED_NAME_TOKENS = ("optimizer", "scheduler", "random_state", "random-states", "rng_state", "scaler")
+# LoMa = DaD detector + DeDoDe descriptor (the backbone) + the matcher transformer. A
+# fine-tuning checkpoint may hold any subset of these (lynx-finetuning saves only the trained
+# parameters: matcher, descriptor, or descriptor+matcher); a component that is present must
+# be complete, the missing ones keep the pretrained weights.
+_LOMA_MATCHER_PREFIXES = ("input_proj.", "posenc.", "transformers.", "log_assignment.")
+_LOMA_BACKBONE_PREFIXES = ("_detector.", "_descriptor.")
 
 
 @dataclass(frozen=True)
@@ -155,6 +161,8 @@ def _classify_keys(keys: Sequence[str]) -> Optional[str]:
         return "loma_model"
     if has_rdd_parts:
         return "rdd_extractor"
+    if has_loma_parts:
+        return "loma_model"  # backbone-only LoMa checkpoint (fine-tuned DeDoDe descriptor)
     return None
 
 
@@ -351,7 +359,7 @@ def _normalize_state_keys(state: Mapping[str, Any], component: str) -> Dict[str,
     elif component == "rdd_extractor":
         prefixes += ["RDD.", "model.RDD.", "matcher.RDD.", "rdd.", "model.rdd."]
     else:
-        prefixes += ["model.", "matcher.", "model.matcher.", "loma."]
+        prefixes += ["model.", "matcher.", "model.matcher.", "loma."]  # loma.: LoMaDescriptorTrainingModel
     changed = True
     while changed and result:
         changed = False
@@ -363,23 +371,38 @@ def _normalize_state_keys(state: Mapping[str, Any], component: str) -> Dict[str,
     return result
 
 
-def _load_into(module: Any, item: CheckpointFile, *, allow_loma_partial: bool) -> None:
+def _loma_component_groups(keys: Iterable[str]) -> Dict[str, Tuple[str, ...]]:
+    """LoMa components present in ``keys``: name -> key prefixes (matcher, _detector, _descriptor)."""
+    names = tuple(str(key).removeprefix("module.").removeprefix("loma.") for key in keys)
+    groups: Dict[str, Tuple[str, ...]] = {}
+    if any(name.startswith(_LOMA_MATCHER_PREFIXES) for name in names):
+        groups["matcher"] = _LOMA_MATCHER_PREFIXES
+    for prefix in _LOMA_BACKBONE_PREFIXES:
+        if any(name.startswith(prefix) for name in names):
+            groups[prefix.strip("_.")] = (prefix,)
+    return groups
+
+
+def _load_into(module: Any, item: CheckpointFile, *, allow_loma_partial: bool, matcher_only: bool = False) -> None:
     state = _normalize_state_keys(_load_state(item.path), item.component)
     if item.component == "loma_model" and allow_loma_partial:
-        allowed_prefixes = ("input_proj.", "posenc.", "transformers.", "log_assignment.")
-        ignored_prefixes = ("_detector.", "_descriptor.")
-        unknown = [key for key in state if not key.startswith(allowed_prefixes + ignored_prefixes)]
+        unknown = [key for key in state if not key.startswith(_LOMA_MATCHER_PREFIXES + _LOMA_BACKBONE_PREFIXES)]
         if unknown:
             raise RuntimeError(f"LoMa partial checkpoint contains unknown keys: {unknown}")
-        state = {key: value for key, value in state.items() if key.startswith(allowed_prefixes)}
+        if matcher_only:
+            state = {key: value for key, value in state.items() if key.startswith(_LOMA_MATCHER_PREFIXES)}
+            if not state:
+                raise RuntimeError(f"checkpoint_components=matcher_only but {item.path} holds no LoMa matcher weights")
+        groups = _loma_component_groups(state)
         result = module.load_state_dict(state, strict=False)
         unexpected = list(result.unexpected_keys)
-        missing = list(result.missing_keys)
-        allowed_missing = tuple(name for name in missing if name.startswith(("_detector.", "_descriptor.")))
-        if unexpected or len(allowed_missing) != len(missing):
+        # every component the checkpoint carries must be complete; the others stay pretrained
+        present = tuple(prefix for prefixes in groups.values() for prefix in prefixes)
+        incomplete = [name for name in result.missing_keys if name.startswith(present)]
+        if unexpected or incomplete:
             raise RuntimeError(
-                f"LoMa partial checkpoint validation failed for {item.path}: "
-                f"missing={missing}, unexpected={unexpected}"
+                f"LoMa partial checkpoint validation failed for {item.path} "
+                f"(components {sorted(groups)}): missing={incomplete}, unexpected={unexpected}"
             )
         return
     try:
@@ -409,8 +432,13 @@ def apply_vismatch_checkpoint(model: Any, resolution: VismatchCheckpointResoluti
             target = getattr(model, "matcher", None)
             if target is None:
                 raise RuntimeError("Vismatch model does not expose a LoMa model component")
-            has_backbone = any(name.startswith(("_detector.", "_descriptor.")) for name in item.keys)
-            _load_into(target, item, allow_loma_partial=resolution.component_mode == "matcher_only" or (resolution.component_mode == "auto" and not has_backbone))
+            # auto: load whichever components the file carries (matcher, descriptor, both or
+            # all); full: strict, every LoMa weight must be present (checked at resolution)
+            _load_into(
+                target, item,
+                allow_loma_partial=resolution.component_mode in {"auto", "matcher_only"},
+                matcher_only=resolution.component_mode == "matcher_only",
+            )
         else:
             raise RuntimeError(f"Unsupported resolved Vismatch component: {item.component}")
     model.eval()

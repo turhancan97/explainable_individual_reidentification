@@ -40,7 +40,7 @@ benchmark:
   deterministic: false
   cache:
     enabled: true
-    dir: "/shared/results/common/kargin/lynx/results/${dataset.name}/${dataset.animal}/cache/features"
+    dir: "${oc.env:PROBE_CACHE_ROOT,/shared/results/common/kargin/lynx/results}/${dataset.name}/${dataset.animal}/cache/features"
     format: "pt"     # pt | npz
   methods:
     cosine: {}
@@ -115,7 +115,7 @@ benchmark:
       match_batch_size: 16
       extract_batch_size: 8
       oom_backoff: true
-      cache_dir: "/shared/results/common/kargin/lynx/results/${dataset.name}/${dataset.animal}/cache/vismatch"
+      cache_dir: "${oc.env:PROBE_CACHE_ROOT,/shared/results/common/kargin/lynx/results}/${dataset.name}/${dataset.animal}/cache/vismatch"
       stage_a_method: "cosine"   # cosine | wildfusion | local_lightglue | linear_probe | efficient_probe
 
 visualization:

@@ -639,7 +639,8 @@ def _save_cached_feat(path: Path, feat: FrameFeat) -> None:
     """Write a feature cache atomically so interrupted jobs cannot poison a run."""
 
     path.parent.mkdir(parents=True, exist_ok=True)
-    temporary_path = path.with_name(path.name + ".tmp.npz")
+    # Unique per process: concurrent probe tasks may extract the same cached feature.
+    temporary_path = path.with_name(f"{path.name}.{os.getpid()}.tmp.npz")
     try:
         np.savez_compressed(
             temporary_path,
