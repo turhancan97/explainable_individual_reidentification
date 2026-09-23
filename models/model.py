@@ -119,6 +119,29 @@ def get_model(MODEL_TYPE):
         number_of_patches = int((img_size // patch_size) ** 2)
         mean=(0.485, 0.456, 0.406)
         std=(0.229, 0.224, 0.225)
+    # Large variants keep the small variants' 224 px input so only capacity changes.
+    elif MODEL_TYPE == 'dinov2-l':
+        pretrained_model_name = "facebook/dinov2-with-registers-large"
+        raw_backbone = AutoModel.from_pretrained(pretrained_model_name)
+        embedding_size = 1024
+        backbone = ViTCLSAdapter(raw_backbone, embedding_size=embedding_size)
+        arch = 'vit'
+        patch_size = 14
+        img_size = 224
+        number_of_patches = int((img_size // patch_size) ** 2)
+        mean=(0.485, 0.456, 0.406)
+        std=(0.229, 0.224, 0.225)
+    elif MODEL_TYPE == 'dinov3-l':
+        pretrained_model_name = "facebook/dinov3-vitl16-pretrain-lvd1689m"
+        raw_backbone = AutoModel.from_pretrained(pretrained_model_name)
+        embedding_size = 1024
+        backbone = ViTCLSAdapter(raw_backbone, embedding_size=embedding_size)
+        arch = 'vit'
+        patch_size = 16
+        img_size = 224
+        number_of_patches = int((img_size // patch_size) ** 2)
+        mean=(0.485, 0.456, 0.406)
+        std=(0.229, 0.224, 0.225)
     else:
         raise ValueError(f"Model type {MODEL_TYPE} not supported")
     return backbone, embedding_size, mean, std, img_size, arch, patch_size, number_of_patches

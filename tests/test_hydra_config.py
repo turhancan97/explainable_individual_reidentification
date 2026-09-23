@@ -34,7 +34,8 @@ class HydraConfigurationTests(unittest.TestCase):
         self.assertEqual(probe.benchmark.candidate_k, 100)
         self.assertEqual(probe.benchmark.classifier_evaluation.open_set_policy, "open")
         self.assertFalse(probe.benchmark.classifier_evaluation.embedding_retrieval)
-        self.assertTrue(probe.safety_checks.enabled)
+        # Disabled on purpose in the shipped probe config; see AGENTS.md.
+        self.assertFalse(probe.safety_checks.enabled)
         self.assertNotIn("map_at_k", probe.benchmark)
         self.assertNotIn("B", probe.benchmark.methods.wildfusion)
         self.assertNotIn("candidate_k", probe.benchmark.methods.vismatch)

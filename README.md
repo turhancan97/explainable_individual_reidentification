@@ -74,8 +74,10 @@ Supported model identifiers:
 - lynx_megadescriptorV3
 - lynx_megadescriptorV4
 - miewid
-- dinov2
-- dinov3
+- dinov2 (ViT-S/14 with registers)
+- dinov2-l (ViT-L/14 with registers)
+- dinov3 (ViT-S+/16)
+- dinov3-l (ViT-L/16)
 
 The legacy name megadescriptor is not accepted. Use an explicit supported
 identifier in custom configurations.
@@ -350,6 +352,66 @@ retrieval diagnostic is reported under `embedding_*`; it is separate from the
 classifier-head metrics and is disabled by default. No unknown classifier class is
 added.
 
+#### Building an unseen-identity evaluation split
+
+For an evaluation-only open-world test, the standalone
+`scripts/build_unseen_eval_metadata.py` utility can derive a new metadata CSV
+without changing the probe pipeline or either parallel launcher. It selects
+identities that occur in the source query split but not in the source database
+split, assigns the earliest encounter to `database`, and assigns later
+encounters to `query` using the supplied order column. It never performs a
+random image-level split. For example, for CzechLynx:
+
+```bash
+python scripts/build_unseen_eval_metadata.py \
+  --metadata /shared/sets/datasets/vision/czechlynx/CzechLynx_v2/CzechLynxDataset-Metadata-Real.csv \
+  --output-dir /path/to/czechlynx-unseen-eval \
+  --label-col unique_name \
+  --source-split-col split-time_open \
+  --database-value train \
+  --query-value test \
+  --group-col encounter \
+  --order-col date \
+  --root /shared/sets/datasets/vision/czechlynx/CzechLynx_v2
+```
+
+The output contains `metadata_unseen_eval.csv` and
+`unseen_eval_manifest.json`. The manifest records source/output SHA-256 hashes,
+selected and excluded identities, grouping parameters, path-overlap checks, and
+cross-split duplicate-content checks. Missing files, malformed grouping/order
+values, path overlap, or duplicate image content fail closed. Archive both
+outputs with the resulting experiment. Consume the generated CSV through the
+normal Hydra contract:
+
+```bash
+python train/probe.py \
+  dataset.name=CzechLynx_v2 dataset.animal=CzechLynx \
+  dataset.metadata_file=/path/to/czechlynx-unseen-eval/metadata_unseen_eval.csv \
+  dataset.split_col=unseen_eval_split \
+  dataset.database_split_value=database dataset.query_split_value=query \
+  dataset.no_background=true dataset.image_variant=no_background \
+  benchmark.candidate_k=100
+```
+
+Use the default and fine-tuned checkpoints as separate runs with identical
+generated gallery/query metadata. The generated metadata path and split name
+keep the experiment and feature-cache identities separate from
+`split-time_open`; existing artifacts are not rewritten.
+
+The CzechLynx parallel launcher also contains a commented
+`czechlynx_unseen_eval` profile. It defaults to the repository-local generated
+CSV shown below; override `CZECHLYNX_UNSEEN_EVAL_METADATA_FILE` when using a
+different output, uncomment the profile, and inspect it with:
+
+```bash
+bash probe-parallel-czechlynx.sh --list-tasks
+```
+
+The profile fails before submission if the generated metadata file is missing
+or if its split settings are not `unseen_eval_split`, `database`, and `query`.
+It uses the same active `VARIANTS` table as the other CzechLynx profiles, so
+uncomment the desired default or fine-tuned rows before submitting.
+
 #### Linear Probe Settings
 
 `linear_probe` trains a softmax classifier on top of backbone embeddings and can optionally tune backbone weights.
@@ -617,6 +679,10 @@ python scripts/plot_paper_figures.py --animal BelugaID --metric top_5 --formats 
 python scripts/plot_paper_figures.py --animal CzechLynx --split-protocol split-time_closed
 ```
 
+For the standalone unseen-identity split, plotting automatically uses only
+`k=10, 50, 100, 160`, matching its 160-image gallery. An explicit `--budgets`
+list is restricted to those valid values for `unseen_eval_split`.
+
 When completed descriptor runs exist, the plotting script also writes separate
 `descriptor_rdd_*` and `descriptor_loma_*` figures. Use
 `--descriptor-family rdd` or `--descriptor-family loma` to restrict them. These
@@ -634,7 +700,10 @@ uses `10, 50, 100, 250, 500, 1000`. Failed or incomplete runs are excluded,
 and missing configurations are shown as `--`. LaTeX values are percentage
 points, while companion CSV files retain the source fractional values. Paper tables
 display the checkpoint source `custom` as `fine-tuned`; run-selection identities
-remain unchanged. Full-gallery methods use `mAP`; shortlist-constrained WildFusion and Vismatch use
+remain unchanged. The backbone/model is also part of the run-selection identity and is shown
+in a dedicated `Backbone` column, so cosine baselines such as MegaDescriptor-T/L and
+DINOv2/L or DINOv3/L are never collapsed into one row. Older manifests without a model
+field are labeled `unknown` rather than guessed. Full-gallery methods use `mAP`; shortlist-constrained WildFusion and Vismatch use
 `mAP@k`. The generated tabular is wrapped in
 `\resizebox{\linewidth}{!}{...}` so the wide ablation table fits a CVPR
 column; the template must provide `graphicx` (the standard CVPR template does).
@@ -643,6 +712,9 @@ sections, gray default rows, green fine-tuned rows, same-`k` delta arrows,
 Top-1/5/10, balanced Top-1, and primary compute runtime. They intentionally omit
 mAP, mAP@k, and total runtime from the typeset fragments to keep them readable;
 the companion CSV files retain all metrics and timing fields for auditability.
+For `unseen_eval_split`, the exporter uses only `k=10, 50, 100, 160`, matching
+the 160-image evaluation gallery; the regular six-budget grid remains unchanged
+for other splits.
 The colored rows and arrows require the usual `xcolor` support in the manuscript
 template.
 By default, generated LaTeX omits timestamp, run-ID, and manifest comments; pass

@@ -222,6 +222,53 @@ class PlotFigureTests(unittest.TestCase):
             self.assertEqual(next(item for item in closed if item["name"] == "LoMa default")["values"][0], 0.25)
             self.assertEqual(next(item for item in opened if item["name"] == "LoMa default")["values"][0], 0.75)
 
+    def test_unseen_eval_split_uses_gallery_valid_budgets(self):
+        with TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir) / "experiments"
+            for candidate_k, score in ((10, 0.10), (50, 0.50), (100, 0.70), (160, 0.80), (250, 0.90)):
+                write_plot_run(
+                    root,
+                    animal="CzechLynx",
+                    run_id=f"20260101_unseen_{candidate_k}",
+                    method="vismatch",
+                    matcher="loma",
+                    split_protocol="unseen_eval_split",
+                    candidate_k=candidate_k,
+                    top_1=score,
+                )
+            records = discover_records(root)
+            series = prepare_series_data(
+                records,
+                animal="CzechLynx",
+                metric="top_1",
+                split_protocol="unseen_eval_split",
+            )
+            loma_default = next(item for item in series if item["name"] == "LoMa default")
+            self.assertEqual(loma_default["budgets"], (10, 50, 100, 160))
+            self.assertEqual(loma_default["values"], [0.10, 0.50, 0.70, 0.80])
+
+    def test_unseen_eval_explicit_budget_grid_is_filtered(self):
+        with TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir) / "experiments"
+            write_plot_run(
+                root,
+                animal="CzechLynx",
+                run_id="20260101_unseen",
+                method="vismatch",
+                matcher="loma",
+                split_protocol="unseen_eval_split",
+                candidate_k=50,
+            )
+            records = discover_records(root)
+            series = prepare_series_data(
+                records,
+                animal="CzechLynx",
+                metric="top_1",
+                split_protocol="unseen_eval_split",
+                budgets=(50, 250),
+            )
+            self.assertEqual(next(item for item in series if item["name"] == "LoMa default")["budgets"], (50,))
+
     @unittest.skipUnless(importlib.util.find_spec("matplotlib"), "matplotlib is optional for dependency-light tests")
     def test_render_and_save_figures(self):
         with TemporaryDirectory() as temp_dir:

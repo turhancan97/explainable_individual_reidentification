@@ -18,7 +18,7 @@ alpha_mask:
   debug_samples: 8
 
 model:
-  type: "megadescriptor-l"    # megadescriptor-t | megadescriptor-l | dinov2 | dinov3
+  type: "megadescriptor-l"    # megadescriptor-t | megadescriptor-l | dinov2 | dinov2-l | dinov3 | dinov3-l
 
 finetune:
   run_finetune: true

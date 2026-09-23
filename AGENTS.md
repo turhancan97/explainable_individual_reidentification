@@ -44,6 +44,8 @@ bash probe-parallel-wildlife.sh --list-tasks
 python scripts/kaggle_jaguar_submit.py --config config/kaggle_jaguar.yaml --data-dir /path/to/jaguar-re-id
 python scripts/summarize_runs.py --format markdown
 python scripts/export_paper_tables.py
+python scripts/export_class_balance.py
+python scripts/audit_image_quality.py --dataset leopard --limit 400  # dev subset
 python -m unittest discover -s tests -p 'test_*.py'
 python -m py_compile models/*.py reid/**/*.py train/*.py scripts/*.py
 ~~~
@@ -79,7 +81,15 @@ throttle.
 The CzechLynx launcher is the only parallel launcher for CzechLynx; the wildlife
 launcher is reserved for WildlifeReID-10k profiles and must not gain a CzechLynx
 profile.
-Launcher regression tests derive their expected candidate budgets from the active launcher table, so intentional budget edits do not require changing the launcher itself.
+The CzechLynx launcher also contains a commented `czechlynx_unseen_eval` profile.
+After `scripts/build_unseen_eval_metadata.py` creates an evaluation CSV, the
+launcher defaults to the repository-local CzechLynx unseen-evaluation path;
+override `CZECHLYNX_UNSEEN_EVAL_METADATA_FILE` when using another output and
+uncomment that profile. It uses `unseen_eval_split` with `database/query` values, validates the
+generated CSV before task construction, and keeps its logs, manifests, runs, and
+caches separate from `split-time_open`. It is opt-in so ordinary closed/open
+submissions are unchanged.
+Launcher regression tests derive their expected candidate budgets from the active launcher table, so intentional budget edits do not require changing the launcher itself. The same applies to opt-in rows and profiles: tests validate whichever classifier-probe rows and CzechLynx profiles are active (skipping when none are) and never require a specific row to be uncommented. The closed/open profile-multiplication test disables `czechlynx_unseen_eval` in its temporary copy.
 `--list-tasks` and `PROBE_PARALLEL_DRY_RUN=1` are safe non-executing inspection
 modes. Custom Vismatch tasks explicitly declare their component mode;
 matcher fine-tuning uses `checkpoint_components=matcher_only` and descriptor
@@ -147,6 +157,9 @@ budget axis and shared metric y-limits across panels; `presentation` and
 default and fine-tuned series; repeat the option for multiple exclusions. The
 same filter applies to the corresponding descriptor-family figures.
 Missing budgets are plotted as gaps; failed and incomplete runs are excluded.
+For `split_protocol=unseen_eval_split`, the default plot grid is restricted to
+`10, 50, 100, 160` because the generated unseen gallery has 160 images;
+explicit `--budgets` values are filtered to that valid set.
 The default metric set includes Top-1, Top-5, Top-10, and balanced Top-1;
 `--metric` can select a subset.
 Split-aware artifacts are grouped by `split_protocol`, so CzechLynx
@@ -157,7 +170,7 @@ without split provenance retain the unsuffixed output names.
 Paper tables are generated with `scripts/export_paper_tables.py` from completed
 run-local manifests under `experiments/`, never from the aggregate benchmark
 CSV. The exporter discovers animals, split protocols, and methods automatically,
-selects the newest completed run for each split/method/matcher/train-mode/weighting/checkpoint/budget
+selects the newest completed run for each split/method/matcher/backbone/train-mode/weighting/checkpoint/budget
 identity, and writes ignored generated files under `reports/paper_tables/`. Main tables use
 `candidate_k=50` and use the compact paired default/fine-tuned layout with
 same-budget gain arrows; ablation tables use `[10, 50, 100, 250, 500, 1000]` and show
@@ -170,6 +183,10 @@ are part of the table identity, so these variants are never collapsed into one
 row. The paper-facing checkpoint column labels them as
 `full fine-tuned`, `partial fine-tuned`, and `frozen`, respectively. Older
 artifacts without a readable mode are labeled `unknown` rather than guessed.
+The model/backbone is also part of the selection and grouping identity and is
+shown in a dedicated `Backbone` column. This keeps separate cosine baselines for
+MegaDescriptor-T/L, DINOv2/L, and DINOv3/L; older manifests without a model field
+are labeled `unknown` rather than inferred from a path.
 The visible checkpoint cell also appends the loss policy for classifier probes,
 such as `frozen (weighted)` or `frozen (unweighted)`; the audit CSV retains the
 machine-readable `class_weighting` field. This prevents paired weighted and
@@ -184,6 +201,9 @@ They show Top-1/5/10, balanced Top-1, and primary compute runtime, while omittin
 mAP, mAP@k, and total runtime from the typeset fragments for readability. The CSV
 files are the audit records and retain the omitted metrics, total runtime, and
 provenance.
+For `split_protocol=unseen_eval_split`, the default ablation grid is restricted
+to `10, 50, 100, 160`, and the main candidate must be one of those values;
+other split protocols retain the standard six-budget ablation grid.
 Descriptor-only Vismatch runs are excluded from matcher tables and figures. When
 present, the exporter writes separate `<animal>_<split>_descriptor_rdd_*` and
 `<animal>_<split>_descriptor_loma_*` LaTeX/CSV files with the corresponding default
@@ -201,6 +221,52 @@ extraction, setup, calibration, cache I/O, and visualization are excluded.
 Cosine and classifier probes use their method-computation time. Historical runs
 without primary timing fields must not be relabeled as matcher timings.
 
+
+Per-identity class-balance statistics for the paper are generated with
+`scripts/export_class_balance.py` into the ignored `experiments/class-balance/`
+directory: one CSV per dataset/split (`nyala`, `beluga`, `hyena`, `leopard`,
+`sea_star`, `whale_shark`, `turtle`, `lynx_closed`, `lynx_open`) with exact
+database/query image counts per identity, a `summary.csv` (counts, Gini, singleton
+fraction, top-decile query share), and a `manifest.json` with source metadata
+SHA-256 hashes. Its profiles come from `reid/reporting/paper_datasets.py`
+(`PAPER_PROFILES`), which mirrors the launcher metadata files, identity columns,
+split values, roots, and mask handling; keep it in sync when a paper split changes. Rows whose
+split is neither side (490 unlabeled ZindiTurtleRecall rows) are excluded and counted
+in `excluded_rows_other_split`. The paper reports CzechLynx closed and open splits
+only; the unseen-eval split is not part of the dataset statistics.
+
+Candidate low-quality images are audited with `scripts/audit_image_quality.py`
+into the ignored `experiments/image-quality/` directory. It measures the exact model
+input (pre-masked WildlifeReID-10k files; CzechLynx RLE masks applied through
+`BenchmarkDatasetView`) and writes per-image CSVs (foreground area, mask
+fragmentation, exposure, contrast, sharpness, flags), per-flag contact sheets,
+`summary.csv`, and a hash manifest. Flags are heuristic review rankings, not labels:
+confirm every example cited in the paper by eye. Blur is dataset-relative (bottom 2%)
+and is excluded from `any_flag`. Per-query `query_top1_rate` is joined from completed
+runs' `scores.npz` using the shared descending-score, lowest-index tie rule; the join
+fails closed if a run's `visualizations/index.csv` disagrees with metadata query order.
+Leopard "fragmented" masks are mostly vegetation occlusion, a difficulty rather than
+dataset noise; describe them separately from empty or non-animal images.
+Findings verified by eye on 2026-09-23 (source data, not pipeline bugs): CzechLynx has
+washed-out IR/flash frames whose masked input is nearly pure white (1,560 images with
+>30% saturated foreground, mostly `snpa`), plus masks that segment branches, sticks,
+vegetation, or a static corner glare repeated across a sequence. The official
+SeaStarReID2023 `masked_images/` files keep only a speck for 64 images whose raw
+photos are valid full-frame close-ups (a provider mask failure); WhaleSharkID shows the
+same speck pattern (raw files not yet checked). Dark Hyena night images are flagged as
+underexposed but remain identifiable, and flagged Hyena queries are not less accurate,
+so they are not dataset noise. Report only categories confirmed this way.
+For pre-masked files, foreground is `max(RGB) > 12`, so very dark animals are
+undercounted: `tiny_foreground`/`empty_foreground` flags and `foreground_fraction` on
+night images (e.g. HyenaID2022 row 1616) can be false positives. CzechLynx uses its RLE
+mask and is unaffected.
+`scripts/plot_data_quality_examples.py` renders the confirmed examples (raw photo above
+exact model input, letterboxed square panels, specks ringed) to
+`reports/figures/data_quality_examples.{pdf,png}`. Panels are (a) washed-out frames (CzechLynx row 38308,
+LeopardID2022 row 2824), (b) masks on the wrong object, (c) a corrupted frame, and
+(d) a blurred frame (HyenaID2022 row 550), chosen by the user so each panel is one
+problem; the Sea Star/Whale Shark mask failures stay text-only. Its `EXAMPLES` list holds only
+images confirmed by eye; add a row only after inspecting both the raw file and the input.
 
 New visualizations belong inside the run’s `visualizations/` directory. Their
 `index.csv` must map query/database identities, ranks, scores, correctness, and
@@ -237,8 +303,34 @@ data with dimensions matching the source image.
 
 The shipped default model is megadescriptor-l. Supported identifiers are
 megadescriptor-t, megadescriptor-l, lynx_megadescriptorV3,
-lynx_megadescriptorV4, miewid, dinov2, and dinov3. The legacy identifier
+lynx_megadescriptorV4, miewid, dinov2, dinov2-l, dinov3, and dinov3-l. The legacy identifier
 megadescriptor is intentionally unsupported.
+
+DINO backbones are `dinov2` = `facebook/dinov2-with-registers-small` (ViT-S/14, 384-d),
+`dinov2-l` = `facebook/dinov2-with-registers-large` (ViT-L/14, 1024-d), `dinov3` =
+`facebook/dinov3-vits16plus-pretrain-lvd1689m` (ViT-S+/16, 384-d), and `dinov3-l` =
+`facebook/dinov3-vitl16-pretrain-lvd1689m` (ViT-L/16, 1024-d). All run at 224 px with
+ImageNet normalization; the Large variants deliberately keep 224 px so a small-vs-large
+comparison changes only capacity. Token layout is `[CLS, 4 registers, patches]` (261
+tokens for /14, 201 for /16), verified on 2026-09-23 against all four downloaded
+checkpoints. DINOv3 checkpoints are gated on Hugging Face and need an accepted license.
+Probe `partial_rules` must be explicit for every DINO type in both `linear_probe` and
+`efficient_probe`: DINOv2 names blocks `encoder.layer.N` with final `layernorm`, DINOv3
+uses `layer.N` with final `norm`, and patterns keep a trailing dot for exact substring
+matches. Partial mode unfreezes the last block plus the final norm (12.6M parameters for
+the Large variants) and fails closed when the patterns match no parameter. Before
+2026-09-23 the DINOv3 efficient-probe rule matched nothing (a silent frozen probe) and
+linear-probe DINO partial fell back to the Swin default, whose bare `norm` tuned only
+LayerNorms; no DINO runs existed, so no results were affected. The Swin default rules are
+unchanged even though bare `norm` also matches every Swin block norm, because existing
+MegaDescriptor partial results depend on them.
+Token policy: `ViTCLSAdapter` returns the post-layernorm CLS token (`last_hidden_state[:, 0]`,
+equal to HF `pooler_output`); `cosine`, WildFusion's global stage, Vismatch Stage A,
+and `linear_probe` therefore use CLS, not GAP. `efficient_probe` uses only the patch
+tokens (`hidden[:, -number_of_patches:]`, excluding CLS and registers) with learned
+attention-query pooling. Its optional `embedding_retrieval` diagnostic uses GAP (mean
+of patch tokens), so it is not comparable to the CLS-based `cosine` method. CLS-only
+retrieval matches DINO's k-NN protocol, not its linear-eval CLS+mean-patch concatenation.
 
 Classifier probes support open-world evaluation across all datasets. The shipped
 default is `benchmark.classifier_evaluation.open_set_policy: open`: query identities
@@ -250,6 +342,24 @@ emitting `classification_open_*`; `closed` fails before model construction. The
 policy, seen/unseen image and identity counts, and coverage are persisted in run
 metrics and reporting records. `embedding_retrieval: true` enables a separate,
 optional cosine diagnostic under `embedding_*`; it does not add an unknown class.
+
+The standalone `scripts/build_unseen_eval_metadata.py` creates an evaluation-only
+unseen-identity split without changing probe code, launchers, or reporting code.
+It selects query identities absent from the source database identities, groups
+their images by the configured encounter/group columns, assigns the earliest
+ordered group to `database`, and assigns later groups to `query`. It must never
+be replaced with a random image-level split. The tool preserves source columns,
+adds `unseen_eval_split`, and writes `metadata_unseen_eval.csv` plus
+`unseen_eval_manifest.json`. The manifest records source/output SHA-256 hashes,
+selection/exclusion reasons, path-overlap checks, duplicate-content hashes,
+missing files, and all split parameters. Missing/malformed columns or values,
+unreadable files, path overlap, duplicate content across generated sides, and
+identities that cannot produce both sides fail closed. Generated metadata is an
+external input to `train/probe.py`; archive it with the experiment and use
+`dataset.split_col=unseen_eval_split`, `database_split_value=database`, and
+`query_split_value=query`. Its unique metadata path keeps caches and run
+identities separate from the source split. Existing launchers and probe scripts
+remain unchanged.
 
 Linear-probe training uses identity-weighted cross-entropy by default. Weights
 are computed from database/training labels only, in deterministic label-index
@@ -333,21 +443,6 @@ Default paths are specific to the original shared compute environment.
 Audited on 2026-08-17 and deliberately deferred. Each entry records the symptom, a
 reproduction, and the measured impact so it can be picked up without re-investigation.
 
-- **`sort_run_rows` raises `TypeError` on the shipped run index.**
-  `reid/reporting/summary.py:86` returns a float when a cell parses and a string when it
-  does not, so a column that is numeric in some rows and empty in others cannot be sorted.
-  `reports/runs.csv` currently has 23 rows, 11 with an empty `top_1` from failed runs.
-  Reproduce with the documented command
-  `python scripts/summarize_runs.py --sort-by top_1 --format markdown`, which fails today.
-  Fix by coercing unparseable cells to a sentinel that orders consistently.
-
-- **`sort_run_rows` silently mis-sorts when a value is `NaN`.**
-  Same function. NaN comparisons are all false, so the sort leaves rows in place and
-  returns output that looks sorted but is not: `[0.5, nan, 0.9, 0.1]` comes back
-  unchanged. This became reachable when `mAP` started reporting `nan` for
-  shortlist-constrained methods, so sorting runs by `mAP` now yields a meaningless order
-  with no error. Sort NaN to the end explicitly.
-
 - **Per-epoch image-level metrics dominate probe runtime.**
   `_probe_retrieval_metrics` rebuilds the same `11924 x 27836` matrix and ranks it in full
   every epoch: measured about 1 minute and 2.7 GB of transient allocation per epoch, so
@@ -391,8 +486,9 @@ reproduction, and the measured impact so it can be picked up without re-investig
 - [x] Route visualization index rankings through the shared stable ranking helper;
   `visualizations/index.csv` now uses `stable_rank_1d`. Vismatch qualitative top-1
   selection still needs an all-unscored guard, tracked under Known issues.
-- [ ] Make `sort_run_rows` total: coerce unparseable cells and order `NaN` last, so
-  `scripts/summarize_runs.py --sort-by` works on mixed and gated metric columns.
+- [x] Make `sort_run_rows` total: numbers sort in the requested direction, then text,
+  then empty/`NaN` cells last in original order, so `scripts/summarize_runs.py --sort-by`
+  works on mixed and gated metric columns.
 - [x] Remove the unused per-epoch `similarity_epoch` allocation from classifier probes.
   The remaining per-epoch retrieval cost is tracked separately below and still needs
   optimization.
@@ -524,6 +620,13 @@ applied at load time.
   stale digest and silently break content-addressed cache identities. Entries are keyed on
   device/inode/size/mtime so the safety-check, dataset-digest, and Vismatch cache-key paths
   share them despite constructing paths differently.
+- Split safety checks are intentionally disabled in the shipped `conf/probe.yaml`
+  (`safety_checks.enabled: false`), a user decision confirmed on 2026-09-23. Parallel
+  launchers inherit it through the copied config, so their runs skip path-overlap and
+  SHA-256 duplicate-content checks; `test_hydra_config` pins the `false` default. Do not
+  re-enable it silently. When checks are off, verify split leakage separately (for
+  example with a single `safety_checks.enabled=true` run) before publishing a new dataset
+  or split; the statements below describe behavior when checks are enabled.
 - Unseen query identities are always reported by split safety checks. Classifier probes
   resolve `benchmark.classifier_evaluation.open_set_policy`: `closed` fails before model
   construction, while `open` and `warn` continue and serialize coverage. Retrieval

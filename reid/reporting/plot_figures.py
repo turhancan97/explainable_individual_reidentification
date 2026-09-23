@@ -14,6 +14,7 @@ from reid.reporting.paper_tables import (
 )
 
 DEFAULT_PLOT_BUDGETS = (10, 50, 100, 250, 500, 1000)
+UNSEEN_EVAL_PLOT_BUDGETS = (10, 50, 100, 160)
 DEFAULT_PLOT_METRICS = ("top_1", "top_5", "top_10", "balanced_top_1")
 PLOT_METRICS = {
     "top_1": "Top-1 accuracy",
@@ -196,6 +197,28 @@ def _normalise_excluded_methods(exclude_methods: Sequence[str] | None) -> set[st
     return excluded
 
 
+def _effective_plot_budgets(
+    budgets: Sequence[int],
+    split_protocol: str | None,
+) -> tuple[int, ...]:
+    """Resolve candidate budgets that are valid for a plotted split.
+
+    The unseen-identity CzechLynx metadata has 160 gallery images, so budgets
+    above 160 are not valid for that split. The default budget grid is replaced
+    with the complete valid grid; an explicit custom grid is intersected with
+    it so callers can still request a smaller diagnostic plot.
+    """
+    requested = tuple(int(budget) for budget in budgets)
+    if split_protocol == "unseen_eval_split":
+        if requested == DEFAULT_PLOT_BUDGETS:
+            requested = UNSEEN_EVAL_PLOT_BUDGETS
+        else:
+            requested = tuple(budget for budget in requested if budget in UNSEEN_EVAL_PLOT_BUDGETS)
+    if not requested or any(budget <= 0 for budget in requested):
+        raise ValueError("budgets must contain positive integers valid for the selected split")
+    return requested
+
+
 def prepare_series_data(
     records: Iterable[Mapping[str, Any]],
     *,
@@ -215,9 +238,7 @@ def prepare_series_data(
     if metric not in PLOT_METRICS:
         valid = ", ".join(PLOT_METRICS)
         raise ValueError(f"unsupported metric {metric!r}; choose one of: {valid}")
-    budgets = tuple(int(budget) for budget in budgets)
-    if not budgets or any(budget <= 0 for budget in budgets):
-        raise ValueError("budgets must contain positive integers")
+    budgets = _effective_plot_budgets(budgets, split_protocol)
     excluded_methods = _normalise_excluded_methods(exclude_methods)
 
     selected = select_latest_records(records, animal, split_protocol)
@@ -320,7 +341,7 @@ def render_metric_figure(
     axes_flat = [axis for row in axes for axis in row]
     handles = []
     labels = []
-    budget_values = tuple(int(budget) for budget in budgets)
+    budget_values = _effective_plot_budgets(budgets, split_protocol)
     if style_config["x_scale"] == "log":
         x_values = list(budget_values)
     else:

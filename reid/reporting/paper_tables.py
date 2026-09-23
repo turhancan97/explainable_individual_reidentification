@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Any, Iterable, Mapping, Sequence
 
 DEFAULT_ABLATION_BUDGETS = (10, 50, 100, 250, 500, 1000)
+UNSEEN_EVAL_TABLE_BUDGETS = (10, 50, 100, 160)
 SHORTLIST_METHODS = {"wildfusion", "vismatch", "local_lightglue"}
 METHOD_LABELS = {
     "cosine": "Cosine",
@@ -33,6 +34,7 @@ TABLE_COLUMNS = (
     "split_protocol",
     "method",
     "matcher",
+    "backbone",
     "checkpoint",
     "checkpoint_component",
     "checkpoint_owner",
@@ -95,6 +97,27 @@ FINE_TUNED_CHECKPOINTS = {
     "extractor-fine-tuned",
     "full-fine-tuned",
 }
+
+
+def _backbone_name(manifest: Mapping[str, Any]) -> str:
+    """Return the model identity used by a run.
+
+    The reporting manifest stores this as ``model``.  The additional aliases
+    keep discovery compatible with small synthetic/legacy manifests that used
+    a more explicit key.  A missing identity is intentionally represented as
+    ``unknown`` rather than being guessed from a directory name.
+    """
+    for key in ("model", "backbone", "model_type", "model_name"):
+        value = manifest.get(key)
+        if isinstance(value, Mapping):
+            for nested_key in ("type", "name", "model", "backbone", "identifier"):
+                nested = value.get(nested_key)
+                if nested:
+                    value = nested
+                    break
+        if value:
+            return str(value)
+    return "unknown"
 
 
 def _finite_float(value: Any) -> float | None:
@@ -226,6 +249,7 @@ def _record_from_manifest(manifest_path: Path) -> dict[str, Any] | None:
         "method_key": method,
         "method": METHOD_LABELS[method],
         "matcher": matcher,
+        "backbone": _backbone_name(manifest),
         "train_mode": train_mode,
         "checkpoint": checkpoint,
         "checkpoint_component": "descriptor" if component_mode == "descriptor_only" else component_mode or "",
@@ -323,6 +347,7 @@ def _selection_key(record: Mapping[str, Any]) -> tuple[Any, ...]:
         record.get("split_protocol", ""),
         record["method_key"],
         record["matcher"],
+        record.get("backbone", "unknown"),
         record.get("train_mode", ""),
         record.get("class_weighting", ""),
         record["checkpoint"],
@@ -361,6 +386,7 @@ def _sort_records(records: Iterable[Mapping[str, Any]]) -> list[dict[str, Any]]:
             METHOD_ORDER.get(record.get("method_key", ""), 99),
             record.get("method", ""),
             record.get("matcher", ""),
+            record.get("backbone", "unknown"),
             {"all": 0, "partial": 1, "classifier": 2}.get(record.get("train_mode", ""), 3),
             record.get("class_weighting", ""),
             record.get("checkpoint", ""),
@@ -378,6 +404,7 @@ def _placeholder(template: Mapping[str, Any], candidate_k: int | None) -> dict[s
             "method_key": template["method_key"],
             "method": template["method"],
             "matcher": template["matcher"],
+            "backbone": template.get("backbone", "unknown"),
             "train_mode": template.get("train_mode", ""),
             "class_weighting": template.get("class_weighting", ""),
             "checkpoint": template["checkpoint"],
@@ -390,20 +417,52 @@ def _placeholder(template: Mapping[str, Any], candidate_k: int | None) -> dict[s
     return row
 
 
+def _effective_table_budgets(
+    budgets: Sequence[int],
+    split_protocol: str | None,
+) -> tuple[int, ...]:
+    """Resolve the candidate grid that is valid for a table's split."""
+    requested = tuple(int(budget) for budget in budgets)
+    if split_protocol == "unseen_eval_split":
+        if requested == DEFAULT_ABLATION_BUDGETS:
+            requested = UNSEEN_EVAL_TABLE_BUDGETS
+        else:
+            requested = tuple(
+                budget for budget in requested if budget in UNSEEN_EVAL_TABLE_BUDGETS
+            )
+    if not requested or any(budget <= 0 for budget in requested):
+        raise ValueError("budgets must contain positive integers valid for the selected split")
+    return requested
+
+
+def _effective_main_candidate(candidate_k: int, split_protocol: str | None) -> int:
+    candidate_k = int(candidate_k)
+    if candidate_k <= 0:
+        raise ValueError("main_candidate_k must be positive")
+    if split_protocol == "unseen_eval_split" and candidate_k not in UNSEEN_EVAL_TABLE_BUDGETS:
+        valid = ", ".join(str(budget) for budget in UNSEEN_EVAL_TABLE_BUDGETS)
+        raise ValueError(
+            f"main_candidate_k={candidate_k} is invalid for unseen_eval_split; choose from: {valid}"
+        )
+    return candidate_k
+
+
 def build_main_rows(
     records: Iterable[Mapping[str, Any]], animal: str, candidate_k: int, split_protocol: str | None = None,
     *, include_descriptor: bool = False,
 ) -> list[dict[str, Any]]:
+    candidate_k = _effective_main_candidate(candidate_k, split_protocol)
     selected = [
         record for record in select_latest_records(records, animal, split_protocol)
         if include_descriptor or not _is_descriptor_record(record)
     ]
     rows: list[dict[str, Any]] = []
-    groups: dict[tuple[str, str, str, str, str], list[dict[str, Any]]] = {}
+    groups: dict[tuple[str, str, str, str, str, str], list[dict[str, Any]]] = {}
     for record in selected:
         key = (
             record["method_key"],
             record["matcher"],
+            record.get("backbone", "unknown"),
             record.get("train_mode", ""),
             record.get("class_weighting", ""),
             record["checkpoint"],
@@ -428,16 +487,18 @@ def build_ablation_rows(
     *,
     include_descriptor: bool = False,
 ) -> list[dict[str, Any]]:
+    budgets = _effective_table_budgets(budgets, split_protocol)
     selected = [
         record for record in select_latest_records(records, animal, split_protocol)
         if include_descriptor or not _is_descriptor_record(record)
     ]
     rows: list[dict[str, Any]] = []
-    groups: dict[tuple[str, str, str, str, str], list[dict[str, Any]]] = {}
+    groups: dict[tuple[str, str, str, str, str, str], list[dict[str, Any]]] = {}
     for record in selected:
         key = (
             record["method_key"],
             record["matcher"],
+            record.get("backbone", "unknown"),
             record.get("train_mode", ""),
             record.get("class_weighting", ""),
             record["checkpoint"],
@@ -528,6 +589,23 @@ def _checkpoint_display(value: Any) -> Any:
     return labels.get(str(value).lower(), value)
 
 
+def _backbone_display(value: Any) -> Any:
+    """Use compact, readable model labels in manuscript-facing LaTeX."""
+    labels = {
+        "megadescriptor-t": "MegaDescriptor-T",
+        "megadescriptor-l": "MegaDescriptor-L",
+        "dinov2": "DINOv2",
+        "dinov2-l": "DINOv2-L",
+        "dinov3": "DINOv3",
+        "dinov3-l": "DINOv3-L",
+        "lynx_megadescriptorv3": "Lynx MegaDescriptorV3",
+        "lynx_megadescriptorv4": "Lynx MegaDescriptorV4",
+        "miewid": "MiewID",
+    }
+    text = str(value or "unknown")
+    return labels.get(text.lower(), value or "unknown")
+
+
 def _paper_checkpoint_display(row: Mapping[str, Any]) -> Any:
     """Display probe training scope and loss weighting in the checkpoint column.
 
@@ -592,6 +670,7 @@ def _ablation_delta_suffix(
     key = (
         row.get("method_key"),
         row.get("matcher"),
+        row.get("backbone", "unknown"),
         row.get("train_mode", ""),
         row.get("class_weighting", ""),
         row.get("candidate_k"),
@@ -629,6 +708,7 @@ def _sort_ablation_records(records: Iterable[Mapping[str, Any]]) -> list[dict[st
             METHOD_ORDER.get(record.get("method_key", ""), 99),
             record.get("method", ""),
             record.get("matcher", ""),
+            record.get("backbone", "unknown"),
             {"all": 0, "partial": 1, "classifier": 2}.get(record.get("train_mode", ""), 3),
             record.get("class_weighting", ""),
             -1 if budget is None else budget,
@@ -657,6 +737,7 @@ def _render_compact_ablation_latex(
             key = (
                 row.get("method_key"),
                 row.get("matcher"),
+                row.get("backbone", "unknown"),
                 row.get("train_mode", ""),
                 row.get("class_weighting", ""),
                 row.get("candidate_k"),
@@ -689,9 +770,9 @@ def _render_compact_ablation_latex(
         ),
         f"\\label{{tab:{re.sub(r'[^A-Za-z0-9:.-]+', '-', animal.lower())}-{re.sub(r'[^A-Za-z0-9:.-]+', '-', split_protocol.lower()) + '-' if split_protocol else ''}{table_name}}}",
         "\\resizebox{\\linewidth}{!}{%",
-        "\\begin{tabular}{lll rrrrrr}",
+        "\\begin{tabular}{llll rrrrrr}",
         "\\toprule",
-        'Method & Matcher & Checkpoint & $k$ & Top-1 (\\%) & Top-5 (\\%) & Top-10 (\\%) & Balanced Top-1 (\\%) & Primary Compute (min) \\\\',
+        'Method & Matcher & Backbone & Checkpoint & $k$ & Top-1 (\\%) & Top-5 (\\%) & Top-10 (\\%) & Balanced Top-1 (\\%) & Primary Compute (min) \\\\',
         "\\midrule",
     ])
     body: list[str] = []
@@ -702,7 +783,7 @@ def _render_compact_ablation_latex(
             if current_section is not None:
                 body.append("\\addlinespace")
             body.extend([
-                rf"\\multicolumn{{9}}{{l}}{{\\textbf{{{_latex_escape(section)}}}}} \\\\",
+                rf"\\multicolumn{{10}}{{l}}{{\\textbf{{{_latex_escape(section)}}}}} \\\\",
                 "\\midrule",
             ])
             current_section = section
@@ -714,6 +795,7 @@ def _render_compact_ablation_latex(
         cells = [
             _latex_escape(row.get("method")),
             _latex_escape(row.get("matcher")),
+            _latex_escape(_backbone_display(row.get("backbone"))),
             _latex_escape(_paper_checkpoint_display(row)),
             _latex_escape(row.get("candidate_k")),
         ]
@@ -786,9 +868,9 @@ def render_latex(
         + f" results ({_latex_escape(table_name)}).}}",
         f"\\label{{tab:{re.sub(r'[^A-Za-z0-9:.-]+', '-', animal.lower())}-{re.sub(r'[^A-Za-z0-9:.-]+', '-', split_protocol.lower()) + '-' if split_protocol else ''}{table_name}}}",
         "\\resizebox{\\linewidth}{!}{%",
-        "\\begin{tabular}{lll rrrrrrrrr}",
+        "\\begin{tabular}{llll rrrrrrrrr}",
         "\\toprule",
-        'Method & Matcher & Checkpoint & $k$ & Top-1 (\\%) & Top-5 (\\%) & Top-10 (\\%) & Balanced Top-1 (\\%) & mAP (\\%) & mAP@k (\\%) & Primary Compute (min) & Total Runtime (min) \\\\',
+        'Method & Matcher & Backbone & Checkpoint & $k$ & Top-1 (\\%) & Top-5 (\\%) & Top-10 (\\%) & Balanced Top-1 (\\%) & mAP (\\%) & mAP@k (\\%) & Primary Compute (min) & Total Runtime (min) \\\\',
         "\\midrule",
     ])
     body = []
@@ -796,6 +878,7 @@ def render_latex(
         cells = [
             _latex_escape(row.get("method")),
             _latex_escape(row.get("matcher")),
+            _latex_escape(_backbone_display(row.get("backbone"))),
             _latex_escape(_paper_checkpoint_display(row)),
             _latex_escape(row.get("candidate_k")),
         ]

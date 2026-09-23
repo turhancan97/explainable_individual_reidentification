@@ -26,7 +26,13 @@ def parse_args() -> argparse.Namespace:
         help="Split protocol to export; repeat for multiple protocols",
     )
     parser.add_argument("--main-candidate-k", type=int, default=50)
-    parser.add_argument("--budgets", type=int, nargs="+", default=list(DEFAULT_ABLATION_BUDGETS))
+    parser.add_argument(
+        "--budgets",
+        type=int,
+        nargs="+",
+        default=list(DEFAULT_ABLATION_BUDGETS),
+        help="Ablation budgets; unseen_eval_split defaults to 10, 50, 100, 160.",
+    )
     parser.add_argument(
         "--detailed-comments",
         action="store_true",

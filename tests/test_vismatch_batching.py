@@ -41,6 +41,10 @@ class VismatchBatchingTests(unittest.TestCase):
                     "extract_batches": 0,
                     "effective_extract_batch_size": None,
                     "configured_extract_batch_size": None,
+                    "feature_extraction_compute_sec": 0.0,
+                    "feature_cache_lookup_sec": 0.0,
+                    "feature_cache_hits": 0,
+                    "feature_cache_misses": 0,
                 }
 
             @staticmethod

@@ -37,7 +37,13 @@ def parse_args() -> argparse.Namespace:
         choices=[*PLOT_METRICS, "all"],
         help="Metric to plot; repeat for multiple metrics (default: top_1, top_5, top_10)",
     )
-    parser.add_argument("--budgets", type=int, nargs="+", default=list(DEFAULT_PLOT_BUDGETS))
+    parser.add_argument(
+        "--budgets",
+        type=int,
+        nargs="+",
+        default=list(DEFAULT_PLOT_BUDGETS),
+        help="Candidate budgets; unseen_eval_split defaults to 10, 50, 100, 160.",
+    )
     parser.add_argument("--formats", nargs="+", choices=["png", "pdf", "svg"], default=["png", "pdf"])
     parser.add_argument(
         "--exclude-method",

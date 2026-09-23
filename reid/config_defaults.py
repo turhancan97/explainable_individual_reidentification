@@ -9,7 +9,9 @@ SUPPORTED_MODEL_TYPES = (
     "lynx_megadescriptorV4",
     "miewid",
     "dinov2",
+    "dinov2-l",
     "dinov3",
+    "dinov3-l",
 )
 
 

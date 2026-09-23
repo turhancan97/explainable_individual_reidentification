@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import csv
+import math
 from pathlib import Path
 from typing import Any, Iterable, List, Mapping, Optional, Sequence
 
@@ -83,14 +84,31 @@ def filter_run_rows(
 
 
 def sort_run_rows(rows: Sequence[Mapping[str, Any]], key: str, descending: bool = True) -> List[dict]:
-    def sort_value(row: Mapping[str, Any]) -> Any:
+    # Total order: numbers first in the requested direction, then text, then
+    # empty and NaN cells in their original order. Mixing float and str keys
+    # raises TypeError, and NaN compares false both ways, so the sort would
+    # otherwise either crash or silently leave rows unsorted.
+    numeric: List[tuple] = []
+    text: List[tuple] = []
+    missing: List[dict] = []
+    for row in rows:
         value = row.get(key, "")
         try:
-            return float(value)
+            number = float(value)
         except (TypeError, ValueError):
-            return str(value)
-
-    return sorted((dict(row) for row in rows), key=sort_value, reverse=descending)
+            label = "" if value is None else str(value).strip()
+            if label:
+                text.append((label, dict(row)))
+            else:
+                missing.append(dict(row))
+            continue
+        if math.isnan(number):
+            missing.append(dict(row))
+        else:
+            numeric.append((number, dict(row)))
+    numeric.sort(key=lambda item: item[0], reverse=descending)
+    text.sort(key=lambda item: item[0], reverse=descending)
+    return [row for _, row in numeric] + [row for _, row in text] + missing
 
 
 def format_csv(rows: Sequence[Mapping[str, Any]]) -> str:

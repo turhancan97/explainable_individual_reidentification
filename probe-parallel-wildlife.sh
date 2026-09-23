@@ -1,7 +1,7 @@
 #!/bin/bash -l
-#SBATCH -p rtx4090_batch
+#SBATCH -p dgx
 #SBATCH --gpus=1
-#SBATCH --qos=batch
+#SBATCH --qos=big
 #SBATCH --cpus-per-task=10
 #SBATCH --mem=64G
 #SBATCH --ntasks=1
@@ -15,8 +15,8 @@
 set -euo pipefail
 
 MAX_CONCURRENT_JOBS="${MAX_CONCURRENT_JOBS:-12}"
-# CANDIDATE_K_VALUES=(10)
-CANDIDATE_K_VALUES=(50 100 250 500 1000)
+CANDIDATE_K_VALUES=(10)
+# CANDIDATE_K_VALUES=(50 100 250 500 1000)
 
 # Leave empty to derive paths from the single active dataset profile. Explicit
 # overrides remain supported, but must belong to that profile's animal.
@@ -64,7 +64,7 @@ DATASET_PROFILES=(
 # linear_probe|-|default|-|partial|weighted
 # linear_probe|-|default|-|all|weighted
 VARIANTS=(
-    # "cosine|-|default|-|-|-|-"
+    "cosine|-|default|-|-|-|-"
     # "wildfusion|-|default|-|-|-|-"
     # "local_lightglue|-|default|-|-|-|-"
     # "linear_probe|-|default|-|-|classifier|weighted"
@@ -83,7 +83,7 @@ VARIANTS=(
     # "vismatch|loma|custom|${LOMA_CUSTOM_CHECKPOINT_PATH}|matcher_only|-|-"
     # "vismatch|loma|descriptor-fine-tuned|${DESCRIPTOR_LOMA_CUSTOM_CHECKPOINT_PATH}|descriptor_only|-|-"
     # "vismatch|rdd-lightglue|default|-|-|-|-"
-    "vismatch|rdd-lightglue|custom|${RDD_CUSTOM_CHECKPOINT_PATH}|matcher_only|-|-"
+    # "vismatch|rdd-lightglue|custom|${RDD_CUSTOM_CHECKPOINT_PATH}|matcher_only|-|-"
     # "vismatch|rdd-lightglue|descriptor-fine-tuned|${DESCRIPTOR_RDD_CUSTOM_CHECKPOINT_PATH}|descriptor_only|-|-"
 )
 

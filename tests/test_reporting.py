@@ -166,6 +166,26 @@ class ReportingArtifactTests(unittest.TestCase):
         self.assertIn("| run_id |", format_markdown(sorted_rows))
         self.assertIn("run_id", format_csv(sorted_rows).splitlines()[0])
 
+    def test_sort_run_rows_is_total_over_mixed_and_nan_cells(self):
+        rows = [
+            {"run_id": "a", "top_1": "0.5"},
+            {"run_id": "b", "top_1": "nan"},
+            {"run_id": "c", "top_1": "0.9"},
+            {"run_id": "d", "top_1": ""},
+            {"run_id": "e", "top_1": "0.1"},
+            {"run_id": "f"},
+        ]
+        descending = [row["run_id"] for row in sort_run_rows(rows, "top_1")]
+        ascending = [row["run_id"] for row in sort_run_rows(rows, "top_1", descending=False)]
+        # Unscored cells stay last in original order regardless of direction.
+        self.assertEqual(descending, ["c", "a", "e", "b", "d", "f"])
+        self.assertEqual(ascending, ["e", "a", "c", "b", "d", "f"])
+
+    def test_sort_run_rows_orders_text_columns(self):
+        rows = [{"method": "wildfusion"}, {"method": "cosine"}, {"method": ""}]
+        ordered = [row["method"] for row in sort_run_rows(rows, "method", descending=False)]
+        self.assertEqual(ordered, ["cosine", "wildfusion", ""])
+
 
 if __name__ == "__main__":
     unittest.main()

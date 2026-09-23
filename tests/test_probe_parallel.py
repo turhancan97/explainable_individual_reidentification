@@ -117,8 +117,8 @@ class ParallelProbeLauncherTests(unittest.TestCase):
         self.assertTrue(methods)
         self.assertTrue(methods.issubset({"cosine", "wildfusion", "local_lightglue", "linear_probe", "efficient_probe", "vismatch"}))
         self.assertTrue(all(row["matcher"] in {"-", "loma", "rdd-lightglue"} for row in parsed))
+        # Linear-probe rows are opt-in in the editable table; validate any active ones.
         linear_modes = {row["train_mode"] for row in parsed if row["method"] == "linear_probe"}
-        self.assertTrue(linear_modes)
         self.assertTrue(linear_modes.issubset({"classifier", "partial", "all"}))
         self.assertTrue({row["class_weighting"] for row in parsed}.issubset({"-", "weighted", "unweighted"}))
         variant_text = SCRIPT.read_text(encoding="utf-8")
@@ -150,6 +150,8 @@ class ParallelProbeLauncherTests(unittest.TestCase):
     def test_linear_probe_modes_are_explicit_and_non_redundant(self):
         rows = [row for row in self.task_rows() if row["method"] == "linear_probe"]
         self.assertTrue({row["train_mode"] for row in rows}.issubset({"classifier", "partial", "all"}))
+        if not rows:
+            self.skipTest("linear-probe rows are opt-in in the launcher")
         self.assertEqual(len({row["candidate_k"] for row in rows}), 1)
 
         for row in rows:
@@ -216,7 +218,7 @@ class ParallelProbeLauncherTests(unittest.TestCase):
     def test_czechlynx_split_is_explicit_and_open_profile_can_be_enabled(self):
         result = self.run_czech_script("--list-tasks")
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertRegex(result.stdout, r"split_protocol=split-time_(closed|open)")
+        self.assertRegex(result.stdout, r"split_protocol=(split-time_(closed|open)|unseen_eval_split)")
 
         # Exercise the profile table without changing the repository launcher:
         # uncomment the documented open profile in an isolated temporary copy.
@@ -232,6 +234,13 @@ class ParallelProbeLauncherTests(unittest.TestCase):
             script_text = script_text.replace(
                 '    # "czechlynx_open|CzechLynx_v2|CzechLynx|',
                 '    "czechlynx_open|CzechLynx_v2|CzechLynx|',
+                1,
+            )
+            # The opt-in unseen-eval profile may be active in the editable
+            # launcher; disable it in the copy so only closed/open multiply.
+            script_text = script_text.replace(
+                '    "czechlynx_unseen_eval|CzechLynx_v2|CzechLynx|',
+                '    # "czechlynx_unseen_eval|CzechLynx_v2|CzechLynx|',
                 1,
             )
             script_copy.write_text(script_text, encoding="utf-8")

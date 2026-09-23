@@ -13,7 +13,7 @@ dataset:
   calibration_size: 100
 
 model:
-  type: "megadescriptor-l" # megadescriptor-t | megadescriptor-l | dinov2 | dinov3
+  type: "megadescriptor-l" # megadescriptor-t | megadescriptor-l | dinov2 | dinov2-l | dinov3 | dinov3-l
   mode: "pretrained"  # pretrained | finetuned
   device: "auto"     # auto | cpu | cuda
   batch_size: 32
@@ -80,6 +80,12 @@ benchmark:
         megadescriptor-l: ["layers.3", "norm"]
         lynx_megadescriptorV3: ["layers.3", "norm"]
         lynx_megadescriptorV4: ["layers.3", "norm"]
+        # DINOv2 names blocks encoder.layer.N / final layernorm; DINOv3 uses layer.N / norm.
+        # Trailing dots keep substring matches exact (last block + final norm only).
+        dinov2: ["encoder.layer.11.", "layernorm."]
+        dinov2-l: ["encoder.layer.23.", "layernorm."]
+        dinov3: ["layer.11.", "norm."]
+        dinov3-l: ["layer.23.", "norm."]
     efficient_probe:
       train_mode: "classifier"  # all | partial | classifier (frozen backbone)
       class_weighting: "inverse_frequency"  # inverse_frequency | none
@@ -106,8 +112,12 @@ benchmark:
       final_checkpoint_name: "efficient_probe_final.pth"
       partial_rules:
         default: ["layers.3", "norm"]
-        dinov2: ["encoder.layer.11", "layernorm"]
-        dinov3: ["encoder.layer.11", "layernorm"]
+        # DINOv2 names blocks encoder.layer.N / final layernorm; DINOv3 uses layer.N / norm.
+        # Trailing dots keep substring matches exact (last block + final norm only).
+        dinov2: ["encoder.layer.11.", "layernorm."]
+        dinov2-l: ["encoder.layer.23.", "layernorm."]
+        dinov3: ["layer.11.", "norm."]
+        dinov3-l: ["layer.23.", "norm."]
     vismatch:
       matcher: "rdd-lightglue"  # rdd-lightglue | aliked-lightglue | superpoint-lightglue | loma
       checkpoint_source: "default"  # default | custom

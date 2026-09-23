@@ -626,8 +626,16 @@ def _set_trainable_params(model: Any, cfg: DictConfig, method_key: str) -> None:
             raise ValueError(
                 f"No partial unfreeze patterns configured for model.type={cfg.model.type} and no default fallback"
             )
+        matched = 0
         for name, p in model.named_parameters():
             p.requires_grad = any(pattern in name for pattern in patterns)
+            matched += int(p.requires_grad)
+        # A pattern that matches nothing silently turns partial into a frozen probe.
+        if matched == 0:
+            raise ValueError(
+                f"{method_key}.partial_rules for model.type={cfg.model.type} ({list(patterns)}) "
+                "match no backbone parameters"
+            )
         return
     raise ValueError(f"{method_key}.train_mode must be one of: all, partial, classifier")
 

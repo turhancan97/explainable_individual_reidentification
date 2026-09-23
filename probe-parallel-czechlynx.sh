@@ -1,7 +1,7 @@
 #!/bin/bash -l
-#SBATCH -p rtx4090_batch
+#SBATCH -p dgx
 #SBATCH --gpus=1
-#SBATCH --qos=batch
+#SBATCH --qos=big
 #SBATCH --cpus-per-task=10
 #SBATCH --mem=64G
 #SBATCH --ntasks=1
@@ -15,8 +15,8 @@
 set -euo pipefail
 
 MAX_CONCURRENT_JOBS="${MAX_CONCURRENT_JOBS:-12}"
-# CANDIDATE_K_VALUES=(10)
-CANDIDATE_K_VALUES=(50 100 250 500 1000)
+CANDIDATE_K_VALUES=(10)
+# CANDIDATE_K_VALUES=(50 100 250 500 1000)
 
 # Each split owns its checkpoint settings. The legacy variables remain accepted
 # as aliases for the closed profile, but are never inherited by the open one.
@@ -40,6 +40,16 @@ CZECHLYNX_CLOSED_DESCRIPTOR_RDD_CHECKPOINT="${CZECHLYNX_CLOSED_DESCRIPTOR_RDD_CH
 CZECHLYNX_OPEN_DESCRIPTOR_LOMA_CHECKPOINT="${CZECHLYNX_OPEN_DESCRIPTOR_LOMA_CHECKPOINT:-}"
 CZECHLYNX_OPEN_DESCRIPTOR_RDD_CHECKPOINT="${CZECHLYNX_OPEN_DESCRIPTOR_RDD_CHECKPOINT:-}"
 
+# Unseen-identity evaluation is generated separately with
+# scripts/build_unseen_eval_metadata.py. Set this to the generated CSV and
+# uncomment the profile below when it is ready. The derived split uses the
+# source CzechLynx image root, but its metadata path is intentionally unique.
+CZECHLYNX_UNSEEN_EVAL_METADATA_FILE="${CZECHLYNX_UNSEEN_EVAL_METADATA_FILE:-/home/kargin/Projects/repositories/explainable_individual_reidentification/dataset/czechlynx/CzechLynx_v2/metadata/czechlynx-unseen-eval/metadata_unseen_eval.csv}"
+CZECHLYNX_UNSEEN_LOMA_CHECKPOINT="${CZECHLYNX_UNSEEN_LOMA_CHECKPOINT:-${CZECHLYNX_OPEN_LOMA_CHECKPOINT}}"
+CZECHLYNX_UNSEEN_RDD_CHECKPOINT="${CZECHLYNX_UNSEEN_RDD_CHECKPOINT:-${CZECHLYNX_OPEN_RDD_CHECKPOINT}}"
+CZECHLYNX_UNSEEN_DESCRIPTOR_LOMA_CHECKPOINT="${CZECHLYNX_UNSEEN_DESCRIPTOR_LOMA_CHECKPOINT:-}"
+CZECHLYNX_UNSEEN_DESCRIPTOR_RDD_CHECKPOINT="${CZECHLYNX_UNSEEN_DESCRIPTOR_RDD_CHECKPOINT:-}"
+
 SCRIPT_SOURCE_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 SCRIPT_DIR="${SLURM_SUBMIT_DIR:-$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)}"
 cd "${SCRIPT_DIR}"
@@ -58,6 +68,11 @@ DATASET_PROFILES=(
     # Uncomment to run the open protocol in the same submission. Its custom
     # checkpoint paths are defined independently above.
     # "czechlynx_open|CzechLynx_v2|CzechLynx|/shared/sets/datasets/vision/czechlynx/CzechLynx_v2|CzechLynxDataset-Metadata-Real.csv|unique_name|mask|true|no_background|split-time_open|train|test|100|${CZECHLYNX_OPEN_CHECKPOINT_ROOT}|${CZECHLYNX_OPEN_CHECKPOINT_EPOCH}|${CZECHLYNX_OPEN_LOMA_CHECKPOINT}|${CZECHLYNX_OPEN_RDD_CHECKPOINT}|${CZECHLYNX_OPEN_DESCRIPTOR_LOMA_CHECKPOINT}|${CZECHLYNX_OPEN_DESCRIPTOR_RDD_CHECKPOINT}"
+    # Uncomment after building metadata_unseen_eval.csv. Set
+    # CZECHLYNX_UNSEEN_EVAL_METADATA_FILE to its absolute path first. This
+    # profile uses database/query values from the generated split and is kept
+    # separate from split-time_open artifacts and caches.
+    # "czechlynx_unseen_eval|CzechLynx_v2|CzechLynx|/shared/sets/datasets/vision/czechlynx/CzechLynx_v2|${CZECHLYNX_UNSEEN_EVAL_METADATA_FILE}|unique_name|mask|true|no_background|unseen_eval_split|database|query|100|${CZECHLYNX_OPEN_CHECKPOINT_ROOT}|${CZECHLYNX_OPEN_CHECKPOINT_EPOCH}|${CZECHLYNX_UNSEEN_LOMA_CHECKPOINT}|${CZECHLYNX_UNSEEN_RDD_CHECKPOINT}|${CZECHLYNX_UNSEEN_DESCRIPTOR_LOMA_CHECKPOINT}|${CZECHLYNX_UNSEEN_DESCRIPTOR_RDD_CHECKPOINT}"
 )
 
 # method|matcher|checkpoint_label|checkpoint_path|checkpoint_components|train_mode|class_weighting
@@ -72,7 +87,7 @@ DATASET_PROFILES=(
 # efficient_probe|-|default|-|partial|unweighted
 # efficient_probe|-|default|-|all|unweighted
 VARIANTS=(
-    # "cosine|-|default|-|-|-|-"
+    "cosine|-|default|-|-|-|-"
     # "wildfusion|-|default|-|-|-|-"
     # "local_lightglue|-|default|-|-|-|-"
     # "linear_probe|-|default|-|-|classifier|weighted"
@@ -89,10 +104,10 @@ VARIANTS=(
     # "efficient_probe|-|default|-|all|unweighted"
     # "vismatch|loma|default|-|-|-|-"
     # "vismatch|loma|custom|${LOMA_CUSTOM_CHECKPOINT_PATH}|matcher_only|-|-"
-    "vismatch|loma|descriptor-fine-tuned|${CZECHLYNX_CLOSED_DESCRIPTOR_LOMA_CHECKPOINT}|descriptor_only|-|-"
+    # "vismatch|loma|descriptor-fine-tuned|${CZECHLYNX_CLOSED_DESCRIPTOR_LOMA_CHECKPOINT}|descriptor_only|-|-"
     # "vismatch|rdd-lightglue|default|-|-|-|-"
     # "vismatch|rdd-lightglue|custom|${RDD_CUSTOM_CHECKPOINT_PATH}|matcher_only|-|-"
-    "vismatch|rdd-lightglue|descriptor-fine-tuned|${CZECHLYNX_CLOSED_DESCRIPTOR_RDD_CHECKPOINT}|descriptor_only|-|-"
+    # "vismatch|rdd-lightglue|descriptor-fine-tuned|${CZECHLYNX_CLOSED_DESCRIPTOR_RDD_CHECKPOINT}|descriptor_only|-|-"
 )
 
 die() { echo "${LAUNCHER_NAME}: $*" >&2; exit 1; }
@@ -103,6 +118,13 @@ validate_nonnegative_integer() { [[ "$2" =~ ^[0-9]+$ ]] || die "$1 must be a non
 TASKS=()
 for profile in "${DATASET_PROFILES[@]}"; do
     IFS='|' read -r PROFILE_ID DATASET_NAME ANIMAL DATASET_ROOT METADATA_FILE LABEL_COL MASK_COL NO_BACKGROUND IMAGE_VARIANT SPLIT_COL DATABASE_SPLIT_VALUE QUERY_SPLIT_VALUE CALIBRATION_SIZE PROFILE_CHECKPOINT_ROOT PROFILE_CHECKPOINT_EPOCH PROFILE_LOMA_CHECKPOINT PROFILE_RDD_CHECKPOINT PROFILE_DESCRIPTOR_LOMA_CHECKPOINT PROFILE_DESCRIPTOR_RDD_CHECKPOINT <<< "${profile}"
+    if [[ "${PROFILE_ID}" == czechlynx_unseen_eval ]]; then
+        [[ -n "${METADATA_FILE}" && "${METADATA_FILE}" != "-" ]] || die "${PROFILE_ID} requires CZECHLYNX_UNSEEN_EVAL_METADATA_FILE"
+        PROFILE_METADATA_PATH="${METADATA_FILE}"
+        [[ "${PROFILE_METADATA_PATH}" = /* ]] || PROFILE_METADATA_PATH="${DATASET_ROOT}/${PROFILE_METADATA_PATH}"
+        [[ -f "${PROFILE_METADATA_PATH}" ]] || die "${PROFILE_ID} metadata file does not exist: ${PROFILE_METADATA_PATH}"
+        [[ "${SPLIT_COL}" == unseen_eval_split && "${DATABASE_SPLIT_VALUE}" == database && "${QUERY_SPLIT_VALUE}" == query ]] || die "${PROFILE_ID} must use unseen_eval_split with database/query values"
+    fi
     RDD_OWNER="${ANIMAL}"; RDD_PROFILE_CHECKPOINT="${PROFILE_RDD_CHECKPOINT}"
     LOMA_OWNER="${ANIMAL}"; LOMA_PROFILE_CHECKPOINT="${PROFILE_LOMA_CHECKPOINT}"
     for candidate_k in "${CANDIDATE_K_VALUES[@]}"; do

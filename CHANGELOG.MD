@@ -5,8 +5,94 @@ kept under Unreleased until a project version is assigned.
 
 ## [Unreleased] - 2026-08-13
 
+### Added
+
+- Paper-table discovery now treats the backbone/model as part of a run's identity
+  and adds a `Backbone` column to CSV and LaTeX exports. Cosine baselines for
+  MegaDescriptor-T/L, DINOv2/L, and DINOv3/L therefore remain separate instead of
+  being collapsed to the newest run; manifests without a model field are labeled
+  `unknown`.
+
+- Added `dinov2-l` (`facebook/dinov2-with-registers-large`, ViT-L/14) and `dinov3-l`
+  (`facebook/dinov3-vitl16-pretrain-lvd1689m`, ViT-L/16) backbones: 1024-d CLS
+  embeddings at 224 px, verified end to end on the downloaded checkpoints.
+
+- Documented the DINOv2/DINOv3 checkpoints and token policy in AGENTS.md after
+  verifying the token layout on the real checkpoints: CLS for cosine, WildFusion,
+  Vismatch Stage A, and linear probe; patch tokens with attention pooling for the
+  efficient probe; GAP only in the efficient-probe `embedding_retrieval` diagnostic.
+  No code changes.
+
+- Restricted paper-table ablation budgets for `unseen_eval_split` to
+  `10, 50, 100, 160` and reject invalid main-table candidate budgets for that
+  split. Other split protocols retain the standard six-budget table grid.
+
+- Added `scripts/audit_image_quality.py`, which flags candidate low-quality images
+  (empty/tiny foreground, fragmented masks, over/underexposure, low contrast, and a
+  dataset-relative blur ranking) on the exact model input and writes per-image CSVs,
+  per-flag contact sheets, and a summary joined with per-query top-1 rates from
+  completed runs. Moved the paper dataset profiles into
+  `reid/reporting/paper_datasets.py`; `export_class_balance.py` output is byte-identical.
+  First full audit: washed-out CzechLynx frames and non-animal masks, and SeaStarReID2023
+  provider-mask failures, were confirmed by eye; dark Hyena images were rejected as noise.
+- Added `scripts/plot_data_quality_examples.py`, a full-width paper figure of six
+  confirmed examples (washed-out, wrong-object mask, corrupted frame, blurred frame)
+  showing each raw photo above the exact model input.
+
+- Added `scripts/export_class_balance.py`, which writes per-identity database/query
+  image counts for each paper dataset/split to `experiments/class-balance/`, plus a
+  cross-dataset `summary.csv` and a source-hash `manifest.json`. It reads the same
+  metadata, identity columns, and split values as the parallel launchers; the paper
+  dataset table reports CzechLynx closed and open splits only. No probe, launcher, or
+  reporting behavior changes.
+
+### Fixed
+
+- Fixed DINO partial fine-tuning rules. The DINOv3 efficient-probe rule used DINOv2
+  module names and matched no parameters, silently producing a frozen probe; linear-probe
+  DINO partial fell back to the Swin default and tuned only LayerNorms. Every DINO type
+  now has explicit last-block-plus-final-norm rules in both probes, and partial mode fails
+  closed when its patterns match nothing. No DINO runs existed, so no results changed.
+  Swin rules are unchanged.
+
+- `sort_run_rows` now produces a total order: numeric cells sort in the requested
+  direction, then text cells, then empty and `NaN` cells last in their original order.
+  `scripts/summarize_runs.py --sort-by top_1` no longer raises `TypeError` on failed-run
+  rows, and sorting by the gated `mAP` column no longer returns a silently unsorted list.
+- Updated stale tests: the batched-extraction smoke test's fake backend now carries the
+  feature-cache timing counters the real backend initializes, and launcher tests validate
+  whichever classifier-probe rows and CzechLynx profiles are active instead of requiring
+  specific rows to be uncommented. Launcher behavior is unchanged.
+
+### Decided
+
+- Split safety checks stay disabled in the shipped `conf/probe.yaml`
+  (`safety_checks.enabled: false`) by explicit user decision. Parallel launchers
+  inherit this setting. `test_hydra_config` now pins the `false` default, and AGENTS.md
+  records that leakage must be verified separately before publishing a new split.
+
 
 ### Added
+
+- Restricted paper-figure candidate budgets for `unseen_eval_split` to the
+  valid gallery sizes `10, 50, 100, 160`; other split protocols retain the
+  existing plotting grid. Explicit unseen-split budget requests are filtered
+  to the same valid set.
+
+- Added the standalone `scripts/build_unseen_eval_metadata.py` utility for
+  evaluation-only unseen-identity gallery/query splits. It uses encounter and
+  temporal grouping, assigns the earliest group to the gallery, rejects random
+  image-level fallback, validates paths and cross-side SHA-256 duplicate content,
+  and writes an auditable generated CSV plus manifest. Existing probe, launcher,
+  cache, and historical artifacts are unchanged.
+
+- Added an opt-in `czechlynx_unseen_eval` profile to
+  `probe-parallel-czechlynx.sh`. It consumes the standalone generated metadata
+  through `unseen_eval_split=database/query`, validates the file before task
+  construction, and keeps unseen-evaluation logs, manifests, experiments, and
+  caches separate from the existing closed/open split profiles. It remains
+  commented by default and now points to the repository-local generated
+  `metadata_unseen_eval.csv` unless overridden.
 
 - Added publication-oriented plot styling to `scripts/plot_paper_figures.py`.
   The default paper style uses a color-blind-safe palette, redundant line and

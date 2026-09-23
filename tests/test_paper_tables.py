@@ -36,6 +36,7 @@ def write_run(
     split_protocol=None,
     train_mode=None,
     class_weighting=None,
+    backbone=None,
 ):
     run_dir = root / "probe" / "Dataset" / animal
     if split_protocol:
@@ -64,6 +65,8 @@ def write_run(
     if candidate_k is not None:
         manifest["metrics"]["map_at_k"] = candidate_k
         manifest["timings"]["benchmark_candidate_k"] = candidate_k
+    if backbone is not None:
+        manifest["model"] = backbone
     if primary_runtime_sec is not None:
         manifest["timings"]["primary_compute_runtime_sec"] = primary_runtime_sec
     if total_runtime_sec is not None:
@@ -84,6 +87,62 @@ def write_run(
 
 
 class PaperTableTests(unittest.TestCase):
+    def test_backbone_is_part_of_selection_and_is_visible(self):
+        with TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir) / "experiments"
+            for index, (backbone, top_1) in enumerate(
+                (
+                    ("megadescriptor-t", 0.50),
+                    ("megadescriptor-l", 0.60),
+                    ("dinov2", 0.70),
+                    ("dinov2-l", 0.55),
+                    ("dinov3", 0.65),
+                    ("dinov3-l", 0.75),
+                ),
+                start=1,
+            ):
+                write_run(
+                    root,
+                    animal="Lynx",
+                    run_id=f"2026010{index}_{backbone}",
+                    method="cosine",
+                    backbone=backbone,
+                    top_1=top_1,
+                )
+
+            records = discover_records(root)
+            rows = build_main_rows(records, "Lynx", 50)
+
+            self.assertEqual(len(rows), 6)
+            self.assertEqual(
+                {row["backbone"] for row in rows},
+                {
+                    "megadescriptor-t",
+                    "megadescriptor-l",
+                    "dinov2",
+                    "dinov2-l",
+                    "dinov3",
+                    "dinov3-l",
+                },
+            )
+            latex = render_latex(
+                rows,
+                animal="Lynx",
+                table_name="main",
+                candidate_k=50,
+                compact_ablation=True,
+            )
+            self.assertIn("Backbone", latex)
+            self.assertIn("MegaDescriptor-T", latex)
+            self.assertIn("MegaDescriptor-L", latex)
+            self.assertIn("DINOv2", latex)
+            self.assertIn("DINOv2-L", latex)
+            self.assertIn("DINOv3", latex)
+            self.assertIn("DINOv3-L", latex)
+            csv_text = render_csv(rows)
+            self.assertIn("backbone", csv_text.splitlines()[0])
+            self.assertIn("megadescriptor-l", csv_text)
+
     def test_descriptor_rows_and_outputs_are_separate_from_matcher_tables(self):
         with TemporaryDirectory() as temp_dir:
             root = Path(temp_dir) / "experiments"
@@ -134,6 +193,53 @@ class PaperTableTests(unittest.TestCase):
             self.assertTrue((output / "Lynx_split-time_open_ablation.csv").is_file())
             self.assertIn(r"split-time\_closed", (output / "Lynx_split-time_closed_main.tex").read_text())
             self.assertNotIn("Lynx_main.tex", {path.name for path in outputs})
+
+    def test_unseen_eval_tables_use_gallery_valid_budgets(self):
+        with TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir) / "experiments"
+            output = Path(temp_dir) / "reports" / "paper_tables"
+            for candidate_k in (10, 50, 100, 160, 250):
+                write_run(
+                    root,
+                    animal="CzechLynx",
+                    split_protocol="unseen_eval_split",
+                    run_id=f"20260101_unseen_{candidate_k}",
+                    method="vismatch",
+                    variant="default",
+                    candidate_k=candidate_k,
+                    top_1=candidate_k / 1000,
+                )
+            records = discover_records(root)
+            rows = build_ablation_rows(
+                records,
+                "CzechLynx",
+                DEFAULT_ABLATION_BUDGETS,
+                "unseen_eval_split",
+            )
+            self.assertEqual(
+                [row["candidate_k"] for row in rows if row["method_key"] == "vismatch"],
+                [10, 50, 100, 160],
+            )
+            outputs = export_tables(root, output, animals=["CzechLynx"])
+            ablation = output / "CzechLynx_unseen_eval_split_ablation.csv"
+            self.assertIn(ablation, outputs)
+            self.assertNotIn(",250,", ablation.read_text(encoding="utf-8"))
+
+    def test_unseen_eval_main_candidate_must_fit_gallery(self):
+        with TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir) / "experiments"
+            write_run(
+                root,
+                animal="CzechLynx",
+                split_protocol="unseen_eval_split",
+                run_id="20260101_unseen_50",
+                method="vismatch",
+                variant="default",
+                candidate_k=50,
+            )
+            records = discover_records(root)
+            with self.assertRaisesRegex(ValueError, "invalid for unseen_eval_split"):
+                build_main_rows(records, "CzechLynx", 250, "unseen_eval_split")
     def test_discovery_filters_status_and_selects_newest_run(self):
         with TemporaryDirectory() as temp_dir:
             root = Path(temp_dir) / "experiments"
@@ -186,9 +292,9 @@ class PaperTableTests(unittest.TestCase):
                 candidate_k=50,
                 compact_ablation=True,
             )
-            self.assertIn("Linear Probe & - & full fine-tuned (weighting unknown)", latex)
-            self.assertIn("Linear Probe & - & partial fine-tuned (weighting unknown)", latex)
-            self.assertIn("Linear Probe & - & frozen (weighting unknown)", latex)
+            self.assertIn("Linear Probe & - & unknown & full fine-tuned (weighting unknown)", latex)
+            self.assertIn("Linear Probe & - & unknown & partial fine-tuned (weighting unknown)", latex)
+            self.assertIn("Linear Probe & - & unknown & frozen (weighting unknown)", latex)
 
     def test_linear_probe_weighting_is_visible_in_csv_and_latex(self):
         with TemporaryDirectory() as temp_dir:
@@ -217,8 +323,8 @@ class PaperTableTests(unittest.TestCase):
             latex = render_latex(rows, animal="Lynx", table_name="main", candidate_k=50)
             self.assertIn("frozen (weighted)", csv_text)
             self.assertIn("frozen (unweighted)", csv_text)
-            self.assertIn("Linear Probe & - & frozen (weighted)", latex)
-            self.assertIn("Linear Probe & - & frozen (unweighted)", latex)
+            self.assertIn("Linear Probe & - & unknown & frozen (weighted)", latex)
+            self.assertIn("Linear Probe & - & unknown & frozen (unweighted)", latex)
 
     def test_checkpoint_variants_and_shortlist_map_are_separate(self):
         with TemporaryDirectory() as temp_dir:
@@ -233,8 +339,8 @@ class PaperTableTests(unittest.TestCase):
             self.assertEqual({row["mAP_at_k"] for row in rows}, {0.31, 0.72})
             latex = render_latex(rows, animal="Lynx", table_name="main", candidate_k=100)
             self.assertIn("fine-tuned", latex)
-            self.assertIn("Vismatch & custom & fine-tuned", latex)
-            self.assertNotIn("Vismatch & custom & custom", latex)
+            self.assertIn("Vismatch & custom & unknown & fine-tuned", latex)
+            self.assertNotIn("Vismatch & custom & unknown & custom", latex)
 
     def test_ablation_grid_preserves_missing_budgets(self):
         with TemporaryDirectory() as temp_dir:
@@ -289,8 +395,8 @@ class PaperTableTests(unittest.TestCase):
                 compact_ablation=True,
             )
 
-            self.assertIn(r"\multicolumn{9}{l}{\textbf{Baselines}}", latex)
-            self.assertIn(r"\multicolumn{9}{l}{\textbf{LoMa}}", latex)
+            self.assertIn(r"\multicolumn{10}{l}{\textbf{Baselines}}", latex)
+            self.assertIn(r"\multicolumn{10}{l}{\textbf{LoMa}}", latex)
             self.assertIn(r"\rowcolor{gray!10}", latex)
             self.assertIn(r"\rowcolor{green!10}", latex)
             self.assertIn(r"\uparrow", latex)
