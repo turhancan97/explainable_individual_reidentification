@@ -172,9 +172,10 @@ Each launcher crosses its active variants with the candidate budgets listed in
 run. The CzechLynx launcher may have one or both split profiles active; the
 wildlife launcher uses one active animal profile. The concurrency cap is
 controlled by `MAX_CONCURRENT_JOBS` near the top of the selected file. Custom
-Vismatch checkpoint paths are editable there; custom variants use
-`checkpoint_components=matcher_only`, while default variants use Vismatch-managed
-weights. The selected launcher fails before submission if a custom checkpoint is
+Vismatch checkpoint paths are editable there; matcher-fine-tuned variants use
+`checkpoint_components=matcher_only` and descriptor-fine-tuned variants use
+`checkpoint_components=descriptor_only`, while default variants use Vismatch-managed
+weights. Descriptor rows are opt-in and the selected launcher fails before submission if a custom checkpoint is
 missing. Slurm's raw stdout and stderr remain under `logs/parallel_run/`, while each task also creates descriptive copies under
 `logs/parallel_run/<dataset>/<animal>/<split_protocol>/job-<array_job>/`. Files are
 named with the task index, split, method, matcher, checkpoint, and candidate budget. Each task writes
@@ -187,7 +188,14 @@ script from its private spool directory. Use
 For `linear_probe` and `efficient_probe` comparisons, add launcher rows ending in
 `|weighted` or `|unweighted`. These become `inverse_frequency` and `none` Hydra
 overrides, respectively, and are included in task names, commands, manifests, and
-logs.
+logs. The generated paper tables also show the policy in the checkpoint cell, for
+example `frozen (weighted)` and `frozen (unweighted)`, so paired classifier rows
+cannot be confused. The audit CSV retains the separate `class_weighting` column.
+
+Descriptor profiles may be cross-species: set the evaluation animal and checkpoint
+owner independently. The launcher requires the checkpoint path to contain the
+declared owner in the WildlifeReID-10k layout, so an accidental owner/path mismatch
+fails before model loading or cache creation.
 
 To inspect the organized logs:
 
@@ -485,7 +493,7 @@ metrics, so always interpret them together with candidate recall.
 Checkpoint selection options:
 - `checkpoint_source`: `default` (bundled Vismatch weights) or `custom`.
 - `checkpoint_path`: an exact `.safetensors`, `.pth`, `.pt`, or epoch directory; no newest-epoch auto-selection is performed.
-- `checkpoint_components`: `auto`, `matcher_only`, `extractor_only`, or `full`.
+- `checkpoint_components`: `auto`, `matcher_only`, `extractor_only`, `descriptor_only`, or `full`.
 - `loma_arch`: explicit LoMa variant, default `LoMa-B`.
 
 For the current LightGlue-only RDD checkpoint, use:
@@ -495,6 +503,31 @@ python train/probe.py benchmark.method=vismatch benchmark.methods.vismatch.match
 ```
 
 The resolver detects components from tensor schemas and optionally validates `checkpoint_manifest.json`; it does not trust filenames such as `model.safetensors` or `model_1.safetensors`. RDD-LightGlue may combine custom RDD and LightGlue files, while a LightGlue/RDD checkpoint is never accepted for LoMa. Custom component hashes are included in feature-cache identities and run manifests.
+
+Descriptor-only fine-tuning is selected explicitly with `checkpoint_components=descriptor_only`:
+
+```bash
+python train/probe.py benchmark.method=vismatch \
+  benchmark.methods.vismatch.matcher=rdd-lightglue \
+  benchmark.methods.vismatch.checkpoint_source=custom \
+  benchmark.methods.vismatch.checkpoint_path=/path/to/descriptor/epoch_175 \
+  benchmark.methods.vismatch.checkpoint_components=descriptor_only
+```
+
+RDD descriptor checkpoints apply only `descriptor.*` tensors; detector tensors
+present for compatibility are shape-validated and ignored, while the default
+detector and LightGlue matcher are retained. LoMa descriptor checkpoints apply
+only `_descriptor.*` tensors and retain its default detector and matching layers.
+`auto` recognizes descriptor training from tensor schemas and optional
+`czechlynx_protocol.json`. Descriptor, matcher-only, full, and default runs have
+different cache identities. Their manifests record the effective component mode,
+protocol metadata, applied/ignored prefixes, checkpoint hash, and retained default
+components. Optimizer, scheduler, RNG, and scaler files are never loaded.
+
+Descriptor variants in the two parallel launchers are commented out by default.
+Uncomment a descriptor row only after setting the split/profile-specific descriptor
+checkpoint path. Cross-species tests must declare a separate checkpoint owner and
+evaluation animal; normal profiles remain fail-closed on ownership mismatches.
 
 To run LoMa instead of RDD-LightGlue, keep `benchmark.method: "vismatch"` and set:
 
@@ -584,6 +617,11 @@ python scripts/plot_paper_figures.py --animal BelugaID --metric top_5 --formats 
 python scripts/plot_paper_figures.py --animal CzechLynx --split-protocol split-time_closed
 ```
 
+When completed descriptor runs exist, the plotting script also writes separate
+`descriptor_rdd_*` and `descriptor_loma_*` figures. Use
+`--descriptor-family rdd` or `--descriptor-family loma` to restrict them. These
+figures never add descriptor results to the existing matcher series.
+
 The paper-table exporter reads completed `experiments/` manifests directly. For
 split-aware artifacts it creates separate files such as
 `reports/paper_tables/CzechLynx_split-time_closed_main.tex` and
@@ -613,10 +651,15 @@ Include a generated table with `\input{reports/paper_tables/BelugaID_main.tex}`.
 
 `scripts/plot_paper_figures.py` reads completed probe artifacts directly from
 `experiments/` and writes one multi-panel figure per requested metric under
-`reports/figures/` (PNG and PDF by default). Panels are created per animal and
-use equally spaced categorical candidate budgets `10, 50, 100, 250, 500, 1000`,
-matching the paper-style plots. The default series are WildFusion, LoMa
-default/fine-tuned, and RDD-LightGlue default/fine-tuned. Missing runs are left
+`reports/figures/` (PNG and PDF by default). The default `paper` style uses a
+color-blind-safe palette, redundant line/marker encodings, publication
+typography, and the actual candidate budgets `10, 50, 100, 250, 500, 1000`
+on a logarithmic x-axis with shared y-limits across panels. The default series
+are WildFusion, LoMa default/fine-tuned, and RDD-LightGlue default/fine-tuned.
+Use `--style presentation` for larger slide-friendly typography, or
+`--style diagnostic --x-scale categorical --independent-y` for the previous
+equally spaced, independently zoomed view. `--label-endpoints` optionally adds
+direct labels to the final available point of each series. Missing runs are left
 as gaps; failed or incomplete runs are ignored. Use `--metric balanced_top_1`
 when a balanced-accuracy-only figure is needed, or `--metric all` for every
 supported metric. Balanced Top-1 is included in the default metric set, so a
@@ -627,6 +670,11 @@ are plotted separately: for example,
 than being combined in one panel. Use `--split-protocol` to restrict the output
 to one split; repeat it to request selected splits. Legacy artifacts without
 split provenance retain the unsuffixed filenames.
+
+Use `--exclude-method wildfusion`, `--exclude-method rdd`, or
+`--exclude-method loma` to remove a method family from the plot. The filter
+removes both default and fine-tuned matcher series; repeat the option to omit
+multiple families. RDD and LoMa descriptor figures are filtered consistently.
 
 Paper-table runtime uses the primary compute phase: pairwise matcher time for
 Vismatch, WildFusion, and Local LightGlue, and method-computation time for
@@ -770,6 +818,10 @@ sample paths and missing/unreadable files recorded in `safety_checks/summary.jso
 Feature caches similarly include image content, metadata, preprocessing, image variant,
 model/checkpoint weights, and matcher-profile identities. This adds I/O but prevents
 stale features when a file or model changes at the same path.
+
+LoMa descriptor exports may omit standard BatchNorm running-stat buffers. The loader
+keeps those non-learned buffers at the active model defaults while retaining strict
+validation for descriptor parameters and tensor shapes.
 
 Automatic checkpoint discovery recursively searches `experiments/finetune/` before
 legacy `results/`, ignores failed/incomplete runs and full resume checkpoints, and

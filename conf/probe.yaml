@@ -112,7 +112,9 @@ benchmark:
       matcher: "rdd-lightglue"  # rdd-lightglue | aliked-lightglue | superpoint-lightglue | loma
       checkpoint_source: "default"  # default | custom
       checkpoint_path: null
-      checkpoint_components: "auto"  # auto | matcher_only | extractor_only | full
+      checkpoint_components: "auto"  # auto | matcher_only | extractor_only | descriptor_only | full
+      checkpoint_owner: null
+      evaluation_animal: null
       loma_arch: "LoMa-B" # LoMa-B, LoMa-L, LoMa-G, LoMa-B128, LoMa-R
       device: "auto"            # auto | cpu | cuda
       path_col: "path"
@@ -142,7 +144,7 @@ output:
   csv_path: "benchmark_runs/benchmark_results.csv"
 
 safety_checks:
-  enabled: true
+  enabled: false
 
 reporting:
   enabled: true

@@ -41,6 +41,7 @@ TASK_FIELDS = (
     "train_mode",
     "class_weighting",
     "candidate_k",
+    "evaluation_animal",
 )
 
 
@@ -90,11 +91,13 @@ def _parse_task_line(line: str, line_number: int) -> dict[str, str]:
     legacy_task_format = len(values) < len(TASK_FIELDS)
     # Keep accepting task tables produced before explicit train-mode and
     # class-weighting fields were added.
-    if len(values) == len(TASK_FIELDS) - 2:
+    if len(values) == len(TASK_FIELDS) - 3:
         values.insert(-1, "-")
         values.insert(-1, "-")
-    elif len(values) == len(TASK_FIELDS) - 1:
+    elif len(values) == len(TASK_FIELDS) - 2:
         values.insert(-1, "-")
+    if len(values) == len(TASK_FIELDS) - 1:
+        values.append(values[2])
     if len(values) != len(TASK_FIELDS):
         raise ValueError(
             f"task line {line_number} has {len(values)} fields; expected {len(TASK_FIELDS)}"
@@ -108,17 +111,19 @@ def _parse_task_line(line: str, line_number: int) -> dict[str, str]:
         raise ValueError(f"task line {line_number} is missing a dataset profile")
     if not task["candidate_k"].isdigit() or int(task["candidate_k"]) <= 0:
         raise ValueError(f"task line {line_number} has invalid candidate_k")
-    if task["method"] == "linear_probe":
+    if task["method"] in {"linear_probe", "efficient_probe"}:
         if task["train_mode"] not in {"classifier", "partial", "all"}:
-            raise ValueError(f"task line {line_number} has invalid linear_probe train_mode")
+            raise ValueError(f"task line {line_number} has invalid {task['method']} train_mode")
         if task["class_weighting"] not in {"weighted", "unweighted"}:
             raise ValueError(
-                f"task line {line_number} has invalid linear_probe class_weighting"
+                f"task line {line_number} has invalid {task['method']} class_weighting"
             )
     elif task["train_mode"] != "-":
         raise ValueError(f"task line {line_number} has train_mode for non-linear probe method")
     elif task["class_weighting"] != "-":
         raise ValueError(f"task line {line_number} has class_weighting for non-linear probe method")
+    if not task["evaluation_animal"]:
+        task["evaluation_animal"] = task["animal"]
     return task
 
 
@@ -134,16 +139,17 @@ def _read_task_file(path: Path) -> list[dict[str, str]]:
 
 def _validate_checkpoint(task: dict[str, str]) -> dict[str, Any]:
     source = "default" if task["checkpoint_label"] == "default" else "custom"
+    components = task.get("checkpoint_components", "-")
+    if task["checkpoint_label"] == "descriptor-fine-tuned" and components != "descriptor_only":
+        raise ValueError("descriptor-fine-tuned checkpoints must use checkpoint_components=descriptor_only")
+    if task["checkpoint_label"] == "custom" and components == "descriptor_only":
+        raise ValueError("descriptor_only checkpoints must use checkpoint_label=descriptor-fine-tuned")
     owner = task["checkpoint_owner"] if source == "custom" else ""
     path_text = task["checkpoint_path"] if source == "custom" else ""
     if source == "default":
         return {"source": source, "path": None, "owner": None, "sha256": None}
     if not owner:
         raise ValueError(f"custom checkpoint owner is missing for {task['profile_id']}")
-    if owner != task["animal"]:
-        raise ValueError(
-            f"dataset/checkpoint owner mismatch: dataset={task['animal']} checkpoint_owner={owner}"
-        )
     path = Path(path_text)
     if not path.exists():
         raise ValueError(f"{task['matcher']} custom checkpoint does not exist: {path}")
@@ -151,6 +157,12 @@ def _validate_checkpoint(task: dict[str, str]) -> dict[str, Any]:
     if path_owner and path_owner != owner:
         raise ValueError(
             f"checkpoint path owner mismatch: declared={owner} path={path_owner} path={path}"
+        )
+    if not path_owner and owner != task["animal"]:
+        raise ValueError(
+            "dataset/checkpoint owner mismatch: "
+            f"dataset={task['animal']} checkpoint_owner={owner}; "
+            "cross-species checkpoints must use an owner-identifiable path"
         )
     return {
         "source": source,
@@ -182,6 +194,7 @@ def create_manifest(args: argparse.Namespace) -> None:
             "dataset": {
                 "name": raw["dataset_name"],
                 "animal": raw["animal"],
+                "evaluation_animal": raw["evaluation_animal"],
                 "root": raw["root"],
                 "metadata_file": raw["metadata_file"],
                 "label_col": raw["label_col"],
@@ -248,15 +261,16 @@ def validate_task(args: argparse.Namespace) -> None:
             raise ValueError(f"custom checkpoint is missing: {path}")
         if sha256_path(path) != checkpoint["sha256"]:
             raise ValueError(f"custom checkpoint content changed after submission: {path}")
-        if checkpoint["owner"] != task["dataset"]["animal"]:
-            raise ValueError(
-                "dataset/checkpoint owner mismatch: "
-                f"dataset={task['dataset']['animal']} checkpoint_owner={checkpoint['owner']}"
-            )
         path_owner = _path_owner(str(path))
         if path_owner and path_owner != checkpoint["owner"]:
             raise ValueError(
                 f"checkpoint path owner mismatch: declared={checkpoint['owner']} path={path_owner}"
+            )
+        if not path_owner and checkpoint["owner"] != task["dataset"]["animal"]:
+            raise ValueError(
+                "dataset/checkpoint owner mismatch: "
+                f"dataset={task['dataset']['animal']} checkpoint_owner={checkpoint['owner']}; "
+                "cross-species checkpoints must use an owner-identifiable path"
             )
     print("valid")
 
@@ -274,6 +288,7 @@ def emit_shell(args: argparse.Namespace) -> None:
         "PROFILE_ID": task["profile_id"],
         "DATASET_NAME": dataset["name"],
         "ANIMAL": dataset["animal"],
+        "EVALUATION_ANIMAL": dataset.get("evaluation_animal", dataset["animal"]),
         "DATASET_ROOT": dataset["root"],
         "METADATA_FILE": dataset["metadata_file"],
         "LABEL_COL": dataset["label_col"],

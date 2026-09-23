@@ -235,10 +235,23 @@ class ParallelProbeLauncherTests(unittest.TestCase):
                 1,
             )
             script_copy.write_text(script_text, encoding="utf-8")
+            # The editable launcher may have descriptor rows active. Supply
+            # isolated open-split paths so this test exercises profile
+            # multiplication rather than intentionally failing closed on the
+            # open profile's missing descriptor checkpoints.
+            open_loma = temp_root / "open-loma.safetensors"
+            open_rdd = temp_root / "open-rdd.safetensors"
+            open_loma.write_bytes(b"test-loma")
+            open_rdd.write_bytes(b"test-rdd")
+            test_env = os.environ.copy()
+            test_env.update({
+                "CZECHLYNX_OPEN_DESCRIPTOR_LOMA_CHECKPOINT": str(open_loma),
+                "CZECHLYNX_OPEN_DESCRIPTOR_RDD_CHECKPOINT": str(open_rdd),
+            })
             result = subprocess.run(
                 ["bash", str(script_copy), "--list-tasks"],
                 cwd=temp_root,
-                env=os.environ.copy(),
+                env=test_env,
                 text=True,
                 capture_output=True,
                 check=False,

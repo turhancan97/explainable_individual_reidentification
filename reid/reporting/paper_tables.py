@@ -34,6 +34,12 @@ TABLE_COLUMNS = (
     "method",
     "matcher",
     "checkpoint",
+    "checkpoint_component",
+    "checkpoint_owner",
+    "evaluation_animal",
+    "checkpoint_protocol",
+    "applied_prefixes",
+    "ignored_prefixes",
     "candidate_k",
     "class_weighting",
     "top_1",
@@ -81,6 +87,14 @@ TABLE_COLUMNS = (
 )
 METRIC_COLUMNS = ("top_1", "top_5", "top_10", "balanced_top_1", "mAP", "mAP_at_k")
 ABLATION_LATEX_METRIC_COLUMNS = ("top_1", "top_5", "top_10", "balanced_top_1")
+FINE_TUNED_CHECKPOINTS = {
+    "custom",
+    "fine-tuned",
+    "matcher-fine-tuned",
+    "descriptor-fine-tuned",
+    "extractor-fine-tuned",
+    "full-fine-tuned",
+}
 
 
 def _finite_float(value: Any) -> float | None:
@@ -96,6 +110,23 @@ def _checkpoint_source(manifest: Mapping[str, Any]) -> str:
     if isinstance(checkpoint, Mapping) and checkpoint.get("source"):
         return str(checkpoint["source"])
     return str(manifest.get("variant") or "default")
+
+
+def _checkpoint_variant(manifest: Mapping[str, Any]) -> str:
+    checkpoint = manifest.get("vismatch_checkpoint")
+    if isinstance(checkpoint, Mapping):
+        value = checkpoint.get("checkpoint_variant")
+        if value and str(value).lower() != "auto":
+            return str(value)
+        mode = str(checkpoint.get("resolved_component_mode") or checkpoint.get("component_mode") or "").lower()
+        if mode in {"matcher_only", "extractor_only", "descriptor_only", "full"}:
+            return {
+                "matcher_only": "matcher-fine-tuned",
+                "extractor_only": "extractor-fine-tuned",
+                "descriptor_only": "descriptor-fine-tuned",
+                "full": "full-fine-tuned",
+            }[mode]
+    return _checkpoint_source(manifest)
 
 
 def _candidate_k(method: str, metrics: Mapping[str, Any], timings: Mapping[str, Any]) -> int | None:
@@ -170,7 +201,15 @@ def _record_from_manifest(manifest_path: Path) -> dict[str, Any] | None:
         else ""
     )
     class_weighting = _classifier_probe_weighting(manifest, metrics, method)
-    checkpoint = _checkpoint_source(manifest)
+    checkpoint = _checkpoint_variant(manifest)
+    checkpoint_info = manifest.get("vismatch_checkpoint")
+    if not isinstance(checkpoint_info, Mapping):
+        checkpoint_info = {}
+    component_mode = str(
+        checkpoint_info.get("resolved_component_mode")
+        or checkpoint_info.get("component_mode")
+        or ""
+    ).lower()
     classifier_payload = manifest.get("classifier_evaluation")
     if not isinstance(classifier_payload, Mapping):
         classifier_payload = {}
@@ -189,6 +228,12 @@ def _record_from_manifest(manifest_path: Path) -> dict[str, Any] | None:
         "matcher": matcher,
         "train_mode": train_mode,
         "checkpoint": checkpoint,
+        "checkpoint_component": "descriptor" if component_mode == "descriptor_only" else component_mode or "",
+        "checkpoint_owner": manifest.get("checkpoint_owner", checkpoint_info.get("checkpoint_owner", "")),
+        "evaluation_animal": manifest.get("evaluation_animal", animal),
+        "checkpoint_protocol": checkpoint_info.get("protocol_metadata", {}),
+        "applied_prefixes": checkpoint_info.get("applied_prefixes", []),
+        "ignored_prefixes": checkpoint_info.get("ignored_prefixes", []),
         "candidate_k": candidate,
         "class_weighting": class_weighting,
         "top_1": _finite_float(metrics.get("top_1")),
@@ -285,6 +330,13 @@ def _selection_key(record: Mapping[str, Any]) -> tuple[Any, ...]:
     )
 
 
+def _is_descriptor_record(record: Mapping[str, Any]) -> bool:
+    return (
+        str(record.get("checkpoint_component") or "").lower() == "descriptor"
+        or str(record.get("checkpoint") or "").lower() == "descriptor-fine-tuned"
+    )
+
+
 def select_latest_records(
     records: Iterable[Mapping[str, Any]], animal: str, split_protocol: str | None = None
 ) -> list[dict[str, Any]]:
@@ -339,9 +391,13 @@ def _placeholder(template: Mapping[str, Any], candidate_k: int | None) -> dict[s
 
 
 def build_main_rows(
-    records: Iterable[Mapping[str, Any]], animal: str, candidate_k: int, split_protocol: str | None = None
+    records: Iterable[Mapping[str, Any]], animal: str, candidate_k: int, split_protocol: str | None = None,
+    *, include_descriptor: bool = False,
 ) -> list[dict[str, Any]]:
-    selected = select_latest_records(records, animal, split_protocol)
+    selected = [
+        record for record in select_latest_records(records, animal, split_protocol)
+        if include_descriptor or not _is_descriptor_record(record)
+    ]
     rows: list[dict[str, Any]] = []
     groups: dict[tuple[str, str, str, str, str], list[dict[str, Any]]] = {}
     for record in selected:
@@ -369,8 +425,13 @@ def build_ablation_rows(
     animal: str,
     budgets: Sequence[int],
     split_protocol: str | None = None,
+    *,
+    include_descriptor: bool = False,
 ) -> list[dict[str, Any]]:
-    selected = select_latest_records(records, animal, split_protocol)
+    selected = [
+        record for record in select_latest_records(records, animal, split_protocol)
+        if include_descriptor or not _is_descriptor_record(record)
+    ]
     rows: list[dict[str, Any]] = []
     groups: dict[tuple[str, str, str, str, str], list[dict[str, Any]]] = {}
     for record in selected:
@@ -389,6 +450,32 @@ def build_ablation_rows(
         else:
             rows.append(group[0])
     return _sort_records(rows)
+
+
+def build_descriptor_rows(
+    records: Iterable[Mapping[str, Any]],
+    *,
+    animal: str,
+    matcher: str,
+    budgets: Sequence[int],
+    candidate_k: int | None = None,
+    split_protocol: str | None = None,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """Build descriptor-specific rows with the matching default/context baselines."""
+    selected = select_latest_records(records, animal, split_protocol)
+    matcher = str(matcher).lower()
+    relevant = [
+        record for record in selected
+        if (
+            (record.get("method_key") == "vismatch" and str(record.get("matcher", "")).lower() == matcher
+             and (_is_descriptor_record(record) or str(record.get("checkpoint", "")).lower() == "default"))
+            or record.get("method_key") in {"cosine", "wildfusion"}
+        )
+    ]
+    return (
+        build_main_rows(relevant, animal, candidate_k or 50, split_protocol, include_descriptor=True),
+        build_ablation_rows(relevant, animal, budgets, split_protocol, include_descriptor=True),
+    )
 
 
 def _latex_escape(value: Any) -> str:
@@ -431,18 +518,36 @@ def _best_values(
 
 def _checkpoint_display(value: Any) -> Any:
     """Use paper-friendly labels without changing run-selection identities."""
-    return "fine-tuned" if str(value).lower() == "custom" else value
+    labels = {
+        "custom": "fine-tuned",
+        "matcher-fine-tuned": "fine-tuned",
+        "descriptor-fine-tuned": "descriptor fine-tuned",
+        "extractor-fine-tuned": "extractor fine-tuned",
+        "full-fine-tuned": "full fine-tuned",
+    }
+    return labels.get(str(value).lower(), value)
 
 
 def _paper_checkpoint_display(row: Mapping[str, Any]) -> Any:
-    """Display linear-probe training scope in the checkpoint column."""
-    if row.get("method_key") == "linear_probe":
+    """Display probe training scope and loss weighting in the checkpoint column.
+
+    The audit CSV still has a dedicated ``class_weighting`` field.  Including the
+    policy in the paper-facing label prevents weighted and unweighted classifier
+    rows from looking identical after the train mode is mapped to ``frozen``.
+    """
+    if row.get("method_key") in {"linear_probe", "efficient_probe"}:
         labels = {
             "classifier": "frozen",
             "partial": "partial fine-tuned",
             "all": "full fine-tuned",
         }
-        return labels.get(str(row.get("train_mode") or "").lower(), "unknown")
+        scope = labels.get(str(row.get("train_mode") or "").lower(), "unknown")
+        weighting = str(row.get("class_weighting") or "unknown").lower()
+        weighting_label = {
+            "weighted": "weighted",
+            "unweighted": "unweighted",
+        }.get(weighting, "weighting unknown")
+        return f"{scope} ({weighting_label})"
     return _checkpoint_display(row.get("checkpoint"))
 
 
@@ -482,7 +587,7 @@ def _ablation_delta_suffix(
     column: str,
     baselines: Mapping[tuple[Any, ...], Mapping[str, Any]],
 ) -> str:
-    if str(row.get("checkpoint") or "").lower() not in {"custom", "fine-tuned"}:
+    if str(row.get("checkpoint") or "").lower() not in FINE_TUNED_CHECKPOINTS:
         return ""
     key = (
         row.get("method_key"),
@@ -510,7 +615,15 @@ def _sort_ablation_records(records: Iterable[Mapping[str, Any]]) -> list[dict[st
     """Keep default/fine-tuned rows adjacent and put default first at each budget."""
     def key(record: Mapping[str, Any]) -> tuple[Any, ...]:
         checkpoint = str(record.get("checkpoint") or "").lower()
-        checkpoint_order = {"default": 0, "custom": 1, "fine-tuned": 1}.get(checkpoint, 2)
+        checkpoint_order = {
+            "default": 0,
+            "custom": 1,
+            "fine-tuned": 1,
+            "matcher-fine-tuned": 1,
+            "descriptor-fine-tuned": 1,
+            "extractor-fine-tuned": 1,
+            "full-fine-tuned": 1,
+        }.get(checkpoint, 2)
         budget = record.get("candidate_k")
         return (
             METHOD_ORDER.get(record.get("method_key", ""), 99),
@@ -540,7 +653,7 @@ def _render_compact_ablation_latex(
     best = _best_values(ordered_rows, ABLATION_LATEX_METRIC_COLUMNS)
     baselines: dict[tuple[Any, ...], Mapping[str, Any]] = {}
     for row in ordered_rows:
-        if str(row.get("checkpoint") or "").lower() not in {"custom", "fine-tuned"}:
+        if str(row.get("checkpoint") or "").lower() not in FINE_TUNED_CHECKPOINTS:
             key = (
                 row.get("method_key"),
                 row.get("matcher"),
@@ -594,7 +707,7 @@ def _render_compact_ablation_latex(
             ])
             current_section = section
         checkpoint = str(row.get("checkpoint") or "").lower()
-        if checkpoint in {"custom", "fine-tuned"}:
+        if checkpoint in FINE_TUNED_CHECKPOINTS:
             body.append("\\rowcolor{green!10}")
         elif checkpoint == "default":
             body.append("\\rowcolor{gray!10}")
@@ -755,6 +868,50 @@ def write_animal_tables(
     }
     for path, content in outputs.items():
         path.write_text(content, encoding="utf-8")
+    selected = select_latest_records(records, animal, split_protocol)
+    for descriptor_matcher, family_label in (("rdd-lightglue", "rdd"), ("loma", "loma")):
+        if not any(
+            _is_descriptor_record(record)
+            and record.get("method_key") == "vismatch"
+            and str(record.get("matcher", "")).lower() == descriptor_matcher
+            for record in selected
+        ):
+            continue
+        descriptor_main, descriptor_ablation = build_descriptor_rows(
+            records,
+            animal=animal,
+            matcher=descriptor_matcher,
+            budgets=budgets,
+            candidate_k=main_candidate_k,
+            split_protocol=split_protocol,
+        )
+        descriptor_outputs = {
+            output_dir / f"{stem}_descriptor_{family_label}_main.tex": render_latex(
+                descriptor_main,
+                animal=animal,
+                split_protocol=split_protocol,
+                table_name=f"descriptor {family_label} main",
+                candidate_k=main_candidate_k,
+                generated_at=generated_at,
+                detailed_comments=detailed_comments,
+                compact_ablation=True,
+            ),
+            output_dir / f"{stem}_descriptor_{family_label}_main.csv": render_csv(descriptor_main),
+            output_dir / f"{stem}_descriptor_{family_label}_ablation.tex": render_latex(
+                descriptor_ablation,
+                animal=animal,
+                split_protocol=split_protocol,
+                table_name=f"descriptor {family_label} ablation",
+                candidate_k=None,
+                generated_at=generated_at,
+                detailed_comments=detailed_comments,
+                compact_ablation=True,
+            ),
+            output_dir / f"{stem}_descriptor_{family_label}_ablation.csv": render_csv(descriptor_ablation),
+        }
+        for path, content in descriptor_outputs.items():
+            path.write_text(content, encoding="utf-8")
+        outputs.update(descriptor_outputs)
     return list(outputs)
 
 

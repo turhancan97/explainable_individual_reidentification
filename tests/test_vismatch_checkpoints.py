@@ -137,6 +137,139 @@ class VismatchCheckpointTests(unittest.TestCase):
             for name, value in source.state_dict().items():
                 self.assertTrue(torch.equal(value, target.lightglue.state_dict()[name]))
 
+    def test_rdd_descriptor_checkpoint_applies_only_descriptor(self):
+        class RDD(nn.Module):
+            def __init__(self):
+                super().__init__()
+                self.detector = nn.Linear(2, 2, bias=False)
+                self.descriptor = nn.Linear(2, 2, bias=False)
+
+        class Matcher(nn.Module):
+            def __init__(self):
+                super().__init__()
+                self.RDD = RDD()
+
+        class Model(nn.Module):
+            def __init__(self):
+                super().__init__()
+                self.matcher = Matcher()
+                self.lightglue = nn.Identity()
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            source = RDD()
+            source.descriptor.weight.data.fill_(7.0)
+            source.detector.weight.data.fill_(9.0)
+            path = root / "model.pth"
+            self._save(path, source.state_dict())
+            (root / "czechlynx_protocol.json").write_text(
+                json.dumps({"rdd_train_component": "descriptor"}), encoding="utf-8"
+            )
+            resolution = resolve_vismatch_checkpoint("rdd-lightglue", "custom", path, "auto")
+            self.assertEqual(resolution.resolved_component_mode, "descriptor_only")
+            self.assertEqual(resolution.ignored_prefixes, ("detector.",))
+            target = Model()
+            target.matcher.RDD.detector.weight.data.fill_(3.0)
+            apply_vismatch_checkpoint(target, resolution)
+            self.assertTrue(torch.all(target.matcher.RDD.descriptor.weight == 7.0))
+            self.assertTrue(torch.all(target.matcher.RDD.detector.weight == 3.0))
+
+    def test_rdd_descriptor_detector_tensors_are_shape_validated_but_not_applied(self):
+        class RDD(nn.Module):
+            def __init__(self):
+                super().__init__()
+                self.detector = nn.Linear(2, 2, bias=False)
+                self.descriptor = nn.Linear(2, 2, bias=False)
+
+        class Model(nn.Module):
+            def __init__(self):
+                super().__init__()
+                self.matcher = nn.Module()
+                self.matcher.RDD = RDD()
+                self.lightglue = nn.Identity()
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            path = root / "model.pth"
+            self._save(
+                path,
+                {
+                    "descriptor.weight": torch.zeros(2, 2),
+                    "detector.weight": torch.zeros(3, 3),
+                },
+            )
+            (root / "czechlynx_protocol.json").write_text(
+                json.dumps({"rdd_train_component": "descriptor"}), encoding="utf-8"
+            )
+            resolution = resolve_vismatch_checkpoint("rdd-lightglue", "custom", path, "auto")
+            with self.assertRaisesRegex(RuntimeError, "ignored tensor validation"):
+                apply_vismatch_checkpoint(Model(), resolution)
+
+    def test_descriptor_loader_keeps_missing_batchnorm_buffers(self):
+        class LoMa(nn.Module):
+            def __init__(self):
+                super().__init__()
+                self._descriptor = nn.Sequential(nn.Conv2d(2, 2, 1), nn.BatchNorm2d(2))
+
+        class Model(nn.Module):
+            def __init__(self):
+                super().__init__()
+                self.matcher = LoMa()
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            source = Model().matcher._descriptor
+            state = {
+                key: value
+                for key, value in source.state_dict().items()
+                if not key.endswith(("running_mean", "running_var", "num_batches_tracked"))
+            }
+            path = root / "model.pth"
+            self._save(path, {f"_descriptor.{key}": value for key, value in state.items()})
+            (root / "czechlynx_protocol.json").write_text(
+                json.dumps({"loma_train_component": "descriptor"}), encoding="utf-8"
+            )
+            resolution = resolve_vismatch_checkpoint("loma", "custom", path, "auto")
+            apply_vismatch_checkpoint(Model(), resolution)
+
+    def test_loma_descriptor_checkpoint_applies_only_descriptor(self):
+        class LoMa(nn.Module):
+            def __init__(self):
+                super().__init__()
+                self._detector = nn.Linear(2, 2, bias=False)
+                self._descriptor = nn.Linear(2, 2, bias=False)
+                self.transformers = nn.ModuleList()
+
+        class Model(nn.Module):
+            def __init__(self):
+                super().__init__()
+                self.matcher = LoMa()
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            source = Model().matcher
+            source._descriptor.weight.data.fill_(5.0)
+            path = root / "model.pth"
+            self._save(path, {f"_descriptor.{key}": value for key, value in source._descriptor.state_dict().items()})
+            (root / "czechlynx_protocol.json").write_text(
+                json.dumps({"loma_train_component": "descriptor"}), encoding="utf-8"
+            )
+            resolution = resolve_vismatch_checkpoint("loma", "custom", path, "auto")
+            self.assertEqual(resolution.resolved_component_mode, "descriptor_only")
+            target = Model()
+            target.matcher._detector.weight.data.fill_(2.0)
+            apply_vismatch_checkpoint(target, resolution)
+            self.assertTrue(torch.all(target.matcher._descriptor.weight == 5.0))
+            self.assertTrue(torch.all(target.matcher._detector.weight == 2.0))
+
+    def test_rng_state_files_are_ignored(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            self._save(root / "rng_state.pt", {"state": torch.zeros(1)})
+            self._save(root / "model.pth", {"detector.weight": torch.zeros(2, 2)})
+            resolution = resolve_vismatch_checkpoint("rdd-lightglue", "custom", root, "extractor_only")
+            self.assertEqual(resolution.files[0].path.name, "model.pth")
+
 
 if __name__ == "__main__":
     unittest.main()

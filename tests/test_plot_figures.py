@@ -8,6 +8,7 @@ from reid.reporting.paper_tables import discover_records
 from reid.reporting.plot_figures import (
     DEFAULT_PLOT_BUDGETS,
     DEFAULT_PLOT_METRICS,
+    PLOT_STYLES,
     prepare_series_data,
     plot_metrics,
     render_metric_figure,
@@ -59,6 +60,43 @@ class PlotFigureTests(unittest.TestCase):
     def test_default_plot_metrics_include_balanced_accuracy(self):
         self.assertIn("balanced_top_1", DEFAULT_PLOT_METRICS)
 
+    @unittest.skipUnless(importlib.util.find_spec("matplotlib"), "matplotlib is optional for dependency-light tests")
+    def test_paper_style_uses_log_budget_axis_and_shared_y_limits(self):
+        with TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir) / "experiments"
+            for animal, score in (("Lynx", 0.50), ("Whale", 0.70)):
+                write_plot_run(
+                    root,
+                    animal=animal,
+                    run_id=f"20260101_{animal}",
+                    method="vismatch",
+                    matcher="loma",
+                    candidate_k=10,
+                    top_1=score,
+                )
+            records = discover_records(root)
+            figure = render_metric_figure(records, animals=["Lynx", "Whale"], metric="top_1")
+            self.assertEqual(figure.axes[0].get_xscale(), "log")
+            self.assertEqual(figure.axes[0].get_ylim(), figure.axes[1].get_ylim())
+            figure.clf()
+
+    @unittest.skipUnless(importlib.util.find_spec("matplotlib"), "matplotlib is optional for dependency-light tests")
+    def test_diagnostic_style_preserves_independent_categorical_axes(self):
+        with TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir) / "experiments"
+            write_plot_run(root, animal="Lynx", run_id="20260101_loma", method="vismatch", matcher="loma")
+            records = discover_records(root)
+            figure = render_metric_figure(records, animals=["Lynx"], metric="top_1", style="diagnostic")
+            self.assertEqual(figure.axes[0].get_xscale(), "linear")
+            self.assertEqual(list(figure.axes[0].get_xticks()), list(range(len(DEFAULT_PLOT_BUDGETS))))
+            figure.clf()
+
+    @unittest.skipUnless(importlib.util.find_spec("matplotlib"), "matplotlib is optional for dependency-light tests")
+    def test_invalid_plot_style_is_rejected(self):
+        self.assertIn("paper", PLOT_STYLES)
+        with self.assertRaisesRegex(ValueError, "unsupported plot style"):
+            render_metric_figure([], animals=["Lynx"], metric="top_1", style="unknown")
+
     def test_prepare_series_data_maps_runs_and_leaves_missing_budgets(self):
         with TemporaryDirectory() as temp_dir:
             root = Path(temp_dir) / "experiments"
@@ -78,6 +116,73 @@ class PlotFigureTests(unittest.TestCase):
     def test_prepare_series_data_rejects_unknown_metric(self):
         with self.assertRaisesRegex(ValueError, "unsupported metric"):
             prepare_series_data([], animal="Lynx", metric="mAP")
+
+    def test_exclude_method_removes_default_and_fine_tuned_series(self):
+        with TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir) / "experiments"
+            write_plot_run(root, animal="Lynx", run_id="20260101_wildfusion", method="wildfusion", candidate_k=10)
+            for matcher in ("loma", "rdd-lightglue"):
+                for checkpoint in ("default", "custom"):
+                    write_plot_run(
+                        root,
+                        animal="Lynx",
+                        run_id=f"20260101_{matcher}_{checkpoint}",
+                        method="vismatch",
+                        matcher=matcher,
+                        checkpoint=checkpoint,
+                        candidate_k=10,
+                    )
+            records = discover_records(root)
+            series = prepare_series_data(records, animal="Lynx", metric="top_1", exclude_methods=("rdd",))
+            self.assertEqual(
+                {item["name"] for item in series},
+                {"WildFusion", "LoMa default", "LoMa fine-tuned"},
+            )
+            series = prepare_series_data(records, animal="Lynx", metric="top_1", exclude_methods=("wildfusion", "loma"))
+            self.assertEqual({item["name"] for item in series}, {"RDD-LightGlue default", "RDD-LightGlue fine-tuned"})
+
+    def test_exclude_method_rejects_unknown_family(self):
+        with self.assertRaisesRegex(ValueError, "unsupported excluded method"):
+            prepare_series_data([], animal="Lynx", metric="top_1", exclude_methods=("cosine",))
+
+    def test_descriptor_series_is_separate(self):
+        with TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir) / "experiments"
+            write_plot_run(root, animal="Lynx", run_id="20260101_default", method="vismatch", matcher="loma", candidate_k=10)
+            write_plot_run(root, animal="Lynx", run_id="20260102_descriptor", method="vismatch", matcher="loma", checkpoint="custom", candidate_k=10, top_1=0.8)
+            manifest_path = root / "probe" / "Dataset" / "Lynx" / "20260102_descriptor" / "run_manifest.json"
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            manifest["vismatch_checkpoint"] = {"source": "custom", "resolved_component_mode": "descriptor_only", "checkpoint_variant": "descriptor-fine-tuned"}
+            manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+            records = discover_records(root)
+            series = prepare_series_data(records, animal="Lynx", metric="top_1", descriptor_family="loma")
+            self.assertEqual({item["name"] for item in series}, {"LoMa default", "LoMa descriptor fine-tuned"})
+            self.assertEqual(next(item for item in series if "descriptor" in item["name"])["values"][0], 0.8)
+
+    def test_matcher_fine_tuned_variant_remains_in_matcher_series(self):
+        with TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir) / "experiments"
+            write_plot_run(
+                root,
+                animal="Lynx",
+                run_id="20260101_matcher",
+                method="vismatch",
+                matcher="loma",
+                checkpoint="custom",
+                candidate_k=10,
+                top_1=0.8,
+            )
+            manifest_path = root / "probe" / "Dataset" / "Lynx" / "20260101_matcher" / "run_manifest.json"
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            manifest["vismatch_checkpoint"] = {
+                "source": "custom",
+                "resolved_component_mode": "matcher_only",
+                "checkpoint_variant": "matcher-fine-tuned",
+            }
+            manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+            records = discover_records(root)
+            series = prepare_series_data(records, animal="Lynx", metric="top_1")
+            self.assertEqual({item["name"] for item in series}, {"LoMa fine-tuned"})
 
     def test_split_protocols_are_selected_independently(self):
         with TemporaryDirectory() as temp_dir:

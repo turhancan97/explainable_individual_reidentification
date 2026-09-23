@@ -88,6 +88,25 @@ class ParallelManifestTests(unittest.TestCase):
             self.assertNotEqual(result.returncode, 0)
             self.assertIn("outside manifest", result.stderr)
 
+    def test_cross_species_owner_is_explicit_and_path_validated(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            checkpoint = root / "wildlife-reid-10k" / "GiraffeZebraID" / "loma-finetuned" / "epoch_299" / "model.safetensors"
+            checkpoint.parent.mkdir(parents=True)
+            checkpoint.write_bytes(b"weights")
+            line = "|".join([
+                "nyala-cross", "WildlifeReID-10k", "NyalaData", "/data",
+                "metadata.csv", "identity", "mask", "false", "no_background",
+                "split", "train", "test", "100", "vismatch", "loma",
+                "descriptor-fine-tuned", str(checkpoint), "GiraffeZebraID", "descriptor_only",
+                "LoMa-B", "-", "-", "10", "NyalaData",
+            ])
+            submission, _ = self.create(root, checkpoint, line=line)
+            self.assertEqual(
+                run_helper("validate", "--manifest", submission / "manifest.json", "--index", 0).returncode,
+                0,
+            )
+
 
 if __name__ == "__main__":
     unittest.main()

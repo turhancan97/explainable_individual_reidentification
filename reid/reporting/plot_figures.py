@@ -22,6 +22,66 @@ PLOT_METRICS = {
     "balanced_top_1": "Balanced Top-1 accuracy",
 }
 
+PLOT_STYLES = ("paper", "presentation", "diagnostic")
+PLOT_METHODS = ("wildfusion", "rdd", "loma")
+
+# The palette is deliberately color-blind friendly.  Line style and marker
+# shape also carry meaning, so the figure remains interpretable when printed
+# in grayscale or viewed by someone with color-vision deficiency.
+PLOT_STYLE_DEFAULTS = {
+    "paper": {
+        "x_scale": "log",
+        "shared_y": True,
+        "figsize": (5.15, 3.75),
+        "line_width": 2.25,
+        "marker_size": 6.5,
+        "title_size": 11.5,
+        "label_size": 10,
+        "tick_size": 8.5,
+    },
+    "presentation": {
+        "x_scale": "categorical",
+        "shared_y": True,
+        "figsize": (5.8, 4.3),
+        "line_width": 2.8,
+        "marker_size": 8,
+        "title_size": 14,
+        "label_size": 12,
+        "tick_size": 10,
+    },
+    "diagnostic": {
+        "x_scale": "categorical",
+        "shared_y": False,
+        "figsize": (5.3, 4.25),
+        "line_width": 2.0,
+        "marker_size": 6.5,
+        "title_size": 13,
+        "label_size": 10,
+        "tick_size": 9,
+    },
+}
+
+PLOT_RC_PARAMS = {
+    "paper": {
+        "font.family": "sans-serif",
+        "font.sans-serif": ["DejaVu Sans", "Arial"],
+        "axes.linewidth": 0.8,
+        "axes.labelweight": "regular",
+        "pdf.fonttype": 42,
+        "ps.fonttype": 42,
+        "svg.fonttype": "none",
+    },
+    "presentation": {
+        "font.family": "sans-serif",
+        "font.sans-serif": ["DejaVu Sans", "Arial"],
+        "axes.linewidth": 1.0,
+        "pdf.fonttype": 42,
+        "ps.fonttype": 42,
+        "svg.fonttype": "none",
+    },
+    "diagnostic": {},
+}
+
 # The order and visual encoding match the paper figures. A series is included
 # only when at least one completed run exists for the selected animal.
 PLOT_SERIES = (
@@ -30,7 +90,7 @@ PLOT_SERIES = (
         "method_key": "wildfusion",
         "matcher": "-",
         "checkpoint": "default",
-        "color": "#555555",
+        "color": "#3c3c3c",
         "marker": "o",
         "linestyle": "-",
     },
@@ -39,7 +99,7 @@ PLOT_SERIES = (
         "method_key": "vismatch",
         "matcher": "loma",
         "checkpoint": "default",
-        "color": "#2b6cb0",
+        "color": "#0072b2",
         "marker": "s",
         "linestyle": "-",
     },
@@ -48,7 +108,7 @@ PLOT_SERIES = (
         "method_key": "vismatch",
         "matcher": "loma",
         "checkpoint": "custom",
-        "color": "#ed7d16",
+        "color": "#d55e00",
         "marker": "^",
         "linestyle": "--",
     },
@@ -57,7 +117,7 @@ PLOT_SERIES = (
         "method_key": "vismatch",
         "matcher": "rdd-lightglue",
         "checkpoint": "default",
-        "color": "#2f855a",
+        "color": "#009e73",
         "marker": "D",
         "linestyle": "-",
     },
@@ -66,11 +126,24 @@ PLOT_SERIES = (
         "method_key": "vismatch",
         "matcher": "rdd-lightglue",
         "checkpoint": "custom",
-        "color": "#c53030",
+        "color": "#cc79a7",
         "marker": "*",
         "linestyle": "--",
     },
 )
+
+DESCRIPTOR_PLOT_SERIES = {
+    "rdd": (
+        PLOT_SERIES[0],
+        PLOT_SERIES[3],
+        {"name": "RDD-LightGlue descriptor fine-tuned", "method_key": "vismatch", "matcher": "rdd-lightglue", "checkpoint": "descriptor-fine-tuned", "color": "#805ad5", "marker": "X", "linestyle": "--"},
+    ),
+    "loma": (
+        PLOT_SERIES[0],
+        PLOT_SERIES[1],
+        {"name": "LoMa descriptor fine-tuned", "method_key": "vismatch", "matcher": "loma", "checkpoint": "descriptor-fine-tuned", "color": "#dd6b20", "marker": "^", "linestyle": "--"},
+    ),
+}
 
 
 def _finite_float(value: Any) -> float | None:
@@ -83,7 +156,15 @@ def _finite_float(value: Any) -> float | None:
 
 def _normalise_checkpoint(value: Any) -> str:
     value = str(value or "").lower()
-    return "custom" if value == "fine-tuned" else value
+    if value in {
+        "custom",
+        "fine-tuned",
+        "matcher-fine-tuned",
+        "extractor-fine-tuned",
+        "full-fine-tuned",
+    }:
+        return "custom"
+    return value
 
 
 def _series_key(series: Mapping[str, Any]) -> tuple[str, str, str]:
@@ -94,6 +175,27 @@ def _series_key(series: Mapping[str, Any]) -> tuple[str, str, str]:
     )
 
 
+def _series_method_family(series: Mapping[str, Any]) -> str:
+    """Return the public method name used by ``--exclude-method``."""
+    if str(series.get("method_key", "")).lower() == "wildfusion":
+        return "wildfusion"
+    matcher = str(series.get("matcher", "")).lower()
+    if matcher == "rdd-lightglue":
+        return "rdd"
+    if matcher == "loma":
+        return "loma"
+    return matcher
+
+
+def _normalise_excluded_methods(exclude_methods: Sequence[str] | None) -> set[str]:
+    excluded = {str(method).strip().lower() for method in (exclude_methods or ()) if str(method).strip()}
+    unknown = sorted(excluded - set(PLOT_METHODS))
+    if unknown:
+        valid = ", ".join(PLOT_METHODS)
+        raise ValueError(f"unsupported excluded method(s): {', '.join(unknown)}; choose from: {valid}")
+    return excluded
+
+
 def prepare_series_data(
     records: Iterable[Mapping[str, Any]],
     *,
@@ -101,6 +203,8 @@ def prepare_series_data(
     metric: str,
     budgets: Sequence[int] = DEFAULT_PLOT_BUDGETS,
     split_protocol: str | None = None,
+    descriptor_family: str | None = None,
+    exclude_methods: Sequence[str] | None = None,
 ) -> list[dict[str, Any]]:
     """Return plotting-ready series for one animal and split.
 
@@ -114,8 +218,10 @@ def prepare_series_data(
     budgets = tuple(int(budget) for budget in budgets)
     if not budgets or any(budget <= 0 for budget in budgets):
         raise ValueError("budgets must contain positive integers")
+    excluded_methods = _normalise_excluded_methods(exclude_methods)
 
     selected = select_latest_records(records, animal, split_protocol)
+    registry = PLOT_SERIES if descriptor_family is None else DESCRIPTOR_PLOT_SERIES[descriptor_family]
     by_key = {
         (
             str(record.get("method_key") or ""),
@@ -126,7 +232,9 @@ def prepare_series_data(
         for record in selected
     }
     result: list[dict[str, Any]] = []
-    for series in PLOT_SERIES:
+    for series in registry:
+        if _series_method_family(series) in excluded_methods:
+            continue
         key = _series_key(series)
         values = [
             _finite_float(by_key.get((*key, budget), {}).get(metric))
@@ -149,6 +257,25 @@ def _panel_ylim(series_data: Sequence[Mapping[str, Any]]) -> tuple[float, float]
     return lower - margin, upper + margin
 
 
+def _resolve_plot_style(
+    style: str,
+    *,
+    x_scale: str | None,
+    shared_y: bool | None,
+) -> dict[str, Any]:
+    if style not in PLOT_STYLES:
+        valid = ", ".join(PLOT_STYLES)
+        raise ValueError(f"unsupported plot style {style!r}; choose one of: {valid}")
+    if x_scale not in {None, "log", "categorical"}:
+        raise ValueError("x_scale must be 'log' or 'categorical'")
+    resolved = dict(PLOT_STYLE_DEFAULTS[style])
+    if x_scale is not None:
+        resolved["x_scale"] = x_scale
+    if shared_y is not None:
+        resolved["shared_y"] = bool(shared_y)
+    return resolved
+
+
 def render_metric_figure(
     records: Iterable[Mapping[str, Any]],
     *,
@@ -156,6 +283,12 @@ def render_metric_figure(
     metric: str,
     budgets: Sequence[int] = DEFAULT_PLOT_BUDGETS,
     split_protocol: str | None = None,
+    descriptor_family: str | None = None,
+    style: str = "paper",
+    x_scale: str | None = None,
+    shared_y: bool | None = None,
+    label_endpoints: bool = False,
+    exclude_methods: Sequence[str] | None = None,
 ):
     """Build a matplotlib figure without saving it.
 
@@ -167,23 +300,32 @@ def render_metric_figure(
         raise ValueError(f"unsupported metric {metric!r}; choose one of: {valid}")
     import matplotlib.pyplot as plt
 
+    style_config = _resolve_plot_style(style, x_scale=x_scale, shared_y=shared_y)
+    excluded_methods = _normalise_excluded_methods(exclude_methods)
+
     records = list(records)
     animals = list(animals)
     if not animals:
         raise ValueError("at least one animal is required")
     columns = min(3, max(1, len(animals)))
     rows = math.ceil(len(animals) / columns)
-    figure, axes = plt.subplots(
-        rows,
-        columns,
-        figsize=(5.3 * columns, 4.25 * rows),
-        squeeze=False,
-    )
+    with plt.rc_context(PLOT_RC_PARAMS[style]):
+        figure, axes = plt.subplots(
+            rows,
+            columns,
+            figsize=(style_config["figsize"][0] * columns, style_config["figsize"][1] * rows),
+            squeeze=False,
+        )
+        figure.patch.set_facecolor("white")
     axes_flat = [axis for row in axes for axis in row]
     handles = []
     labels = []
     budget_values = tuple(int(budget) for budget in budgets)
-    x_values = list(range(len(budget_values)))
+    if style_config["x_scale"] == "log":
+        x_values = list(budget_values)
+    else:
+        x_values = list(range(len(budget_values)))
+    panel_data: list[tuple[Any, list[dict[str, Any]]]] = []
     for index, animal in enumerate(animals):
         axis = axes_flat[index]
         series_data = prepare_series_data(
@@ -192,7 +334,15 @@ def render_metric_figure(
             metric=metric,
             budgets=budget_values,
             split_protocol=split_protocol,
+            descriptor_family=descriptor_family,
+            exclude_methods=excluded_methods,
         )
+        panel_data.append((axis, series_data))
+
+    all_series_data = [series for _, series_data in panel_data for series in series_data]
+    shared_limits = _panel_ylim(all_series_data) if style_config["shared_y"] else None
+    for index, (axis, series_data) in enumerate(panel_data):
+        animal = animals[index]
         for series in series_data:
             plotted_x = [x for x, value in zip(x_values, series["values"]) if value is not None]
             plotted_y = [value * 100.0 for value in series["values"] if value is not None]
@@ -203,22 +353,49 @@ def render_metric_figure(
                 color=series["color"],
                 marker=series["marker"],
                 linestyle=series["linestyle"],
-                linewidth=2.0,
-                markersize=6.5,
+                linewidth=style_config["line_width"],
+                markersize=style_config["marker_size"],
                 markerfacecolor="white",
                 markeredgewidth=1.5,
             )[0]
             if series["name"] not in labels:
                 handles.append(line)
                 labels.append(series["name"])
-        axis.set_title(animal, fontsize=13, fontweight="bold")
-        axis.set_xlabel("k")
-        axis.set_ylabel("Accuracy (%)")
-        axis.set_xticks(x_values, [str(budget) for budget in budget_values])
-        axis.grid(axis="y", color="#d9d9d9", linewidth=0.8)
-        axis.grid(axis="x", color="#eeeeee", linewidth=0.6)
+            if label_endpoints:
+                valid_points = [
+                    (x, value * 100.0)
+                    for x, value in zip(x_values, series["values"])
+                    if value is not None
+                ]
+                if valid_points:
+                    last_x, last_y = valid_points[-1]
+                    axis.annotate(
+                        series["name"],
+                        xy=(last_x, last_y),
+                        xytext=(5, 0),
+                        textcoords="offset points",
+                        color=series["color"],
+                        fontsize=max(style_config["tick_size"] - 1, 7),
+                        va="center",
+                    )
+        axis.set_title(animal, fontsize=style_config["title_size"], fontweight="bold", pad=8)
+        axis.set_xlabel("Candidate budget ($k$)", fontsize=style_config["label_size"])
+        axis.set_ylabel("Accuracy (%)", fontsize=style_config["label_size"])
+        if style_config["x_scale"] == "log":
+            axis.set_xscale("log", base=10)
+            axis.set_xlim(min(budget_values) * 0.8, max(budget_values) * 1.25)
+        axis.set_xticks(x_values, [str(budget) for budget in budget_values],
+                        fontsize=style_config["tick_size"])
+        axis.tick_params(axis="y", labelsize=style_config["tick_size"])
+        axis.grid(axis="y", color="#d9d9d9", linewidth=0.75)
+        if style_config["x_scale"] == "log":
+            axis.grid(axis="x", which="major", color="#eeeeee", linewidth=0.6)
+        else:
+            axis.grid(axis="x", color="#eeeeee", linewidth=0.6)
         axis.set_axisbelow(True)
-        limits = _panel_ylim(series_data)
+        axis.spines["top"].set_visible(False)
+        axis.spines["right"].set_visible(False)
+        limits = shared_limits or _panel_ylim(series_data)
         if limits is not None:
             axis.set_ylim(*limits)
         if not series_data:
@@ -227,9 +404,11 @@ def render_metric_figure(
     for axis in axes_flat[len(animals):]:
         axis.set_visible(False)
     title = f"{PLOT_METRICS[metric]} versus k"
+    if descriptor_family:
+        title += f" ({descriptor_family} descriptor fine-tuning)"
     if split_protocol:
         title += f" ({split_protocol})"
-    figure.suptitle(title, fontsize=16, fontweight="bold")
+    figure.suptitle(title, fontsize=style_config["title_size"] + 2, fontweight="bold")
     if handles:
         figure.legend(
             handles,
@@ -239,7 +418,7 @@ def render_metric_figure(
             frameon=False,
             bbox_to_anchor=(0.5, 0.005),
         )
-    figure.tight_layout(rect=(0, 0.10 if handles else 0.02, 1, 0.94))
+    figure.tight_layout(rect=(0, 0.13 if handles else 0.04, 1, 0.93))
     return figure
 
 
@@ -252,9 +431,16 @@ def plot_metrics(
     metrics: Sequence[str] = DEFAULT_PLOT_METRICS,
     budgets: Sequence[int] = DEFAULT_PLOT_BUDGETS,
     formats: Sequence[str] = ("png", "pdf"),
+    descriptor_families: Sequence[str] | None = None,
+    style: str = "paper",
+    x_scale: str | None = None,
+    shared_y: bool | None = None,
+    label_endpoints: bool = False,
+    exclude_methods: Sequence[str] | None = None,
 ) -> list[Path]:
     """Render selected metrics for the requested or automatically discovered animals."""
     records = discover_records(experiment_root)
+    excluded_methods = _normalise_excluded_methods(exclude_methods)
     discovered = discover_animals(records)
     selected_animals = list(animals) if animals else discovered
     missing_animals = sorted(set(selected_animals) - set(discovered))
@@ -344,14 +530,67 @@ def plot_metrics(
                 metric=metric,
                 budgets=budgets,
                 split_protocol=split_protocol,
+                style=style,
+                x_scale=x_scale,
+                shared_y=shared_y,
+                label_endpoints=label_endpoints,
+                exclude_methods=excluded_methods,
             )
             try:
                 for fmt in formats:
                     output_path = output_dir / f"{metric}_vs_k{suffix}.{fmt}"
-                    figure.savefig(output_path, dpi=300, bbox_inches="tight")
+                    figure.savefig(
+                        output_path,
+                        dpi=600 if fmt == "png" else 300,
+                        bbox_inches="tight",
+                        facecolor="white",
+                        metadata={"Creator": "scripts/plot_paper_figures.py"},
+                    )
                     outputs.append(output_path)
             finally:
                 import matplotlib.pyplot as plt
 
                 plt.close(figure)
+        available_descriptor_families = [
+            family for family in (descriptor_families or DESCRIPTOR_PLOT_SERIES)
+            if family in DESCRIPTOR_PLOT_SERIES
+            and family not in excluded_methods
+            and any(
+                record.get("animal") in group_animals
+                and record.get("split_protocol") == (split_protocol or "")
+                and _normalise_checkpoint(record.get("checkpoint")) == "descriptor-fine-tuned"
+                and str(record.get("matcher", "")).lower() == ("rdd-lightglue" if family == "rdd" else "loma")
+                for record in records
+            )
+        ]
+        for family in available_descriptor_families:
+            for metric in selected_metrics:
+                figure = render_metric_figure(
+                    records,
+                    animals=group_animals,
+                    metric=metric,
+                    budgets=budgets,
+                    split_protocol=split_protocol,
+                    descriptor_family=family,
+                    style=style,
+                    x_scale=x_scale,
+                    shared_y=shared_y,
+                    label_endpoints=label_endpoints,
+                    exclude_methods=excluded_methods,
+                )
+                try:
+                    for fmt in formats:
+                        output_path = output_dir / f"descriptor_{family}_{metric}_vs_k{suffix}.{fmt}"
+                        figure.savefig(
+                            output_path,
+                            dpi=600 if fmt == "png" else 300,
+                            bbox_inches="tight",
+                            facecolor="white",
+                            metadata={"Creator": "scripts/plot_paper_figures.py"},
+                        )
+                        outputs.append(output_path)
+                finally:
+                    import matplotlib.pyplot as plt
+
+                    plt.close(figure)
     return outputs

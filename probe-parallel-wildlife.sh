@@ -15,8 +15,8 @@
 set -euo pipefail
 
 MAX_CONCURRENT_JOBS="${MAX_CONCURRENT_JOBS:-12}"
-CANDIDATE_K_VALUES=(10)
-# CANDIDATE_K_VALUES=(50 100 250 500 1000)
+# CANDIDATE_K_VALUES=(10)
+CANDIDATE_K_VALUES=(50 100 250 500 1000)
 
 # Leave empty to derive paths from the single active dataset profile. Explicit
 # overrides remain supported, but must belong to that profile's animal.
@@ -25,6 +25,8 @@ CHECKPOINT_ROOT="${CHECKPOINT_ROOT:-/shared/sets/datasets/vision/czechlynx/check
 CHECKPOINT_EPOCH="${CHECKPOINT_EPOCH:-299}"
 LOMA_CUSTOM_CHECKPOINT_PATH="${LOMA_CUSTOM_CHECKPOINT_PATH:-}"
 RDD_CUSTOM_CHECKPOINT_PATH="${RDD_CUSTOM_CHECKPOINT_PATH:-}"
+DESCRIPTOR_LOMA_CUSTOM_CHECKPOINT_PATH="${DESCRIPTOR_LOMA_CUSTOM_CHECKPOINT_PATH:-}"
+DESCRIPTOR_RDD_CUSTOM_CHECKPOINT_PATH="${DESCRIPTOR_RDD_CUSTOM_CHECKPOINT_PATH:-}"
 
 SCRIPT_SOURCE_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 SCRIPT_DIR="${SLURM_SUBMIT_DIR:-$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)}"
@@ -38,9 +40,9 @@ MANIFEST_HELPER="${SCRIPT_DIR}/scripts/probe_parallel_manifest.py"
 LAUNCHER_NAME="probe-parallel-wildlife.sh"
 LAUNCHER_PATH="${SCRIPT_DIR}/${LAUNCHER_NAME}"
 
-# profile|dataset|animal|root|metadata|label|mask|no_background|image_variant|split_col|database_split|query_split|calibration_size|loma_checkpoint_dir|rdd_checkpoint_dir|loma_epoch|rdd_epoch
+# profile|dataset|animal|root|metadata|label|mask|no_background|image_variant|split_col|database_split|query_split|calibration_size|loma_checkpoint_dir|rdd_checkpoint_dir|loma_epoch|rdd_epoch|descriptor_loma_checkpoint|descriptor_rdd_checkpoint|descriptor_owner|evaluation_animal
 DATASET_PROFILES=(
-    "zindi|WildlifeReID-10k|ZindiTurtleRecall|/shared/sets/datasets/vision/czechlynx/WildlifeReID-10k|metadata_no_background/metadata_ZindiTurtleRecall.csv|identity|mask|false|no_background|split|train|test|100"
+    # "zindi|WildlifeReID-10k|ZindiTurtleRecall|/shared/sets/datasets/vision/czechlynx/WildlifeReID-10k|metadata_no_background/metadata_ZindiTurtleRecall.csv|identity|mask|false|no_background|split|train|test|100||||"
     # Uncomment exactly one profile at a time.
     # "nyala|WildlifeReID-10k|NyalaData|/shared/sets/datasets/vision/czechlynx/WildlifeReID-10k|metadata_no_background/metadata_NyalaData.csv|identity|mask|false|no_background|split|train|test|100"
     # "whaleshark|WildlifeReID-10k|WhaleSharkID|/shared/sets/datasets/vision/czechlynx/WildlifeReID-10k|metadata_no_background/metadata_WhaleSharkID.csv|identity|mask|false|no_background|split|train|test|100"
@@ -49,7 +51,7 @@ DATASET_PROFILES=(
     # four fields select the known checkpoint layout/epoch for each animal.
     # "atrw|WildlifeReID-10k|ATRW|/shared/sets/datasets/vision/czechlynx/WildlifeReID-10k|metadata_mdsplit_no_background/metadata_ATRW.csv|identity|mask|false|no_background|split|train|test|100|legacy|legacy|299|299"
     # "giraffes|WildlifeReID-10k|Giraffes|/shared/sets/datasets/vision/czechlynx/WildlifeReID-10k|metadata_mdsplit_no_background/metadata_Giraffes.csv|identity|mask|false|no_background|split|train|test|100|legacy|legacy|299|299"
-    # "leopardid2022|WildlifeReID-10k|LeopardID2022|/shared/sets/datasets/vision/czechlynx/WildlifeReID-10k|metadata_mdsplit_no_background/metadata_LeopardID2022.csv|identity|mask|false|no_background|split|train|test|100|legacy|legacy|299|299"
+    "leopardid2022|WildlifeReID-10k|LeopardID2022|/shared/sets/datasets/vision/czechlynx/WildlifeReID-10k|metadata_mdsplit_no_background/metadata_LeopardID2022.csv|identity|mask|false|no_background|split|train|test|100|legacy|legacy|299|299"
     # "hyenaid2022|WildlifeReID-10k|HyenaID2022|/shared/sets/datasets/vision/czechlynx/WildlifeReID-10k|metadata_mdsplit_no_background/metadata_HyenaID2022.csv|identity|mask|false|no_background|split|train|test|100|legacy|legacy|299|299"
     # "giraffezebraid|WildlifeReID-10k|GiraffeZebraID|/shared/sets/datasets/vision/czechlynx/WildlifeReID-10k|metadata_mdsplit_no_background/metadata_GiraffeZebraID.csv|identity|mask|false|no_background|split|train|test|100|legacy|legacy|299|299"
     # "cowdataset|WildlifeReID-10k|CowDataset|/shared/sets/datasets/vision/czechlynx/WildlifeReID-10k|metadata_mdsplit_no_background/metadata_CowDataset.csv|identity|mask|false|no_background|split|train|test|100|legacy|legacy|299|299"
@@ -57,16 +59,19 @@ DATASET_PROFILES=(
     # "seastarreid2023|WildlifeReID-10k|SeaStarReID2023|/shared/sets/datasets/vision/czechlynx/WildlifeReID-10k|metadata_mdsplit_no_background/metadata_SeaStarReID2023.csv|identity|mask|false|no_background|split|train|test|100|legacy|legacy|299|299"
 )
 
-# method|matcher|checkpoint_label|checkpoint_path|train_mode|class_weighting
+# method|matcher|checkpoint_label|checkpoint_path|checkpoint_components|train_mode|class_weighting
+# Legacy row spelling compatibility: linear_probe|-|default|-|classifier|weighted
+# linear_probe|-|default|-|partial|weighted
+# linear_probe|-|default|-|all|weighted
 VARIANTS=(
-    # "cosine|-|default|-|-"
-    # "wildfusion|-|default|-|-"
-    # "local_lightglue|-|default|-|-"
-    "linear_probe|-|default|-|classifier|weighted"
+    # "cosine|-|default|-|-|-|-"
+    # "wildfusion|-|default|-|-|-|-"
+    # "local_lightglue|-|default|-|-|-|-"
+    # "linear_probe|-|default|-|-|classifier|weighted"
     # "linear_probe|-|default|-|classifier|unweighted"
     # "linear_probe|-|default|-|partial|weighted"
     # "linear_probe|-|default|-|partial|unweighted"
-    "linear_probe|-|default|-|all|weighted"
+    # "linear_probe|-|default|-|-|all|weighted"
     # "linear_probe|-|default|-|all|unweighted"
     # "efficient_probe|-|default|-|classifier|weighted"
     # "efficient_probe|-|default|-|classifier|unweighted"
@@ -74,10 +79,12 @@ VARIANTS=(
     # "efficient_probe|-|default|-|partial|unweighted"
     # "efficient_probe|-|default|-|all|weighted"
     # "efficient_probe|-|default|-|all|unweighted"
-    # "vismatch|loma|default|-|-"
-    # "vismatch|loma|custom|${LOMA_CUSTOM_CHECKPOINT_PATH}|-"
-    # "vismatch|rdd-lightglue|default|-|-"
-    # "vismatch|rdd-lightglue|custom|${RDD_CUSTOM_CHECKPOINT_PATH}|-"
+    # "vismatch|loma|default|-|-|-|-"
+    # "vismatch|loma|custom|${LOMA_CUSTOM_CHECKPOINT_PATH}|matcher_only|-|-"
+    # "vismatch|loma|descriptor-fine-tuned|${DESCRIPTOR_LOMA_CUSTOM_CHECKPOINT_PATH}|descriptor_only|-|-"
+    # "vismatch|rdd-lightglue|default|-|-|-|-"
+    "vismatch|rdd-lightglue|custom|${RDD_CUSTOM_CHECKPOINT_PATH}|matcher_only|-|-"
+    # "vismatch|rdd-lightglue|descriptor-fine-tuned|${DESCRIPTOR_RDD_CUSTOM_CHECKPOINT_PATH}|descriptor_only|-|-"
 )
 
 die() { echo "${LAUNCHER_NAME}: $*" >&2; exit 1; }
@@ -89,7 +96,7 @@ if (( ${#DATASET_PROFILES[@]} != 1 )); then
     die "exactly one DATASET_PROFILES entry must be active; found ${#DATASET_PROFILES[@]}"
 fi
 
-IFS='|' read -r ACTIVE_PROFILE_ID ACTIVE_DATASET_NAME ACTIVE_ANIMAL ACTIVE_DATASET_ROOT ACTIVE_METADATA_FILE ACTIVE_LABEL_COL ACTIVE_MASK_COL ACTIVE_NO_BACKGROUND ACTIVE_IMAGE_VARIANT ACTIVE_SPLIT_COL ACTIVE_DATABASE_SPLIT ACTIVE_QUERY_SPLIT ACTIVE_CALIBRATION_SIZE ACTIVE_LOMA_CHECKPOINT_DIR ACTIVE_RDD_CHECKPOINT_DIR ACTIVE_LOMA_EPOCH ACTIVE_RDD_EPOCH <<< "${DATASET_PROFILES[0]}"
+IFS='|' read -r ACTIVE_PROFILE_ID ACTIVE_DATASET_NAME ACTIVE_ANIMAL ACTIVE_DATASET_ROOT ACTIVE_METADATA_FILE ACTIVE_LABEL_COL ACTIVE_MASK_COL ACTIVE_NO_BACKGROUND ACTIVE_IMAGE_VARIANT ACTIVE_SPLIT_COL ACTIVE_DATABASE_SPLIT ACTIVE_QUERY_SPLIT ACTIVE_CALIBRATION_SIZE ACTIVE_LOMA_CHECKPOINT_DIR ACTIVE_RDD_CHECKPOINT_DIR ACTIVE_LOMA_EPOCH ACTIVE_RDD_EPOCH ACTIVE_DESCRIPTOR_LOMA_CHECKPOINT ACTIVE_DESCRIPTOR_RDD_CHECKPOINT ACTIVE_DESCRIPTOR_OWNER ACTIVE_EVALUATION_ANIMAL <<< "${DATASET_PROFILES[0]}"
 if [[ -n "${animal_name}" && "${animal_name}" != "${ACTIVE_ANIMAL}" ]]; then
     die "animal_name='${animal_name}' does not match the active profile animal '${ACTIVE_ANIMAL}'"
 fi
@@ -103,16 +110,20 @@ RDD_CUSTOM_CHECKPOINT_PATH="${RDD_CUSTOM_CHECKPOINT_PATH:-${CHECKPOINT_ROOT}/${a
 
 TASKS=()
 for profile in "${DATASET_PROFILES[@]}"; do
-    IFS='|' read -r PROFILE_ID DATASET_NAME ANIMAL DATASET_ROOT METADATA_FILE LABEL_COL MASK_COL NO_BACKGROUND IMAGE_VARIANT SPLIT_COL DATABASE_SPLIT_VALUE QUERY_SPLIT_VALUE CALIBRATION_SIZE PROFILE_LOMA_CHECKPOINT_DIR PROFILE_RDD_CHECKPOINT_DIR PROFILE_LOMA_EPOCH PROFILE_RDD_EPOCH <<< "${profile}"
+    IFS='|' read -r PROFILE_ID DATASET_NAME ANIMAL DATASET_ROOT METADATA_FILE LABEL_COL MASK_COL NO_BACKGROUND IMAGE_VARIANT SPLIT_COL DATABASE_SPLIT_VALUE QUERY_SPLIT_VALUE CALIBRATION_SIZE PROFILE_LOMA_CHECKPOINT_DIR PROFILE_RDD_CHECKPOINT_DIR PROFILE_LOMA_EPOCH PROFILE_RDD_EPOCH PROFILE_DESCRIPTOR_LOMA_CHECKPOINT PROFILE_DESCRIPTOR_RDD_CHECKPOINT PROFILE_DESCRIPTOR_OWNER PROFILE_EVALUATION_ANIMAL <<< "${profile}"
     RDD_OWNER="${ANIMAL}"; RDD_PROFILE_CHECKPOINT="${RDD_CUSTOM_CHECKPOINT_PATH}"
     LOMA_OWNER="${ANIMAL}"; LOMA_PROFILE_CHECKPOINT="${LOMA_CUSTOM_CHECKPOINT_PATH}"
+    PROFILE_DESCRIPTOR_LOMA_CHECKPOINT="${PROFILE_DESCRIPTOR_LOMA_CHECKPOINT:-${DESCRIPTOR_LOMA_CUSTOM_CHECKPOINT_PATH}}"
+    PROFILE_DESCRIPTOR_RDD_CHECKPOINT="${PROFILE_DESCRIPTOR_RDD_CHECKPOINT:-${DESCRIPTOR_RDD_CUSTOM_CHECKPOINT_PATH}}"
+    PROFILE_DESCRIPTOR_OWNER="${PROFILE_DESCRIPTOR_OWNER:-${ANIMAL}}"
+    PROFILE_EVALUATION_ANIMAL="${PROFILE_EVALUATION_ANIMAL:-${ANIMAL}}"
     for candidate_k in "${CANDIDATE_K_VALUES[@]}"; do
         for variant in "${VARIANTS[@]}"; do
-            IFS='|' read -r METHOD MATCHER CHECKPOINT_LABEL CHECKPOINT_PATH TRAIN_MODE CLASS_WEIGHTING <<< "${variant}"
+            IFS='|' read -r METHOD MATCHER CHECKPOINT_LABEL CHECKPOINT_PATH CHECKPOINT_COMPONENTS TRAIN_MODE CLASS_WEIGHTING <<< "${variant}"
             if [[ ( "${METHOD}" == linear_probe || "${METHOD}" == efficient_probe ) && "${candidate_k}" != "${CANDIDATE_K_VALUES[0]}" ]]; then
                 continue
             fi
-            CHECKPOINT_OWNER=-; CHECKPOINT_COMPONENTS=-; LOMA_ARCH=-
+            CHECKPOINT_OWNER=-; CHECKPOINT_COMPONENTS="${CHECKPOINT_COMPONENTS:--}"; LOMA_ARCH=-
             [[ -n "${TRAIN_MODE}" ]] || TRAIN_MODE=-
             [[ -n "${CLASS_WEIGHTING}" ]] || CLASS_WEIGHTING=-
             if [[ ( "${METHOD}" == linear_probe || "${METHOD}" == efficient_probe ) && "${TRAIN_MODE}" != classifier && "${TRAIN_MODE}" != partial && "${TRAIN_MODE}" != all ]]; then
@@ -127,22 +138,30 @@ for profile in "${DATASET_PROFILES[@]}"; do
             if [[ "${METHOD}" != linear_probe && "${METHOD}" != efficient_probe && "${CLASS_WEIGHTING}" != - ]]; then
                 die "only classifier-probe variants may specify class_weighting; got '${CLASS_WEIGHTING}' for ${METHOD}"
             fi
-            if [[ "${CHECKPOINT_LABEL}" == custom ]]; then
-                CHECKPOINT_COMPONENTS=matcher_only
-                if [[ "${MATCHER}" == loma ]]; then CHECKPOINT_OWNER="${LOMA_OWNER}"; CHECKPOINT_PATH="${LOMA_PROFILE_CHECKPOINT}"; LOMA_ARCH=LoMa-B; fi
-                if [[ "${MATCHER}" == rdd-lightglue ]]; then CHECKPOINT_OWNER="${RDD_OWNER}"; CHECKPOINT_PATH="${RDD_PROFILE_CHECKPOINT}"; fi
+            if [[ "${CHECKPOINT_LABEL}" == custom || "${CHECKPOINT_LABEL}" == descriptor-fine-tuned ]]; then
+                if [[ "${MATCHER}" == loma ]]; then
+                    CHECKPOINT_OWNER="${LOMA_OWNER}"; LOMA_ARCH=LoMa-B
+                    if [[ "${CHECKPOINT_LABEL}" == descriptor-fine-tuned ]]; then CHECKPOINT_PATH="${PROFILE_DESCRIPTOR_LOMA_CHECKPOINT}"; CHECKPOINT_OWNER="${PROFILE_DESCRIPTOR_OWNER}"; else CHECKPOINT_PATH="${LOMA_PROFILE_CHECKPOINT}"; fi
+                fi
+                if [[ "${MATCHER}" == rdd-lightglue ]]; then
+                    CHECKPOINT_OWNER="${RDD_OWNER}"
+                    if [[ "${CHECKPOINT_LABEL}" == descriptor-fine-tuned ]]; then CHECKPOINT_PATH="${PROFILE_DESCRIPTOR_RDD_CHECKPOINT}"; CHECKPOINT_OWNER="${PROFILE_DESCRIPTOR_OWNER}"; else CHECKPOINT_PATH="${RDD_PROFILE_CHECKPOINT}"; fi
+                fi
+                [[ "${METHOD}" == vismatch ]] || die "custom checkpoint variants are only valid for vismatch"
+                [[ "${CHECKPOINT_COMPONENTS}" == matcher_only || "${CHECKPOINT_COMPONENTS}" == descriptor_only || "${CHECKPOINT_COMPONENTS}" == full ]] || die "${CHECKPOINT_LABEL} must declare matcher_only, descriptor_only, or full"
+                [[ -n "${CHECKPOINT_PATH}" && "${CHECKPOINT_PATH}" != "-" ]] || die "${PROFILE_ID} has no explicit ${MATCHER} custom checkpoint"
             elif [[ "${MATCHER}" == loma ]]; then
                 LOMA_ARCH=LoMa-B
             fi
-            TASKS+=("${PROFILE_ID}|${DATASET_NAME}|${ANIMAL}|${DATASET_ROOT}|${METADATA_FILE}|${LABEL_COL}|${MASK_COL}|${NO_BACKGROUND}|${IMAGE_VARIANT}|${SPLIT_COL}|${DATABASE_SPLIT_VALUE}|${QUERY_SPLIT_VALUE}|${CALIBRATION_SIZE}|${METHOD}|${MATCHER}|${CHECKPOINT_LABEL}|${CHECKPOINT_PATH}|${CHECKPOINT_OWNER}|${CHECKPOINT_COMPONENTS}|${LOMA_ARCH}|${TRAIN_MODE}|${CLASS_WEIGHTING}|${candidate_k}")
+            TASKS+=("${PROFILE_ID}|${DATASET_NAME}|${ANIMAL}|${DATASET_ROOT}|${METADATA_FILE}|${LABEL_COL}|${MASK_COL}|${NO_BACKGROUND}|${IMAGE_VARIANT}|${SPLIT_COL}|${DATABASE_SPLIT_VALUE}|${QUERY_SPLIT_VALUE}|${CALIBRATION_SIZE}|${METHOD}|${MATCHER}|${CHECKPOINT_LABEL}|${CHECKPOINT_PATH}|${CHECKPOINT_OWNER}|${CHECKPOINT_COMPONENTS}|${LOMA_ARCH}|${TRAIN_MODE}|${CLASS_WEIGHTING}|${candidate_k}|${PROFILE_EVALUATION_ANIMAL}")
         done
     done
 done
 
 print_task() {
     local i="$1" t="$2"
-    IFS='|' read -r profile dataset animal root metadata label mask no_background image_variant split_col db_split query_split calibration method matcher checkpoint_label checkpoint_path owner components loma_arch train_mode class_weighting candidate <<< "$t"
-    printf 'index=%s profile=%s dataset=%s candidate_k=%s method=%s matcher=%s train_mode=%s class_weighting=%s checkpoint=%s checkpoint_owner=%s path=%s\n' "$i" "$profile" "$dataset" "$candidate" "$method" "$matcher" "$train_mode" "$class_weighting" "$checkpoint_label" "$owner" "$checkpoint_path"
+    IFS='|' read -r profile dataset animal root metadata label mask no_background image_variant split_col db_split query_split calibration method matcher checkpoint_label checkpoint_path owner components loma_arch train_mode class_weighting candidate evaluation_animal <<< "$t"
+    printf 'index=%s profile=%s dataset=%s evaluation_animal=%s candidate_k=%s method=%s matcher=%s train_mode=%s class_weighting=%s checkpoint=%s components=%s checkpoint_owner=%s path=%s\n' "$i" "$profile" "$dataset" "$evaluation_animal" "$candidate" "$method" "$matcher" "$train_mode" "$class_weighting" "$checkpoint_label" "$components" "$owner" "$checkpoint_path"
 }
 
 validate_positive_integer MAX_CONCURRENT_JOBS "${MAX_CONCURRENT_JOBS}"
@@ -181,8 +200,8 @@ if [[ -z "${PROBE_PARALLEL_MANIFEST:-}" ]]; then
     [[ "${PROBE_PARALLEL_DRY_RUN:-0}" == 1 || "${1:-}" == --dry-run ]] || die "PROBE_PARALLEL_MANIFEST is required for array tasks"
     (( TASK_INDEX < ${#TASKS[@]} )) || die "array task index ${TASK_INDEX} is outside 0..$((${#TASKS[@]} - 1))"
     CURRENT_TASK="${TASKS[${TASK_INDEX}]}"
-    IFS='|' read -r PROFILE_ID DATASET_NAME ANIMAL DATASET_ROOT METADATA_FILE LABEL_COL MASK_COL NO_BACKGROUND IMAGE_VARIANT SPLIT_COL DATABASE_SPLIT_VALUE QUERY_SPLIT_VALUE CALIBRATION_SIZE METHOD MATCHER CHECKPOINT_LABEL CHECKPOINT_PATH CHECKPOINT_OWNER CHECKPOINT_COMPONENTS LOMA_ARCH TRAIN_MODE CLASS_WEIGHTING CANDIDATE_K <<< "${CURRENT_TASK}"
-    CHECKPOINT_SOURCE=default; [[ "${CHECKPOINT_LABEL}" == custom ]] && CHECKPOINT_SOURCE=custom
+    IFS='|' read -r PROFILE_ID DATASET_NAME ANIMAL DATASET_ROOT METADATA_FILE LABEL_COL MASK_COL NO_BACKGROUND IMAGE_VARIANT SPLIT_COL DATABASE_SPLIT_VALUE QUERY_SPLIT_VALUE CALIBRATION_SIZE METHOD MATCHER CHECKPOINT_LABEL CHECKPOINT_PATH CHECKPOINT_OWNER CHECKPOINT_COMPONENTS LOMA_ARCH TRAIN_MODE CLASS_WEIGHTING CANDIDATE_K EVALUATION_ANIMAL <<< "${CURRENT_TASK}"
+    CHECKPOINT_SOURCE=default; [[ "${CHECKPOINT_LABEL}" == custom || "${CHECKPOINT_LABEL}" == descriptor-fine-tuned ]] && CHECKPOINT_SOURCE=custom
     if [[ "${CHECKPOINT_SOURCE}" == custom && ! -e "${CHECKPOINT_PATH}" ]]; then CHECKPOINT_DISPLAY="${MATCHER}"; [[ "${MATCHER}" == rdd-lightglue ]] && CHECKPOINT_DISPLAY="RDD-LightGlue"; [[ "${MATCHER}" == loma ]] && CHECKPOINT_DISPLAY="LoMa"; die "${CHECKPOINT_DISPLAY} custom checkpoint does not exist: ${CHECKPOINT_PATH}"; fi
     CONFIG_SNAPSHOT_PATH="${CONFIG_FILE}"; SUBMISSION_ID=local-dry-run; CHECKPOINT_SHA256=
 else
@@ -203,8 +222,8 @@ else
 fi
 
 LOG_DATASET="$(sanitize_component "${DATASET_NAME}")"; LOG_ANIMAL="$(sanitize_component "${ANIMAL}")"
-IFS='|' read -r _ _ _ _ _ _ _ _ _ _ _ _ _ METHOD MATCHER CHECKPOINT_LABEL CHECKPOINT_PATH CHECKPOINT_OWNER CHECKPOINT_COMPONENTS LOMA_ARCH TRAIN_MODE CLASS_WEIGHTING CANDIDATE_K <<< "${CURRENT_TASK:-${PROFILE_ID}|${DATASET_NAME}|${ANIMAL}|${DATASET_ROOT}|${METADATA_FILE}|${LABEL_COL}|${MASK_COL}|${NO_BACKGROUND}|${IMAGE_VARIANT}|${SPLIT_COL}|${DATABASE_SPLIT_VALUE}|${QUERY_SPLIT_VALUE}|${CALIBRATION_SIZE}|${METHOD}|${MATCHER}|${CHECKPOINT_LABEL}|${CHECKPOINT_PATH}|${CHECKPOINT_OWNER}|${CHECKPOINT_COMPONENTS}|${LOMA_ARCH}|${TRAIN_MODE}|${CLASS_WEIGHTING}|${CANDIDATE_K}}"
-CURRENT_TASK="${PROFILE_ID}|${DATASET_NAME}|${ANIMAL}|${DATASET_ROOT}|${METADATA_FILE}|${LABEL_COL}|${MASK_COL}|${NO_BACKGROUND}|${IMAGE_VARIANT}|${SPLIT_COL}|${DATABASE_SPLIT_VALUE}|${QUERY_SPLIT_VALUE}|${CALIBRATION_SIZE}|${METHOD}|${MATCHER}|${CHECKPOINT_LABEL}|${CHECKPOINT_PATH}|${CHECKPOINT_OWNER}|${CHECKPOINT_COMPONENTS}|${LOMA_ARCH}|${TRAIN_MODE}|${CLASS_WEIGHTING}|${CANDIDATE_K}"
+IFS='|' read -r _ _ _ _ _ _ _ _ _ _ _ _ _ METHOD MATCHER CHECKPOINT_LABEL CHECKPOINT_PATH CHECKPOINT_OWNER CHECKPOINT_COMPONENTS LOMA_ARCH TRAIN_MODE CLASS_WEIGHTING CANDIDATE_K EVALUATION_ANIMAL <<< "${CURRENT_TASK:-${PROFILE_ID}|${DATASET_NAME}|${ANIMAL}|${DATASET_ROOT}|${METADATA_FILE}|${LABEL_COL}|${MASK_COL}|${NO_BACKGROUND}|${IMAGE_VARIANT}|${SPLIT_COL}|${DATABASE_SPLIT_VALUE}|${QUERY_SPLIT_VALUE}|${CALIBRATION_SIZE}|${METHOD}|${MATCHER}|${CHECKPOINT_LABEL}|${CHECKPOINT_PATH}|${CHECKPOINT_OWNER}|${CHECKPOINT_COMPONENTS}|${LOMA_ARCH}|${TRAIN_MODE}|${CLASS_WEIGHTING}|${CANDIDATE_K}|${ANIMAL}}"
+CURRENT_TASK="${PROFILE_ID}|${DATASET_NAME}|${ANIMAL}|${DATASET_ROOT}|${METADATA_FILE}|${LABEL_COL}|${MASK_COL}|${NO_BACKGROUND}|${IMAGE_VARIANT}|${SPLIT_COL}|${DATABASE_SPLIT_VALUE}|${QUERY_SPLIT_VALUE}|${CALIBRATION_SIZE}|${METHOD}|${MATCHER}|${CHECKPOINT_LABEL}|${CHECKPOINT_PATH}|${CHECKPOINT_OWNER}|${CHECKPOINT_COMPONENTS}|${LOMA_ARCH}|${TRAIN_MODE}|${CLASS_WEIGHTING}|${CANDIDATE_K}|${EVALUATION_ANIMAL:-${ANIMAL}}"
 CHECKPOINT_SOURCE="${CHECKPOINT_SOURCE:-default}"
 
 PROBE_ARGS=(--config-dir "$(dirname -- "${CONFIG_SNAPSHOT_PATH}")" --config-name probe
@@ -220,7 +239,7 @@ fi
 if [[ "${METHOD}" == vismatch ]]; then
     PROBE_ARGS+=("benchmark.methods.vismatch.matcher=${MATCHER}")
     [[ "${MATCHER}" == loma ]] && PROBE_ARGS+=("benchmark.methods.vismatch.loma_arch=${LOMA_ARCH}")
-    if [[ "${CHECKPOINT_SOURCE}" == custom ]]; then PROBE_ARGS+=("benchmark.methods.vismatch.checkpoint_source=custom" "benchmark.methods.vismatch.checkpoint_path=${CHECKPOINT_PATH}" "benchmark.methods.vismatch.checkpoint_components=${CHECKPOINT_COMPONENTS}"); else PROBE_ARGS+=(benchmark.methods.vismatch.checkpoint_source=default); fi
+    if [[ "${CHECKPOINT_SOURCE}" == custom ]]; then PROBE_ARGS+=("benchmark.methods.vismatch.checkpoint_source=custom" "benchmark.methods.vismatch.checkpoint_path=${CHECKPOINT_PATH}" "benchmark.methods.vismatch.checkpoint_components=${CHECKPOINT_COMPONENTS}" "benchmark.methods.vismatch.checkpoint_owner=${CHECKPOINT_OWNER}" "benchmark.methods.vismatch.evaluation_animal=${EVALUATION_ANIMAL}"); else PROBE_ARGS+=(benchmark.methods.vismatch.checkpoint_source=default); fi
 fi
 
 printf 'Starting probe array task %s\n' "${TASK_INDEX}"; print_task "${TASK_INDEX}" "${CURRENT_TASK:-${TASKS[${TASK_INDEX}]}}"

@@ -81,7 +81,9 @@ launcher is reserved for WildlifeReID-10k profiles and must not gain a CzechLynx
 profile.
 Launcher regression tests derive their expected candidate budgets from the active launcher table, so intentional budget edits do not require changing the launcher itself.
 `--list-tasks` and `PROBE_PARALLEL_DRY_RUN=1` are safe non-executing inspection
-modes. Custom Vismatch tasks explicitly use `checkpoint_components=matcher_only`;
+modes. Custom Vismatch tasks explicitly declare their component mode;
+matcher fine-tuning uses `checkpoint_components=matcher_only` and descriptor
+fine-tuning uses `checkpoint_components=descriptor_only`;
 the selected launcher validates custom paths before submission and prints the
 complete Hydra command in each task log. CzechLynx custom checkpoint paths are
 stored per split; an open-split custom task fails closed if its path is missing or
@@ -89,6 +91,10 @@ does not belong to the declared animal. The supplied open profile defaults to
 the `czechlynx-time-open` checkpoint root at epoch 299, using the
 `loma-b-finetuned-legacy` and `rdd-finetuned-legacy` subdirectories. Split names appear in task manifests,
 metadata, log directories, and task filenames.
+Descriptor profiles may explicitly separate `evaluation_animal` from
+`checkpoint_owner` for cross-species tests. The immutable manifest validates that
+an owner-identifiable WildlifeReID-10k path matches the declared checkpoint owner;
+unidentifiable cross-species paths fail closed.
 Both CzechLynx profiles use `dataset.no_background=true` and
 `dataset.image_variant=no_background`, matching the shipped probe configuration;
 the launcher passes these values explicitly rather than inheriting them from a
@@ -131,9 +137,15 @@ finetune runs also retain `training_metrics.csv` and canonical checkpoints.
 populated for compatibility. Historical generated artifacts are never migrated or
 rewritten automatically.
 Accuracy-versus-`k` figures are generated with `scripts/plot_paper_figures.py`
-from the same completed run artifacts. It writes PNG/PDF figures under
-`reports/figures/`, uses categorical budgets `[10, 50, 100, 250, 500, 1000]`,
-and renders WildFusion plus default/fine-tuned LoMa and RDD-LightGlue series.
+from the same completed run artifacts. It writes publication-quality PNG/PDF
+figures under `reports/figures/`, uses a color-blind-safe palette and redundant
+line/marker encodings, and renders WildFusion plus default/fine-tuned LoMa and
+RDD-LightGlue series. The default `paper` style uses a logarithmic candidate
+budget axis and shared metric y-limits across panels; `presentation` and
+`diagnostic` styles are available for larger text or zoomed inspection.
+`--exclude-method wildfusion|rdd|loma` filters a method family, including both
+default and fine-tuned series; repeat the option for multiple exclusions. The
+same filter applies to the corresponding descriptor-family figures.
 Missing budgets are plotted as gaps; failed and incomplete runs are excluded.
 The default metric set includes Top-1, Top-5, Top-10, and balanced Top-1;
 `--metric` can select a subset.
@@ -158,6 +170,10 @@ are part of the table identity, so these variants are never collapsed into one
 row. The paper-facing checkpoint column labels them as
 `full fine-tuned`, `partial fine-tuned`, and `frozen`, respectively. Older
 artifacts without a readable mode are labeled `unknown` rather than guessed.
+The visible checkpoint cell also appends the loss policy for classifier probes,
+such as `frozen (weighted)` or `frozen (unweighted)`; the audit CSV retains the
+machine-readable `class_weighting` field. This prevents paired weighted and
+unweighted rows from appearing identical in manuscript tables.
 Full-gallery methods report `mAP`, while WildFusion and Vismatch report
 shortlist-aware `mAP@k`. Generated LaTeX wraps the wide tabular in
 `\resizebox{\linewidth}{!}{...}` and requires `graphicx` (normally already
@@ -168,6 +184,13 @@ They show Top-1/5/10, balanced Top-1, and primary compute runtime, while omittin
 mAP, mAP@k, and total runtime from the typeset fragments for readability. The CSV
 files are the audit records and retain the omitted metrics, total runtime, and
 provenance.
+Descriptor-only Vismatch runs are excluded from matcher tables and figures. When
+present, the exporter writes separate `<animal>_<split>_descriptor_rdd_*` and
+`<animal>_<split>_descriptor_loma_*` LaTeX/CSV files with the corresponding default
+matcher plus cosine/WildFusion context. `plot_paper_figures.py` writes separate
+`descriptor_rdd_*` and `descriptor_loma_*` figures. Descriptor and matcher
+fine-tuning must be reported separately; never merge their cache identities or
+same-budget gains.
 The manuscript template must provide `xcolor` for row colors and delta arrows.
 
 Probe timing uses separate fields for primary compute, matcher/reranking,
@@ -420,7 +443,7 @@ was 4.38e-05. The only ranking disagreement was a near-tie, so this result suppo
 behavioral equivalence but does not establish strict numerical identity.
 The shipped probe YAML may intentionally select another Stage-A method (currently wildfusion); this does not disable the independently selectable `vismatch` method.
 WildFusion and Local LightGlue derive their refinement `B` from `benchmark.candidate_k`; `local_batch_size` controls pair-processing batches, and `local_top_k` controls the ALIKED local keypoint budget. `local_top_k` defaults to 512 with `force_num_keypoints=True`; it is included in WildFusion cache/experiment identity so changing it does not reuse a different local-feature configuration.
-Custom Vismatch checkpoints are selected with `benchmark.methods.vismatch.checkpoint_source`, `checkpoint_path`, and `checkpoint_components`. `default` preserves Vismatch-managed weights; `custom` accepts an exact model file or epoch directory. Component discovery uses tensor schemas and optional `checkpoint_manifest.json`, never filename ordering. RDD-LightGlue can load custom `rdd_extractor` and/or `lightglue` components, falling back to the default component in `auto` mode when one is absent. LoMa requires a validated LoMa-compatible checkpoint and explicit `loma_arch`; generic RDD/LightGlue files are rejected. Optimizer, scheduler, and random-state files are never loaded for probing. Component SHA-256 identities are part of Vismatch feature-cache keys and run manifests.
+Custom Vismatch checkpoints are selected with `benchmark.methods.vismatch.checkpoint_source`, `checkpoint_path`, and `checkpoint_components`. `default` preserves Vismatch-managed weights; `custom` accepts an exact model file or epoch directory. Component discovery uses tensor schemas and optional `checkpoint_manifest.json`, never filename ordering. RDD-LightGlue can load custom `rdd_extractor` and/or `lightglue` components, falling back to the default component in `auto` mode when one is absent. `descriptor_only` applies only `descriptor.*` RDD tensors and retains the default detector/LightGlue; detector tensors in the file are shape-validated and recorded as ignored. LoMa `descriptor_only` applies only `_descriptor.*` tensors and retains the default detector/matcher. Protocol metadata in `czechlynx_protocol.json` is validated and recorded when available. LoMa requires a validated LoMa-compatible checkpoint and explicit `loma_arch`; generic RDD/LightGlue files are rejected. Optimizer, scheduler, RNG, and scaler files are never loaded for probing. Component SHA-256 identities, applied/ignored prefixes, protocol metadata, and effective component mode are part of Vismatch feature-cache keys and run manifests.
 The Vismatch `resize_max` field is the target long-side resolution, not a downscaling-only cap; the shipped default is 512. RDD-family Vismatch profiles use preprocessing identity `lynx_finetuning_v1` and `/32` dimensions. LoMa uses `lynx_loma_finetuning_v1` and `/14` dimensions. Changing the preprocessing identity or target resolution invalidates Vismatch feature caches. Cosine, WildFusion, local LightGlue, linear probe, and efficient probe retain their existing square-resize protocols.
 LoMa match visualizations must use the processed-image coordinate space shown on the canvas: convert normalized keypoints to `FrameFeatures.image_size` coordinates and apply the Vismatch/LoMa half-pixel convention, without scaling points back to `original_image_size` unless the visualization also displays raw images.
 The production batching defaults are `batch_mode: batched`, `match_batch_size: 16`,
@@ -561,3 +584,7 @@ for both LoMa and RDD. The launcher derives default LoMa and RDD checkpoint
 paths from the active profile and fails before task generation when zero or multiple
 profiles are active. Explicit checkpoint overrides remain supported but must belong
 to the active animal; `animal_name`, when supplied, must match it.
+
+LoMa descriptor exports may omit standard BatchNorm running-stat buffers. Descriptor
+loading preserves those non-learned buffers from the active model defaults while
+remaining strict for descriptor parameters, unexpected tensors, and tensor shapes.

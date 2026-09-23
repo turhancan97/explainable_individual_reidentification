@@ -52,3 +52,14 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+
+# python scripts/export_paper_tables.py \
+#   --animal CzechLynx \
+#   --animal NyalaData \
+#   --animal BelugaID \
+#   --animal HyenaID2022 \
+#   --animal LeopardID2022 \
+#   --animal SeaStarReID2023 \
+#   --animal WhaleSharkID \
+#   --animal ZindiTurtleRecall \
+#   --output-dir reports/paper_tables/cvpr_scope

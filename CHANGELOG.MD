@@ -8,6 +8,45 @@ kept under Unreleased until a project version is assigned.
 
 ### Added
 
+- Added publication-oriented plot styling to `scripts/plot_paper_figures.py`.
+  The default paper style uses a color-blind-safe palette, redundant line and
+  marker encodings, a logarithmic candidate-budget axis, shared metric y-limits
+  across panels, publication typography, and high-resolution PNG plus
+  embedded-font-friendly PDF/SVG output. Presentation and diagnostic styles,
+  categorical-axis overrides, independent y-limits, and optional endpoint labels
+  are available from the command line. Data selection, split separation,
+  descriptor separation, and historical artifacts are unchanged.
+
+- Added repeatable `--exclude-method` filtering to paper figures. The supported
+  families are `wildfusion`, `rdd`, and `loma`; each removes both default and
+  fine-tuned matcher series, and the corresponding descriptor-family figures
+  are suppressed consistently. With no option, plotting behavior is unchanged.
+
+- Updated paper-table rendering so linear and efficient classifier-probe rows
+  visibly include their loss policy in the checkpoint cell, for example
+  `frozen (weighted)` and `frozen (unweighted)`. The existing audit
+  `class_weighting` column and run-selection identity are unchanged.
+
+- Added descriptor-only Vismatch checkpoint integration for RDD-LightGlue and
+  LoMa. `checkpoint_components=descriptor_only` validates descriptor tensor
+  schemas and optional training protocol metadata, applies only descriptor
+  tensors, retains default detector/matcher components, and records hashes,
+  applied/ignored prefixes, and provenance in cache identities and manifests.
+  Descriptor variants are opt-in in both parallel launchers and require
+  profile-specific checkpoint ownership/path settings, including explicit
+  cross-species evaluation metadata.
+
+- Added separate descriptor reporting. Completed descriptor runs are omitted
+  from matcher tables/plots and produce dedicated RDD and LoMa paper-table
+  files and accuracy-versus-budget figures with default matcher and context
+  baselines. Historical matcher artifacts and generated outputs are unchanged.
+  Parallel manifests support explicit cross-species descriptor profiles by
+  separating the evaluation animal from the checkpoint owner and validating the
+  owner against an owner-identifiable checkpoint path.
+  LoMa descriptor loading preserves standard BatchNorm running-stat buffers when
+  a descriptor export omits those non-learned buffers, while remaining strict for
+  all trainable tensor names and shapes.
+
 - Added identity-weighted cross-entropy to `efficient_probe`, matching the existing
   `linear_probe` policy. Efficient probes now default to training-only normalized
   inverse-frequency weights capped at `5.0`, retain `class_weighting=none` for

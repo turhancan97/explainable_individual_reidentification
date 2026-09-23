@@ -6,7 +6,7 @@ import textwrap
 import time
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Set, Tuple
+from typing import Any, Dict, List, Mapping, Optional, Set, Tuple
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -2256,6 +2256,40 @@ def _run_probe(cfg: DictConfig, context: Any) -> None:
     config_snapshot = context.config_snapshot_path
     context.write_config(cfg)
 
+    vismatch_checkpoint = method_artifacts.get("vismatch_checkpoint") or {}
+    checkpoint_components = vismatch_checkpoint.get("components", [])
+    checkpoint_component_files = {
+        str(item.get("component")): item.get("path")
+        for item in checkpoint_components
+        if isinstance(item, Mapping) and item.get("component")
+    }
+    checkpoint_file_hashes = {
+        str(item.get("component")): item.get("sha256")
+        for item in checkpoint_components
+        if isinstance(item, Mapping) and item.get("component")
+    }
+    checkpoint_source = vismatch_checkpoint.get("source", "")
+    checkpoint_variant = vismatch_checkpoint.get("checkpoint_variant", "")
+    checkpoint_component = (
+        "descriptor"
+        if vismatch_checkpoint.get("resolved_component_mode") == "descriptor_only"
+        else vismatch_checkpoint.get("resolved_component_mode", "")
+    )
+    checkpoint_provenance = {
+        "source": checkpoint_source,
+        "variant": checkpoint_variant,
+        "component": checkpoint_component,
+        "owner": str(getattr(cfg.benchmark.methods.vismatch, "checkpoint_owner", "") or "") if method == "vismatch" else "",
+        "evaluation_animal": str(getattr(cfg.benchmark.methods.vismatch, "evaluation_animal", cfg.dataset.animal) or cfg.dataset.animal) if method == "vismatch" else str(cfg.dataset.animal),
+        "component_files": checkpoint_component_files,
+        "file_hashes": checkpoint_file_hashes,
+        "protocol": vismatch_checkpoint.get("protocol_metadata", {}),
+        "default_components": vismatch_checkpoint.get("default_components", []),
+        "applied_prefixes": vismatch_checkpoint.get("applied_prefixes", []),
+        "ignored_prefixes": vismatch_checkpoint.get("ignored_prefixes", []),
+        "validation": vismatch_checkpoint.get("validation", ""),
+    }
+
     result = {
         "run_id": run_id,
         "run_utc": context.run_utc,
@@ -2278,7 +2312,13 @@ def _run_probe(cfg: DictConfig, context: Any) -> None:
         "timings": timings,
         "visualizations": visuals,
         "cache_fingerprints": list(cache.used_keys),
-        "vismatch_checkpoint": method_artifacts.get("vismatch_checkpoint"),
+        "vismatch_checkpoint": vismatch_checkpoint,
+        "checkpoint_provenance": checkpoint_provenance,
+        "checkpoint_source": checkpoint_source,
+        "checkpoint_variant": checkpoint_variant,
+        "checkpoint_component": checkpoint_component,
+        "checkpoint_owner": checkpoint_provenance["owner"],
+        "evaluation_animal": checkpoint_provenance["evaluation_animal"],
         "linear_probe_class_weighting": method_artifacts.get("linear_probe_class_weighting"),
         "efficient_probe_class_weighting": method_artifacts.get("efficient_probe_class_weighting"),
         "classifier_open_set_policy": metrics.get("classifier_open_set_policy"),
@@ -2312,7 +2352,13 @@ def _run_probe(cfg: DictConfig, context: Any) -> None:
             "timings": timings,
             "visualizations": visuals,
             "cache_fingerprints": list(cache.used_keys),
-            "vismatch_checkpoint": method_artifacts.get("vismatch_checkpoint"),
+            "vismatch_checkpoint": vismatch_checkpoint,
+            "checkpoint_provenance": checkpoint_provenance,
+            "checkpoint_source": checkpoint_source,
+            "checkpoint_variant": checkpoint_variant,
+            "checkpoint_component": checkpoint_component,
+            "checkpoint_owner": checkpoint_provenance["owner"],
+            "evaluation_animal": checkpoint_provenance["evaluation_animal"],
             "linear_probe_class_weighting": method_artifacts.get("linear_probe_class_weighting"),
             "efficient_probe_class_weighting": method_artifacts.get("efficient_probe_class_weighting"),
             "classifier_open_set_policy": metrics.get("classifier_open_set_policy"),
@@ -2341,6 +2387,18 @@ def _run_probe(cfg: DictConfig, context: Any) -> None:
                 "variant": str(cfg.benchmark.methods.vismatch.matcher)
                 if method == "vismatch"
                 else "default",
+                "checkpoint_source": checkpoint_source,
+                "checkpoint_variant": checkpoint_variant,
+                "checkpoint_component": checkpoint_component,
+                "checkpoint_owner": checkpoint_provenance["owner"],
+                "evaluation_animal": checkpoint_provenance["evaluation_animal"],
+                "checkpoint_component_files": json.dumps(checkpoint_component_files, sort_keys=True),
+                "checkpoint_file_hashes": json.dumps(checkpoint_file_hashes, sort_keys=True),
+                "checkpoint_protocol": json.dumps(checkpoint_provenance["protocol"], sort_keys=True),
+                "checkpoint_default_components": json.dumps(checkpoint_provenance["default_components"], sort_keys=True),
+                "checkpoint_applied_prefixes": json.dumps(checkpoint_provenance["applied_prefixes"], sort_keys=True),
+                "checkpoint_ignored_prefixes": json.dumps(checkpoint_provenance["ignored_prefixes"], sort_keys=True),
+                "checkpoint_validation": checkpoint_provenance["validation"],
                 "num_query": len(dataset_query),
                 "num_database": len(dataset_database),
                 "feature_extraction_sec": timings.get("vismatch_feature_extraction_sec", timings.get("feature_extraction_sec", "")),
@@ -2369,6 +2427,18 @@ def _run_probe(cfg: DictConfig, context: Any) -> None:
         "no_background": bool(cfg.dataset.no_background),
         "image_variant": str(cfg.dataset.image_variant),
         "checkpoint_path": result["checkpoint_path"],
+        "checkpoint_source": checkpoint_source,
+        "checkpoint_variant": checkpoint_variant,
+        "checkpoint_component": checkpoint_component,
+        "checkpoint_owner": checkpoint_provenance["owner"],
+        "evaluation_animal": checkpoint_provenance["evaluation_animal"],
+        "checkpoint_component_files": checkpoint_component_files,
+        "checkpoint_file_hashes": checkpoint_file_hashes,
+        "checkpoint_protocol": checkpoint_provenance["protocol"],
+        "checkpoint_default_components": checkpoint_provenance["default_components"],
+        "checkpoint_applied_prefixes": checkpoint_provenance["applied_prefixes"],
+        "checkpoint_ignored_prefixes": checkpoint_provenance["ignored_prefixes"],
+        "checkpoint_validation": checkpoint_provenance["validation"],
         "dataset_root": cfg.dataset.root,
         "metadata_file": cfg.dataset.metadata_file,
         "num_query": len(dataset_query),

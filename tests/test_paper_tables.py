@@ -7,6 +7,7 @@ from tempfile import TemporaryDirectory
 from reid.reporting.paper_tables import (
     DEFAULT_ABLATION_BUDGETS,
     build_ablation_rows,
+    build_descriptor_rows,
     build_main_rows,
     discover_animals,
     discover_splits,
@@ -34,6 +35,7 @@ def write_run(
     total_runtime_sec=None,
     split_protocol=None,
     train_mode=None,
+    class_weighting=None,
 ):
     run_dir = root / "probe" / "Dataset" / animal
     if split_protocol:
@@ -73,6 +75,8 @@ def write_run(
             "benchmark:\n  methods:\n    linear_probe:\n      train_mode: " + train_mode + "\n",
             encoding="utf-8",
         )
+    if method in {"linear_probe", "efficient_probe"} and class_weighting is not None:
+        manifest["metrics"][f"{method}_class_weighting"] = class_weighting
     (run_dir / "run_manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
     (run_dir / "metrics.json").write_text(json.dumps(manifest["metrics"]), encoding="utf-8")
     (run_dir / "timings.json").write_text(json.dumps(manifest["timings"]), encoding="utf-8")
@@ -80,6 +84,35 @@ def write_run(
 
 
 class PaperTableTests(unittest.TestCase):
+    def test_descriptor_rows_and_outputs_are_separate_from_matcher_tables(self):
+        with TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir) / "experiments"
+            output = Path(temp_dir) / "reports"
+            write_run(root, animal="Lynx", run_id="20260100_cosine", method="cosine")
+            write_run(root, animal="Lynx", run_id="20260101_wildfusion", method="wildfusion", candidate_k=50)
+            write_run(root, animal="Lynx", run_id="20260102_default", method="vismatch", variant="default", candidate_k=50)
+            write_run(root, animal="Lynx", run_id="20260103_descriptor", method="vismatch", variant="custom", candidate_k=50, top_1=0.8)
+            manifest_path = root / "probe" / "Dataset" / "Lynx" / "20260103_descriptor" / "run_manifest.json"
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            manifest["variant"] = "loma"
+            manifest["vismatch_checkpoint"] = {
+                "source": "custom", "resolved_component_mode": "descriptor_only",
+                "checkpoint_variant": "descriptor-fine-tuned",
+            }
+            manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+            records = discover_records(root)
+            matcher_rows = build_main_rows(records, "Lynx", 50)
+            descriptor_main, descriptor_ablation = build_descriptor_rows(
+                records, animal="Lynx", matcher="loma", budgets=(10, 50)
+            )
+            self.assertNotIn("descriptor-fine-tuned", {row["checkpoint"] for row in matcher_rows})
+            self.assertIn("descriptor-fine-tuned", {row["checkpoint"] for row in descriptor_main})
+            self.assertEqual(len(descriptor_ablation), 2 + 2 + 1)
+            outputs = write_animal_tables(records, animal="Lynx", output_dir=output, budgets=(10, 50))
+            names = {path.name for path in outputs}
+            self.assertIn("Lynx_descriptor_loma_main.tex", names)
+            self.assertIn("Lynx_descriptor_loma_ablation.csv", names)
+            self.assertNotIn("descriptor-fine-tuned", (output / "Lynx_main.tex").read_text(encoding="utf-8"))
     def test_split_protocol_is_part_of_selection_and_output_names(self):
         with TemporaryDirectory() as temp_dir:
             root = Path(temp_dir) / "experiments"
@@ -142,9 +175,9 @@ class PaperTableTests(unittest.TestCase):
             self.assertIn("all", csv_text)
             self.assertIn("partial", csv_text)
             self.assertIn("classifier", csv_text)
-            self.assertIn("full fine-tuned", csv_text)
-            self.assertIn("partial fine-tuned", csv_text)
-            self.assertIn("frozen", csv_text)
+            self.assertIn("full fine-tuned (weighting unknown)", csv_text)
+            self.assertIn("partial fine-tuned (weighting unknown)", csv_text)
+            self.assertIn("frozen (weighting unknown)", csv_text)
 
             latex = render_latex(
                 rows,
@@ -153,9 +186,39 @@ class PaperTableTests(unittest.TestCase):
                 candidate_k=50,
                 compact_ablation=True,
             )
-            self.assertIn("Linear Probe & - & full fine-tuned", latex)
-            self.assertIn("Linear Probe & - & partial fine-tuned", latex)
-            self.assertIn("Linear Probe & - & frozen", latex)
+            self.assertIn("Linear Probe & - & full fine-tuned (weighting unknown)", latex)
+            self.assertIn("Linear Probe & - & partial fine-tuned (weighting unknown)", latex)
+            self.assertIn("Linear Probe & - & frozen (weighting unknown)", latex)
+
+    def test_linear_probe_weighting_is_visible_in_csv_and_latex(self):
+        with TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir) / "experiments"
+            write_run(
+                root,
+                animal="Lynx",
+                run_id="20260101_weighted",
+                method="linear_probe",
+                train_mode="classifier",
+                class_weighting="inverse_frequency",
+                top_1=0.6,
+            )
+            write_run(
+                root,
+                animal="Lynx",
+                run_id="20260102_unweighted",
+                method="linear_probe",
+                train_mode="classifier",
+                class_weighting="none",
+                top_1=0.5,
+            )
+            rows = build_main_rows(discover_records(root), "Lynx", 50)
+
+            csv_text = render_csv(rows)
+            latex = render_latex(rows, animal="Lynx", table_name="main", candidate_k=50)
+            self.assertIn("frozen (weighted)", csv_text)
+            self.assertIn("frozen (unweighted)", csv_text)
+            self.assertIn("Linear Probe & - & frozen (weighted)", latex)
+            self.assertIn("Linear Probe & - & frozen (unweighted)", latex)
 
     def test_checkpoint_variants_and_shortlist_map_are_separate(self):
         with TemporaryDirectory() as temp_dir:
